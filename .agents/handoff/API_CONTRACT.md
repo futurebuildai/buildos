@@ -1,0 +1,633 @@
+# API Contract Specification
+
+**System:** FutureBuild OS (System of Execution)
+**Pipeline Stage:** 07 - Architecture Spec
+**Date:** 2026-04-02
+**Status:** COMPLETE
+**Base URL:** `/api/v1`
+**Auth:** All endpoints (except /health) require Bearer JWT issued by FB-Brain OIDC Provider
+
+---
+
+## 1. Authentication & Authorization
+
+### 1.1 JWT Claims (from FB-Brain)
+
+| Claim | Type | Description |
+|-------|------|-------------|
+| `sub` | string | OIDC subject (user ID in Brain) |
+| `org_id` | string | Organization ID |
+| `role` | string | `owner`, `admin`, `superintendent`, `field_worker` |
+| `plan_tier` | string | `free`, `pro`, `enterprise` |
+| `iss` | string | FB-Brain issuer URL |
+| `aud` | string | `fb-os` |
+| `exp` | int | Expiry timestamp |
+| `iat` | int | Issued-at timestamp |
+
+### 1.2 Role-Based Access Control
+
+| Endpoint Group | owner | admin | superintendent | field_worker |
+|---------------|-------|-------|----------------|-------------|
+| Financial endpoints | ✓ | ✓ | Read-only | ✗ |
+| Schedule endpoints | ✓ | ✓ | ✓ | Read-only |
+| Pipeline endpoints | ✓ | ✓ | Read-only | ✗ |
+| Fleet endpoints | ✓ | ✓ | ✓ | Read-only |
+| HR endpoints | ✓ | ✓ | Read-only | ✗ |
+| Feed endpoints | ✓ | ✓ | ✓ | ✓ |
+| Field endpoints | ✓ | ✓ | ✓ | ✓ |
+| A2A webhook | System (JWS verification, no JWT) | | | |
+
+---
+
+## 2. Common Response Patterns
+
+### 2.1 Success Response
+```json
+{
+  "data": { ... },
+  "meta": {
+    "request_id": "uuid",
+    "timestamp": "2026-04-02T12:00:00Z"
+  }
+}
+```
+
+### 2.2 Error Response
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Human-readable message",
+    "details": [ { "field": "name", "reason": "required" } ]
+  },
+  "meta": {
+    "request_id": "uuid",
+    "timestamp": "2026-04-02T12:00:00Z"
+  }
+}
+```
+
+### 2.3 Pagination
+```
+GET /api/v1/resource?page=1&per_page=50
+Response includes:
+  "meta": { "page": 1, "per_page": 50, "total": 142, "total_pages": 3 }
+```
+
+### 2.4 Monetary Values (Composite Currency Pattern)
+
+ALL monetary fields follow the Composite Currency Pattern:
+- `*_cents` (BIGINT) paired with `*_currency_code` or `currency_code` (string, "USD" or "CAD")
+- Cross-currency arithmetic is FORBIDDEN — clients must never sum values with different currency_codes
+- Aggregation endpoints group by currency_code automatically
+- Display formatting (e.g. "$1,234.56") is a frontend concern only
+
+---
+
+## 3. Health Check
+
+### GET /health
+- **Auth:** None
+- **Response:** `200 { "status": "ok", "version": "1.0.0" }`
+
+---
+
+## 4. Project Endpoints
+
+### GET /api/v1/projects
+- **Auth:** JWT (org-scoped)
+- **Query:** `?status=active&page=1&per_page=50`
+- **Response:** `200 { data: { projects: []Project }, meta }`
+
+### POST /api/v1/projects
+- **Auth:** JWT (owner, admin)
+- **Body:** `{ name, address?, permit_issued_date?, gsf?, project_start_date? }`
+- **Response:** `201 { data: { project: Project } }`
+
+### GET /api/v1/projects/{projectID}
+- **Auth:** JWT (org-scoped)
+- **Response:** `200 { data: { project: Project } }`
+
+### PUT /api/v1/projects/{projectID}
+- **Auth:** JWT (owner, admin)
+- **Body:** `{ name?, address?, status?, gsf? }`
+- **Response:** `200 { data: { project: Project } }`
+
+### Project Object
+```json
+{
+  "id": "uuid",
+  "org_id": "uuid",
+  "name": "string",
+  "address": "string",
+  "permit_issued_date": "date",
+  "project_start_date": "date",
+  "status": "active|completed|archived",
+  "gsf": 3200,
+  "created_at": "timestamp",
+  "updated_at": "timestamp"
+}
+```
+
+---
+
+## 5. Schedule Endpoints
+
+### POST /api/v1/projects/{projectID}/schedule/recalculate
+- **Auth:** JWT (owner, admin, superintendent)
+- **Body:** `{}` (empty — recalculates from current task/dependency state)
+- **Response:** `200 { data: { cpm_result: CPMResult, recalculation_ms: int } }`
+- **NFR:** <800ms end-to-end, <200ms physics computation (80-task graph)
+
+### GET /api/v1/projects/{projectID}/schedule/gantt
+- **Auth:** JWT (org-scoped)
+- **Response:** `200 { data: { tasks: []TaskSchedule, critical_path: []uuid, project_end: timestamp } }`
+
+### GET /api/v1/projects/{projectID}/tasks
+- **Auth:** JWT (org-scoped)
+- **Query:** `?status=pending&is_critical=true`
+- **Response:** `200 { data: { tasks: []ProjectTask } }`
+
+### PUT /api/v1/projects/{projectID}/tasks/{taskID}
+- **Auth:** JWT (owner, admin, superintendent)
+- **Body:** `{ percent_complete?, assigned_crew?, status? }`
+- **Response:** `200 { data: { task: ProjectTask } }`
+
+### TaskSchedule Object
+```json
+{
+  "id": "uuid",
+  "wbs_code": "9.2",
+  "name": "Roof Framing",
+  "duration_days": 5,
+  "early_start": "timestamp",
+  "early_finish": "timestamp",
+  "late_start": "timestamp",
+  "late_finish": "timestamp",
+  "total_float": 2,
+  "is_critical": true,
+  "status": "pending|in_progress|completed",
+  "percent_complete": 0,
+  "assigned_crew": ["uuid"]
+}
+```
+
+---
+
+## 6. Financial Endpoints (Composite Currency Pattern)
+
+### GET /api/v1/org/{orgID}/financials/summary
+- **Auth:** JWT (owner, admin; superintendent read-only)
+- **Query:** `?currency=USD` (optional — omit for all currencies)
+- **Response:** `200 { data: { corporate_budgets: []CorporateBudget, ar_aging: []ARAgingSnapshot } }`
+- **Note:** Results grouped by currency_code. No cross-currency aggregation.
+
+### GET /api/v1/org/{orgID}/financials/ar-aging
+- **Auth:** JWT (owner, admin)
+- **Query:** `?currency=USD`
+- **Response:** `200 { data: { snapshots: []ARAgingSnapshot } }`
+
+### GET /api/v1/org/{orgID}/financials/projects
+- **Auth:** JWT (owner, admin)
+- **Query:** `?currency=USD`
+- **Response:** `200 { data: { projects: []ProjectFinancial } }`
+
+### GET /api/v1/projects/{projectID}/budgets
+- **Auth:** JWT (owner, admin)
+- **Response:** `200 { data: { budgets: []ProjectBudget } }`
+
+### POST /api/v1/projects/{projectID}/invoices
+- **Auth:** JWT (owner, admin)
+- **Body:** `{ vendor_name, amount_cents, currency_code, wbs_code?, invoice_number?, due_date? }`
+- **Response:** `201 { data: { invoice: Invoice } }`
+
+### PUT /api/v1/projects/{projectID}/invoices/{invoiceID}
+- **Auth:** JWT (owner, admin)
+- **Body:** `{ status?, paid_date? }`
+- **Response:** `200 { data: { invoice: Invoice } }`
+
+### ProjectBudget Object
+```json
+{
+  "id": "uuid",
+  "project_id": "uuid",
+  "wbs_code": "9.0",
+  "phase_name": "Roofing",
+  "estimated_cost_cents": 450000,
+  "estimated_cost_currency_code": "USD",
+  "committed_cost_cents": 380000,
+  "committed_cost_currency_code": "USD",
+  "actual_cost_cents": 320000,
+  "actual_cost_currency_code": "USD"
+}
+```
+
+### CorporateBudget Object
+```json
+{
+  "id": "uuid",
+  "org_id": "uuid",
+  "fiscal_year": 2026,
+  "quarter": 2,
+  "currency_code": "USD",
+  "total_estimated_cents": 15000000,
+  "total_committed_cents": 12000000,
+  "total_actual_cents": 9500000,
+  "project_count": 8
+}
+```
+
+---
+
+## 7. Pre-Construction Pipeline Endpoints
+
+### 7.1 Prospects (CRM)
+
+### GET /api/v1/org/{orgID}/pipeline/prospects
+- **Auth:** JWT (owner, admin)
+- **Query:** `?stage=LEAD&page=1&per_page=50`
+- **Response:** `200 { data: { prospects: []Prospect }, meta }`
+
+### POST /api/v1/org/{orgID}/pipeline/prospects
+- **Auth:** JWT (owner, admin)
+- **Body:** `{ name, client_name, client_email?, client_phone?, address?, gsf?, source? }`
+- **Response:** `201 { data: { prospect: Prospect } }`
+
+### GET /api/v1/org/{orgID}/pipeline/prospects/{prospectID}
+- **Auth:** JWT (owner, admin)
+- **Response:** `200 { data: { prospect: Prospect, estimates: []Estimate, permits: []Permit } }`
+
+### PUT /api/v1/org/{orgID}/pipeline/prospects/{prospectID}
+- **Auth:** JWT (owner, admin)
+- **Body:** `{ name?, client_name?, client_email?, client_phone?, address?, gsf?, notes? }`
+- **Response:** `200 { data: { prospect: Prospect } }`
+
+### 7.2 Stage Transitions
+
+### POST /api/v1/org/{orgID}/pipeline/prospects/{prospectID}/advance
+- **Auth:** JWT (owner, admin)
+- **Body:** `{ target_stage: "QUALIFIED"|"ESTIMATE_SENT"|"VERBAL_COMMITMENT"|"PERMIT_APPLIED"|"PERMIT_ISSUED", permit_issued_date?: "date" }`
+- **Response:** `200 { data: { prospect: Prospect, project_id?: "uuid" } }`
+- **Note:** `PERMIT_ISSUED` triggers atomic Kanban→CPM transition. Returns the newly created `project_id`. Requires `permit_issued_date` in body. The transition:
+  1. Creates a new Project from prospect data
+  2. Sets prospect.project_id to the new project
+  3. Hydrates WBS template via physics scoping engine
+  4. Enqueues initial CPM calculation via River job
+- **Validation:** Source stage must be the immediately preceding stage (LEAD→QUALIFIED→...→PERMIT_ISSUED). Cannot skip stages.
+
+### POST /api/v1/org/{orgID}/pipeline/prospects/{prospectID}/lose
+- **Auth:** JWT (owner, admin)
+- **Body:** `{ reason: "string" }`
+- **Response:** `200 { data: { prospect: Prospect } }`
+- **Note:** Moves prospect to LOST stage. Irreversible.
+
+### Pipeline Stages
+| Stage | Probability | Allowed Transitions |
+|-------|------------|-------------------|
+| LEAD | 10% | → QUALIFIED, → LOST |
+| QUALIFIED | 25% | → ESTIMATE_SENT, → LOST |
+| ESTIMATE_SENT | 50% | → VERBAL_COMMITMENT, → LOST |
+| VERBAL_COMMITMENT | 75% | → PERMIT_APPLIED, → LOST |
+| PERMIT_APPLIED | 85% | → PERMIT_ISSUED, → LOST |
+| PERMIT_ISSUED | 100% | Terminal (triggers CPM) |
+| LOST | — | Terminal |
+
+### 7.3 Estimates
+
+### POST /api/v1/org/{orgID}/pipeline/prospects/{prospectID}/estimates
+- **Auth:** JWT (owner, admin)
+- **Body:**
+```json
+{
+  "line_items": [
+    { "wbs_code": "6.0", "description": "Foundation", "estimated_cents": 2500000, "unit": "sqft", "quantity": 1800 }
+  ],
+  "margin_pct": 15,
+  "currency_code": "USD"
+}
+```
+- **Response:** `201 { data: { estimate: Estimate } }`
+
+### PUT /api/v1/org/{orgID}/pipeline/estimates/{estimateID}
+- **Auth:** JWT (owner, admin)
+- **Body:** `{ line_items?, margin_pct?, status? }`
+- **Response:** `200 { data: { estimate: Estimate } }`
+
+### Estimate Object
+```json
+{
+  "id": "uuid",
+  "prospect_id": "uuid",
+  "version": 1,
+  "total_estimated_cents": 45000000,
+  "currency_code": "USD",
+  "line_items": [ ... ],
+  "margin_pct": 15,
+  "status": "draft|sent|revised|accepted",
+  "sent_at": "timestamp"
+}
+```
+
+### 7.4 Permits
+
+### POST /api/v1/org/{orgID}/pipeline/prospects/{prospectID}/permits
+- **Auth:** JWT (owner, admin)
+- **Body:** `{ permit_type, jurisdiction, application_number?, submitted_date?, fee_cents?, fee_currency_code? }`
+- **Response:** `201 { data: { permit: Permit } }`
+
+### PUT /api/v1/org/{orgID}/pipeline/permits/{permitID}
+- **Auth:** JWT (owner, admin)
+- **Body:** `{ status?, actual_issue_date?, expected_issue_date?, notes? }`
+- **Response:** `200 { data: { permit: Permit } }`
+
+### Permit Object
+```json
+{
+  "id": "uuid",
+  "prospect_id": "uuid",
+  "permit_type": "building|electrical|plumbing|mechanical",
+  "jurisdiction": "City of Austin",
+  "application_number": "BP-2026-1234",
+  "submitted_date": "date",
+  "expected_issue_date": "date",
+  "actual_issue_date": "date",
+  "fee_cents": 250000,
+  "fee_currency_code": "USD",
+  "status": "not_submitted|submitted|under_review|revisions_requested|approved|denied"
+}
+```
+
+### 7.5 Pipeline Analytics
+
+### GET /api/v1/org/{orgID}/pipeline/analytics
+- **Auth:** JWT (owner, admin)
+- **Response:**
+```json
+{
+  "data": {
+    "by_currency": [
+      {
+        "currency_code": "USD",
+        "total_weighted_revenue_cents": 125000000,
+        "stages": [
+          { "stage": "LEAD", "count": 5, "weighted_revenue_cents": 15000000 },
+          { "stage": "QUALIFIED", "count": 3, "weighted_revenue_cents": 22500000 }
+        ]
+      },
+      {
+        "currency_code": "CAD",
+        "total_weighted_revenue_cents": 8500000,
+        "stages": [ ... ]
+      }
+    ]
+  }
+}
+```
+- **Note:** Revenue forecasting grouped by currency_code. No cross-currency sums.
+
+---
+
+## 8. Procurement Endpoints
+
+### GET /api/v1/projects/{projectID}/procurement
+- **Auth:** JWT (owner, admin, superintendent)
+- **Query:** `?status=WARNING,CRITICAL`
+- **Response:** `200 { data: { items: []ProcurementItem } }`
+
+### POST /api/v1/projects/{projectID}/procurement
+- **Auth:** JWT (owner, admin)
+- **Body:** `{ name, wbs_code, estimated_cost_cents, estimated_cost_currency_code, lead_time_days, need_by_date }`
+- **Response:** `201 { data: { item: ProcurementItem } }`
+
+### PUT /api/v1/projects/{projectID}/procurement/{itemID}
+- **Auth:** JWT (owner, admin)
+- **Body:** `{ status?, po_number?, ordered_at? }`
+- **Response:** `200 { data: { item: ProcurementItem } }`
+
+### ProcurementItem Object
+```json
+{
+  "id": "uuid",
+  "project_id": "uuid",
+  "name": "Roof Trusses",
+  "wbs_code": "9.1",
+  "estimated_cost_cents": 850000,
+  "estimated_cost_currency_code": "USD",
+  "lead_time_days": 14,
+  "weather_buffer_days": 3,
+  "need_by_date": "date",
+  "must_order_date": "date",
+  "status": "OK|WARNING|CRITICAL|ORDERED",
+  "po_number": "PO-2026-0042"
+}
+```
+
+---
+
+## 9. Feed Endpoints
+
+### GET /api/v1/feed
+- **Auth:** JWT (org-scoped)
+- **Query:** `?status=active&priority=critical,urgent&page=1&per_page=50`
+- **Response:** `200 { data: { cards: []FeedCard }, meta }`
+
+### POST /api/v1/feed/{cardID}/action
+- **Auth:** JWT (org-scoped)
+- **Body:** `{ action_type: "string", payload: {} }`
+- **Response:** `200 { data: { card: FeedCard, result: ActionResult } }`
+
+### POST /api/v1/feed/{cardID}/dismiss
+- **Auth:** JWT (org-scoped)
+- **Response:** `200 { data: { card: FeedCard } }`
+
+### FeedCard Object
+```json
+{
+  "id": "uuid",
+  "org_id": "uuid",
+  "project_id": "uuid",
+  "card_type": "weather_alert|procurement|sub_confirmation|progress|delay|permit_update",
+  "title": "string",
+  "body": "string",
+  "priority": "critical|urgent|normal|low",
+  "actions": [{ "label": "Approve", "action_type": "approve_quote", "payload": {} }],
+  "status": "active|dismissed|actioned|expired",
+  "created_at": "timestamp"
+}
+```
+
+---
+
+## 10. Field Sync Endpoints (Flutter Mobile)
+
+### GET /api/v1/field/sync
+- **Auth:** JWT (field_worker+)
+- **Query:** `?since={ISO8601_timestamp}`
+- **Response:**
+```json
+{
+  "data": {
+    "notifications": [{ "type": "task_assigned", "payload": {} }],
+    "tasks": [{ "id": "uuid", "wbs_code": "9.2", "percent_complete": 60 }],
+    "server_time": "2026-04-02T14:30:00Z"
+  }
+}
+```
+- **Note:** Pull-based sync. Client stores `server_time` and passes as `since` on next sync.
+
+### POST /api/v1/field/progress
+- **Auth:** JWT (field_worker+)
+- **Body:** `{ task_id, percent_complete, photo_asset_id?, gps_lat?, gps_lng?, idempotency_key }`
+- **Response:** `201 Created` | `409 Conflict` (duplicate idempotency_key)
+- **Note:** Idempotency key (UUID v7) prevents duplicate processing from offline outbox drain.
+
+### POST /api/v1/field/checkin
+- **Auth:** JWT (field_worker+)
+- **Body:** `{ project_id, crew_members: [{ worker_id, gps_lat, gps_lng }], idempotency_key }`
+- **Response:** `201 Created` | `409 Conflict`
+
+### POST /api/v1/field/daily-log
+- **Auth:** JWT (field_worker+)
+- **Body:** `{ project_id, weather_conditions, work_summary, safety_incidents?, photos?: [], idempotency_key }`
+- **Response:** `201 Created` | `409 Conflict`
+
+---
+
+## 11. Fleet & HR Endpoints
+
+### GET /api/v1/org/{orgID}/fleet
+- **Auth:** JWT (owner, admin, superintendent)
+- **Response:** `200 { data: { assets: []FleetAsset } }`
+
+### POST /api/v1/org/{orgID}/fleet
+- **Auth:** JWT (owner, admin)
+- **Body:** `{ name, asset_type, serial_number? }`
+- **Response:** `201 { data: { asset: FleetAsset } }`
+
+### POST /api/v1/org/{orgID}/fleet/{assetID}/allocate
+- **Auth:** JWT (owner, admin, superintendent)
+- **Body:** `{ project_id, start_date, end_date }`
+- **Response:** `201 { data: { allocation: EquipmentAllocation } }`
+- **Error:** `409` if allocation conflicts with existing booking (GiST exclusion constraint)
+
+### GET /api/v1/org/{orgID}/employees
+- **Auth:** JWT (owner, admin)
+- **Response:** `200 { data: { employees: []Employee } }`
+
+### GET /api/v1/org/{orgID}/employees/{employeeID}/certifications
+- **Auth:** JWT (owner, admin)
+- **Response:** `200 { data: { certifications: []Certification } }`
+
+---
+
+## 12. A2A Webhook Receiver
+
+### POST /api/v1/a2a/webhook
+- **Auth:** JWS detached signature (X-JWS-Signature header, verified with FB-Brain public key)
+- **No JWT required** — this is a system-to-system endpoint
+- **Headers:**
+  - `X-JWS-Signature`: RS256 JWS detached compact serialization
+  - `X-Idempotency-Key`: UUID for deduplication
+  - `Content-Type`: application/json
+- **Body:**
+```json
+{
+  "event_type": "review_material_quote|review_labor_bid|update_schedule|delivery_confirmation|create_feed_card",
+  "payload": { ... },
+  "trace_id": "otel-trace-id",
+  "idempotency_key": "uuid",
+  "timestamp": "2026-04-02T14:30:00Z",
+  "iss": "fb-brain"
+}
+```
+- **Response:** `200 OK` | `401 Invalid Signature` | `409 Duplicate (idempotency_key)`
+
+### Event Payloads (Composite Currency Pattern)
+
+#### review_material_quote
+```json
+{
+  "rfq_id": "uuid",
+  "line_items": [{ "name": "2x4 Lumber", "quantity": 500, "unit_price_cents": 450, "currency_code": "USD" }],
+  "total_cents": 225000,
+  "currency_code": "USD",
+  "vendor": "GableERP"
+}
+```
+
+#### review_labor_bid
+```json
+{
+  "rfq_id": "uuid",
+  "bidder": "Apex Roofing",
+  "amount_cents": 1200000,
+  "currency_code": "USD",
+  "timeline": "14 days",
+  "ai_analysis": "Competitive bid, strong safety record"
+}
+```
+
+#### update_schedule
+```json
+{
+  "event_type": "material_delivery",
+  "delivery_date": "2026-05-15",
+  "constraints": { "wbs_codes": ["9.1", "9.2"] }
+}
+```
+
+#### delivery_confirmation
+```json
+{
+  "materials_ordered": true,
+  "labor_approved": false,
+  "convergence_status": "partial"
+}
+```
+
+#### create_feed_card
+```json
+{
+  "card_type": "procurement",
+  "title": "Quote Ready for Review",
+  "body": "GableERP quote #Q-2026-0042 is ready",
+  "actions": [{ "label": "Review", "action_type": "open_quote", "payload": { "rfq_id": "uuid" } }],
+  "priority": "urgent"
+}
+```
+
+---
+
+## 13. Error Codes
+
+| HTTP Status | Code | Description |
+|-------------|------|-------------|
+| 400 | `VALIDATION_ERROR` | Request body validation failed |
+| 401 | `UNAUTHORIZED` | Missing or invalid JWT / JWS signature |
+| 403 | `FORBIDDEN` | Insufficient role for this operation |
+| 404 | `NOT_FOUND` | Resource does not exist or not in user's org |
+| 409 | `CONFLICT` | Duplicate idempotency_key or resource conflict |
+| 409 | `INVALID_TRANSITION` | Invalid pipeline stage transition |
+| 422 | `CROSS_CURRENCY_ERROR` | Attempted cross-currency arithmetic |
+| 429 | `RATE_LIMITED` | Too many requests |
+| 500 | `INTERNAL_ERROR` | Server error |
+
+---
+
+## 14. Rate Limits
+
+| Tier | Requests/min | Burst |
+|------|-------------|-------|
+| free | 60 | 10 |
+| pro | 300 | 50 |
+| enterprise | 1000 | 200 |
+
+Rate limit headers: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`
+
+---
+
+## 15. Versioning
+
+- API version is embedded in the URL path (`/api/v1/...`)
+- Breaking changes will increment the version (`/api/v2/...`)
+- Deprecation notices via `Sunset` header (RFC 8594) with 6-month lead time
