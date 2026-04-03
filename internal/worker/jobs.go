@@ -207,20 +207,83 @@ func (w *SubLiaisonScanWorker) Work(ctx context.Context, job *river.Job[SubLiais
 	return nil
 }
 
+// PipelineAnalyticsWorker recalculates weighted pipeline revenue for all orgs.
 type PipelineAnalyticsWorker struct {
 	river.WorkerDefaults[PipelineAnalyticsArgs]
+	pool *pgxpool.Pool
+}
+
+// NewPipelineAnalyticsWorker creates a worker with database access.
+func NewPipelineAnalyticsWorker(pool *pgxpool.Pool) *PipelineAnalyticsWorker {
+	return &PipelineAnalyticsWorker{pool: pool}
 }
 
 func (w *PipelineAnalyticsWorker) Work(ctx context.Context, job *river.Job[PipelineAnalyticsArgs]) error {
-	slog.InfoContext(ctx, "pipeline_analytics: not yet implemented")
+	slog.InfoContext(ctx, "pipeline_analytics: starting")
+
+	pipelineStore := store.NewPipelineStore(w.pool)
+	svc := service.NewPipelineService(pipelineStore)
+
+	// Get all org IDs
+	rows, err := w.pool.Query(ctx, `SELECT id FROM organizations`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var orgIDs []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		orgIDs = append(orgIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, orgID := range orgIDs {
+		analytics, err := svc.Analytics(ctx, orgID)
+		if err != nil {
+			slog.ErrorContext(ctx, "pipeline_analytics: failed for org", "org_id", orgID, "error", err)
+			continue
+		}
+		slog.InfoContext(ctx, "pipeline_analytics: computed", "org_id", orgID, "currencies", len(analytics))
+	}
+
+	slog.InfoContext(ctx, "pipeline_analytics: completed", "org_count", len(orgIDs))
 	return nil
 }
 
+// PermitIssuedTransitionWorker handles the atomic Kanban→CPM transition
+// when a prospect reaches PERMIT_ISSUED.
 type PermitIssuedTransitionWorker struct {
 	river.WorkerDefaults[PermitIssuedTransitionArgs]
+	pool *pgxpool.Pool
+}
+
+// NewPermitIssuedTransitionWorker creates a worker with database access.
+func NewPermitIssuedTransitionWorker(pool *pgxpool.Pool) *PermitIssuedTransitionWorker {
+	return &PermitIssuedTransitionWorker{pool: pool}
 }
 
 func (w *PermitIssuedTransitionWorker) Work(ctx context.Context, job *river.Job[PermitIssuedTransitionArgs]) error {
-	slog.InfoContext(ctx, "permit_issued_transition: not yet implemented", "prospect_id", job.Args.ProspectID)
+	slog.InfoContext(ctx, "permit_issued_transition: starting", "prospect_id", job.Args.ProspectID)
+
+	pipelineStore := store.NewPipelineStore(w.pool)
+	svc := service.NewPipelineService(pipelineStore)
+
+	prospect, err := svc.AdvanceProspect(ctx, job.Args.ProspectID)
+	if err != nil {
+		slog.ErrorContext(ctx, "permit_issued_transition: failed", "prospect_id", job.Args.ProspectID, "error", err)
+		return err
+	}
+
+	slog.InfoContext(ctx, "permit_issued_transition: completed",
+		"prospect_id", job.Args.ProspectID,
+		"project_id", prospect.ProjectID,
+		"stage", prospect.PipelineStage,
+	)
 	return nil
 }

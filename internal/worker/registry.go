@@ -38,8 +38,8 @@ func NewRegistry(pool *pgxpool.Pool, logger *slog.Logger) (*Registry, error) {
 	river.AddWorker(workers, &DelayCascadeWorker{})
 	river.AddWorker(workers, &A2AWebhookDispatchWorker{})
 	river.AddWorker(workers, &SubLiaisonScanWorker{})
-	river.AddWorker(workers, &PipelineAnalyticsWorker{})
-	river.AddWorker(workers, &PermitIssuedTransitionWorker{})
+	river.AddWorker(workers, NewPipelineAnalyticsWorker(pool))
+	river.AddWorker(workers, NewPermitIssuedTransitionWorker(pool))
 
 	periodicJobs := []*river.PeriodicJob{
 		river.NewPeriodicJob(
