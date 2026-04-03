@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
+	"github.com/futurebuild/futurebuild-os/internal/agents"
 	"github.com/futurebuild/futurebuild-os/internal/service"
 	"github.com/futurebuild/futurebuild-os/internal/store"
 )
@@ -77,23 +78,80 @@ type PermitIssuedTransitionArgs struct {
 
 func (PermitIssuedTransitionArgs) Kind() string { return "permit_issued_transition" }
 
-// --- Workers (placeholder implementations for Sprint 0 wiring) ---
+// --- Workers ---
 
+// DailyBriefingWorker generates morning briefing feed cards for all orgs.
 type DailyBriefingWorker struct {
 	river.WorkerDefaults[DailyBriefingArgs]
+	pool *pgxpool.Pool
+}
+
+// NewDailyBriefingWorker creates a worker with database access.
+func NewDailyBriefingWorker(pool *pgxpool.Pool) *DailyBriefingWorker {
+	return &DailyBriefingWorker{pool: pool}
 }
 
 func (w *DailyBriefingWorker) Work(ctx context.Context, job *river.Job[DailyBriefingArgs]) error {
-	slog.InfoContext(ctx, "daily_briefing: not yet implemented")
+	slog.InfoContext(ctx, "daily_briefing: starting")
+
+	feedStore := store.NewFeedStore(w.pool)
+	feedSvc := service.NewFeedService(feedStore)
+	agent := agents.NewDailyFocusAgent(w.pool, feedSvc, slog.Default())
+
+	rows, err := w.pool.Query(ctx, `SELECT id FROM organizations`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var orgIDs []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		orgIDs = append(orgIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, orgID := range orgIDs {
+		if err := agent.GenerateBriefings(ctx, orgID); err != nil {
+			slog.ErrorContext(ctx, "daily_briefing: failed for org", "org_id", orgID, "error", err)
+			continue
+		}
+	}
+
+	slog.InfoContext(ctx, "daily_briefing: completed", "org_count", len(orgIDs))
 	return nil
 }
 
+// ProcurementCheckWorker evaluates procurement item urgency and creates alerts.
 type ProcurementCheckWorker struct {
 	river.WorkerDefaults[ProcurementCheckArgs]
+	pool *pgxpool.Pool
+}
+
+// NewProcurementCheckWorker creates a worker with database access.
+func NewProcurementCheckWorker(pool *pgxpool.Pool) *ProcurementCheckWorker {
+	return &ProcurementCheckWorker{pool: pool}
 }
 
 func (w *ProcurementCheckWorker) Work(ctx context.Context, job *river.Job[ProcurementCheckArgs]) error {
-	slog.InfoContext(ctx, "procurement_check: not yet implemented")
+	slog.InfoContext(ctx, "procurement_check: starting")
+
+	feedStore := store.NewFeedStore(w.pool)
+	feedSvc := service.NewFeedService(feedStore)
+	procStore := store.NewProcurementStore(w.pool)
+	procSvc := service.NewProcurementService(procStore, feedSvc)
+	agent := agents.NewProcurementAgent(w.pool, procSvc, slog.Default())
+
+	if err := agent.RunCheck(ctx); err != nil {
+		return err
+	}
+
+	slog.InfoContext(ctx, "procurement_check: completed")
 	return nil
 }
 

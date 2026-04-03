@@ -28,8 +28,8 @@ func NewRegistry(pool *pgxpool.Pool, logger *slog.Logger) (*Registry, error) {
 	// Register all job workers.
 	// Sprint 0: register placeholder workers to validate the wiring.
 	// Full implementations arrive in later sprints.
-	river.AddWorker(workers, &DailyBriefingWorker{})
-	river.AddWorker(workers, &ProcurementCheckWorker{})
+	river.AddWorker(workers, NewDailyBriefingWorker(pool))
+	river.AddWorker(workers, NewProcurementCheckWorker(pool))
 	river.AddWorker(workers, &HydrateProjectWorker{})
 	river.AddWorker(workers, NewCorporateRollupWorker(pool))
 	river.AddWorker(workers, &CertificationAlertsWorker{})
@@ -50,7 +50,7 @@ func NewRegistry(pool *pgxpool.Pool, logger *slog.Logger) (*Registry, error) {
 			&river.PeriodicJobOpts{RunOnStart: false},
 		),
 		river.NewPeriodicJob(
-			river.PeriodicInterval(24*time.Hour),
+			river.PeriodicInterval(2*time.Hour),
 			func() (river.JobArgs, *river.InsertOpts) {
 				return ProcurementCheckArgs{}, nil
 			},

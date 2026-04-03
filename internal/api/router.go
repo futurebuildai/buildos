@@ -41,14 +41,18 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	corporateSvc := service.NewCorporateFinancialsService(financialStore)
 	pipelineStore := store.NewPipelineStore(cfg.Pool)
 	pipelineSvc := service.NewPipelineService(pipelineStore)
+	feedStore := store.NewFeedStore(cfg.Pool)
+	feedSvc := service.NewFeedService(feedStore)
+	procStore := store.NewProcurementStore(cfg.Pool)
+	procSvc := service.NewProcurementService(procStore, feedSvc)
 
 	// Instantiate handlers
 	projects := &ProjectHandler{}
 	schedule := &ScheduleHandler{}
 	financials := NewFinancialsHandler(budgetSvc, corporateSvc)
 	pipeline := NewPipelineHandler(pipelineSvc)
-	procurement := &ProcurementHandler{}
-	feed := &FeedHandler{}
+	procurement := NewProcurementHandler(procSvc)
+	feed := NewFeedHandler(feedSvc)
 	field := &FieldHandler{}
 	fleet := &FleetHandler{}
 	hr := &HRHandler{}
