@@ -1,9 +1,8 @@
 [build]
-builder = "nixpacks"
-buildCommand = "cd frontend && npm ci && npx vite build && cd .. && go build -o server ./cmd/server"
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "./server"
 healthcheckPath = "/health"
 healthcheckTimeout = 30
 restartPolicyType = "on_failure"
