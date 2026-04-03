@@ -28,3 +28,4 @@ pgdata/
 
 # Claude Code local state
 .claude/
+server
