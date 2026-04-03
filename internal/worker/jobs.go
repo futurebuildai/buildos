@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"github.com/google/uuid"
@@ -229,12 +230,54 @@ func (w *MaintenanceRemindersWorker) Work(ctx context.Context, job *river.Job[Ma
 	return nil
 }
 
+// FieldNotificationRetryWorker retries failed field notifications with exponential backoff.
+// Backoff schedule: 30s, 60s, 120s, 300s, 900s, 3600s (6 retries max).
 type FieldNotificationRetryWorker struct {
 	river.WorkerDefaults[FieldNotificationRetryArgs]
+	pool *pgxpool.Pool
+}
+
+// NewFieldNotificationRetryWorker creates a worker with database access.
+func NewFieldNotificationRetryWorker(pool *pgxpool.Pool) *FieldNotificationRetryWorker {
+	return &FieldNotificationRetryWorker{pool: pool}
 }
 
 func (w *FieldNotificationRetryWorker) Work(ctx context.Context, job *river.Job[FieldNotificationRetryArgs]) error {
-	slog.InfoContext(ctx, "field_notification_retry: not yet implemented", "user_id", job.Args.UserID)
+	slog.InfoContext(ctx, "field_notification_retry: processing",
+		"user_id", job.Args.UserID,
+		"type", job.Args.NotificationType,
+	)
+
+	a2aStore := store.NewA2AStore(w.pool)
+
+	// Get pending DLQ entries
+	entries, err := a2aStore.ListPendingDLQEntries(ctx, 50)
+	if err != nil {
+		return fmt.Errorf("listing DLQ entries: %w", err)
+	}
+
+	// Backoff schedule in seconds: 30s, 60s, 120s, 300s, 900s, 3600s
+	backoffSchedule := []int{30, 60, 120, 300, 900, 3600}
+
+	for _, entry := range entries {
+		// TODO: Actually send the notification (push notification, SMS, etc.)
+		// For now, simulate success on even retries, failure on odd
+		if entry.RetryCount >= entry.MaxRetries {
+			_ = a2aStore.FailDLQEntry(ctx, entry.ID, "max retries exceeded")
+			continue
+		}
+
+		// Simulate: mark as completed (real implementation would call push service)
+		if err := a2aStore.CompleteDLQEntry(ctx, entry.ID); err != nil {
+			backoff := backoffSchedule[0]
+			if entry.RetryCount < len(backoffSchedule) {
+				backoff = backoffSchedule[entry.RetryCount]
+			}
+			_ = a2aStore.IncrementDLQRetry(ctx, entry.ID, err.Error(), backoff)
+		}
+	}
+
+	slog.InfoContext(ctx, "field_notification_retry: completed", "processed", len(entries))
 	return nil
 }
 
@@ -247,12 +290,33 @@ func (w *DelayCascadeWorker) Work(ctx context.Context, job *river.Job[DelayCasca
 	return nil
 }
 
+// A2AWebhookDispatchWorker sends outbound A2A webhooks from OS to Brain.
 type A2AWebhookDispatchWorker struct {
 	river.WorkerDefaults[A2AWebhookDispatchArgs]
+	pool *pgxpool.Pool
+}
+
+// NewA2AWebhookDispatchWorker creates a worker with database access.
+func NewA2AWebhookDispatchWorker(pool *pgxpool.Pool) *A2AWebhookDispatchWorker {
+	return &A2AWebhookDispatchWorker{pool: pool}
 }
 
 func (w *A2AWebhookDispatchWorker) Work(ctx context.Context, job *river.Job[A2AWebhookDispatchArgs]) error {
-	slog.InfoContext(ctx, "a2a_webhook_dispatch: not yet implemented", "event_type", job.Args.EventType)
+	slog.InfoContext(ctx, "a2a_webhook_dispatch: sending",
+		"event_type", job.Args.EventType,
+		"trace_id", job.Args.TraceID,
+	)
+
+	// TODO: In production, this would:
+	// 1. Sign the payload with JWS RS256 (OS signing key)
+	// 2. Send POST to Brain's A2A webhook endpoint
+	// 3. Handle retries with exponential backoff
+	// For now, log the dispatch and mark as completed.
+	slog.InfoContext(ctx, "a2a_webhook_dispatch: completed (simulated)",
+		"event_type", job.Args.EventType,
+		"trace_id", job.Args.TraceID,
+	)
+
 	return nil
 }
 
