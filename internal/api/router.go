@@ -3,6 +3,8 @@ package api
 import (
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
@@ -201,8 +203,36 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		})
 	})
 
+	// Serve Lit SPA frontend from frontend/dist (built by Vite)
+	spaHandler := newSPAHandler("frontend/dist")
+	r.NotFound(spaHandler)
+
 	return r
 }
+
+// newSPAHandler serves static files from the given directory, falling back to
+// index.html for client-side routing (hash-based SPA).
+func newSPAHandler(staticDir string) http.HandlerFunc {
+	absDir, _ := filepath.Abs(staticDir)
+	fileServer := http.FileServer(http.Dir(absDir))
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Try to serve static file directly
+		path := filepath.Join(absDir, filepath.Clean(r.URL.Path))
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+		// For SPA routes, serve index.html
+		indexPath := filepath.Join(absDir, "index.html")
+		if _, err := os.Stat(indexPath); err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		http.ServeFile(w, r, indexPath)
+	}
+}
+
 
 func healthHandler(pool *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
