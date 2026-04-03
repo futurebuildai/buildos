@@ -30,3 +30,5 @@ require (
 	golang.org/x/text v0.35.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/futurebuild/futurebuild-brain => ../futurebuild-brain
