@@ -5,7 +5,11 @@ import (
 	"log/slog"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
+
+	"github.com/futurebuild/futurebuild-os/internal/service"
+	"github.com/futurebuild/futurebuild-os/internal/store"
 )
 
 // --- Job Args (implement river.JobArgs) ---
@@ -102,12 +106,50 @@ func (w *HydrateProjectWorker) Work(ctx context.Context, job *river.Job[HydrateP
 	return nil
 }
 
+// CorporateRollupWorker runs the quarterly budget rollup for all organizations.
 type CorporateRollupWorker struct {
 	river.WorkerDefaults[CorporateRollupArgs]
+	pool *pgxpool.Pool
+}
+
+// NewCorporateRollupWorker creates a worker with database access.
+func NewCorporateRollupWorker(pool *pgxpool.Pool) *CorporateRollupWorker {
+	return &CorporateRollupWorker{pool: pool}
 }
 
 func (w *CorporateRollupWorker) Work(ctx context.Context, job *river.Job[CorporateRollupArgs]) error {
-	slog.InfoContext(ctx, "corporate_rollup: not yet implemented")
+	slog.InfoContext(ctx, "corporate_rollup: starting")
+
+	financialStore := store.NewFinancialStore(w.pool)
+	svc := service.NewCorporateFinancialsService(financialStore)
+
+	// Get all org IDs
+	rows, err := w.pool.Query(ctx, `SELECT id FROM organizations`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var orgIDs []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		orgIDs = append(orgIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, orgID := range orgIDs {
+		if err := svc.RunCorporateRollup(ctx, orgID); err != nil {
+			slog.ErrorContext(ctx, "corporate_rollup failed for org", "org_id", orgID, "error", err)
+			continue // Don't fail the whole job for one org
+		}
+	}
+
+	slog.InfoContext(ctx, "corporate_rollup: completed", "org_count", len(orgIDs))
 	return nil
 }
 

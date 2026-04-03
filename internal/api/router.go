@@ -9,6 +9,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	mw "github.com/futurebuild/futurebuild-os/internal/api/middleware"
+	"github.com/futurebuild/futurebuild-os/internal/service"
+	"github.com/futurebuild/futurebuild-os/internal/store"
 )
 
 // RouterConfig holds all dependencies needed to build the API router.
@@ -33,10 +35,15 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	// Health check (no auth)
 	r.Get("/health", healthHandler(cfg.Pool))
 
+	// Instantiate service layer
+	financialStore := store.NewFinancialStore(cfg.Pool)
+	budgetSvc := service.NewBudgetService(financialStore)
+	corporateSvc := service.NewCorporateFinancialsService(financialStore)
+
 	// Instantiate handlers
 	projects := &ProjectHandler{}
 	schedule := &ScheduleHandler{}
-	financials := &FinancialsHandler{}
+	financials := NewFinancialsHandler(budgetSvc, corporateSvc)
 	pipeline := &PipelineHandler{}
 	procurement := &ProcurementHandler{}
 	feed := &FeedHandler{}

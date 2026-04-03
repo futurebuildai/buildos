@@ -31,7 +31,7 @@ func NewRegistry(pool *pgxpool.Pool, logger *slog.Logger) (*Registry, error) {
 	river.AddWorker(workers, &DailyBriefingWorker{})
 	river.AddWorker(workers, &ProcurementCheckWorker{})
 	river.AddWorker(workers, &HydrateProjectWorker{})
-	river.AddWorker(workers, &CorporateRollupWorker{})
+	river.AddWorker(workers, NewCorporateRollupWorker(pool))
 	river.AddWorker(workers, &CertificationAlertsWorker{})
 	river.AddWorker(workers, &MaintenanceRemindersWorker{})
 	river.AddWorker(workers, &FieldNotificationRetryWorker{})
