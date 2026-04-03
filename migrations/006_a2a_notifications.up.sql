@@ -1,7 +1,7 @@
--- Sprint 5: A2A webhook log (idempotency dedup) + notification DLQ
+-- Sprint 5: A2A webhook log (idempotency dedup) + notification DLQ enhancements
 
 -- a2a_webhook_log tracks received webhooks for idempotency deduplication
-CREATE TABLE a2a_webhook_log (
+CREATE TABLE IF NOT EXISTS a2a_webhook_log (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     idempotency_key TEXT NOT NULL UNIQUE,
     event_type      TEXT NOT NULL,
@@ -12,21 +12,13 @@ CREATE TABLE a2a_webhook_log (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_a2a_webhook_log_created ON a2a_webhook_log (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_a2a_webhook_log_created ON a2a_webhook_log (created_at DESC);
 
--- field_notification_dlq: dead-letter queue for failed push notifications
-CREATE TABLE field_notification_dlq (
-    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id           UUID NOT NULL REFERENCES users(id),
-    notification_type TEXT NOT NULL,
-    payload           JSONB NOT NULL DEFAULT '{}',
-    retry_count       INT NOT NULL DEFAULT 0,
-    max_retries       INT NOT NULL DEFAULT 6,
-    last_error        TEXT,
-    next_retry_at     TIMESTAMPTZ,
-    status            TEXT NOT NULL DEFAULT 'pending',
-    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
-);
+-- Enhance field_notification_dlq (created in migration 003) with retry tracking columns
+ALTER TABLE field_notification_dlq ADD COLUMN IF NOT EXISTS max_retries INT NOT NULL DEFAULT 6;
+ALTER TABLE field_notification_dlq ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ;
+ALTER TABLE field_notification_dlq ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending';
+ALTER TABLE field_notification_dlq ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE field_notification_dlq ALTER COLUMN payload SET DEFAULT '{}';
 
-CREATE INDEX idx_notification_dlq_status ON field_notification_dlq (status, next_retry_at);
+CREATE INDEX IF NOT EXISTS idx_notification_dlq_status ON field_notification_dlq (status, next_retry_at);
