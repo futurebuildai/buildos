@@ -46,6 +46,14 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	procStore := store.NewProcurementStore(cfg.Pool)
 	procSvc := service.NewProcurementService(procStore, feedSvc)
 
+	// Fleet, HR, and Field Sync services
+	fleetStore := store.NewFleetStore(cfg.Pool)
+	fleetSvc := service.NewFleetService(fleetStore)
+	hrStore := store.NewHRStore(cfg.Pool)
+	hrSvc := service.NewHRService(hrStore)
+	fieldSyncStore := store.NewFieldSyncStore(cfg.Pool)
+	fieldSyncSvc := service.NewFieldSyncService(fieldSyncStore)
+
 	// A2A store (idempotency + webhook log)
 	a2aStore := store.NewA2AStore(cfg.Pool)
 
@@ -56,9 +64,9 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	pipeline := NewPipelineHandler(pipelineSvc)
 	procurement := NewProcurementHandler(procSvc)
 	feed := NewFeedHandler(feedSvc)
-	field := &FieldHandler{}
-	fleet := &FleetHandler{}
-	hr := &HRHandler{}
+	field := NewFieldHandler(fieldSyncSvc)
+	fleet := NewFleetHandler(fleetSvc)
+	hr := NewHRHandler(hrSvc)
 	a2a := NewA2AHandler(cfg.JWKS, a2aStore, feedSvc, procSvc, cfg.Logger)
 
 	// Auth middleware

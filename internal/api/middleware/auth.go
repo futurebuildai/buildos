@@ -33,6 +33,12 @@ func ClaimsFromContext(ctx context.Context) (Claims, bool) {
 	return c, ok
 }
 
+// ContextWithClaims returns a new context with the given Claims injected.
+// Intended for use in tests and dev tooling.
+func ContextWithClaims(ctx context.Context, c Claims) context.Context {
+	return context.WithValue(ctx, claimsContextKey{}, c)
+}
+
 // MustClaimsFromContext extracts Claims and panics if absent.
 // Only use in handlers already protected by Auth middleware.
 func MustClaimsFromContext(ctx context.Context) Claims {
