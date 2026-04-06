@@ -18,6 +18,13 @@ import (
 	"github.com/futurebuild/futurebuild-os/internal/store"
 )
 
+// JobEnqueuer abstracts River job insertion so the A2A handler can enqueue
+// delay-cascade (and other) background jobs without depending on the concrete
+// river.Client generic type.
+type JobEnqueuer interface {
+	EnqueueDelayCascade(ctx context.Context, projectID uuid.UUID) error
+}
+
 // A2AHandler handles the POST /api/v1/a2a/webhook endpoint.
 // This endpoint uses JWS detached signature verification (NOT JWT Bearer auth).
 type A2AHandler struct {
@@ -25,16 +32,20 @@ type A2AHandler struct {
 	a2aStore *store.A2AStore
 	feedSvc  *service.FeedService
 	procSvc  *service.ProcurementService
+	enqueuer JobEnqueuer
+	devMode  bool
 	logger   *slog.Logger
 }
 
 // NewA2AHandler creates a handler for A2A webhook events from FB-Brain.
-func NewA2AHandler(jwks *mw.JWKSProvider, a2aStore *store.A2AStore, feedSvc *service.FeedService, procSvc *service.ProcurementService, logger *slog.Logger) *A2AHandler {
+func NewA2AHandler(jwks *mw.JWKSProvider, a2aStore *store.A2AStore, feedSvc *service.FeedService, procSvc *service.ProcurementService, enqueuer JobEnqueuer, devMode bool, logger *slog.Logger) *A2AHandler {
 	return &A2AHandler{
 		jwks:     jwks,
 		a2aStore: a2aStore,
 		feedSvc:  feedSvc,
 		procSvc:  procSvc,
+		enqueuer: enqueuer,
+		devMode:  devMode,
 		logger:   logger,
 	}
 }
@@ -47,6 +58,7 @@ type a2aWebhookPayload struct {
 	IdempotencyKey string          `json:"idempotency_key"`
 	Timestamp      string          `json:"timestamp"`
 	Issuer         string          `json:"iss"`
+	OrgID          string          `json:"org_id"` // Brain includes the org_id from JWT claims
 }
 
 // Supported event types from FB-Brain A2A webhooks.
@@ -127,8 +139,19 @@ func (h *A2AHandler) ReceiveWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve org ID from payload (or dev fallback)
+	orgID, err := h.resolveOrgID(&payload)
+	if err != nil {
+		h.logger.Error("org_id resolution failed",
+			"trace_id", payload.TraceID,
+			"error", err,
+		)
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid or missing org_id")
+		return
+	}
+
 	// Route to event-specific handler
-	if err := h.routeEvent(r.Context(), &payload); err != nil {
+	if err := h.routeEvent(r.Context(), &payload, orgID); err != nil {
 		h.logger.Error("event handler failed",
 			"event_type", payload.EventType,
 			"trace_id", payload.TraceID,
@@ -148,18 +171,19 @@ func (h *A2AHandler) ReceiveWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 // routeEvent dispatches the webhook payload to the appropriate handler.
-func (h *A2AHandler) routeEvent(ctx context.Context, payload *a2aWebhookPayload) error {
+// orgID has been validated and resolved by the caller.
+func (h *A2AHandler) routeEvent(ctx context.Context, payload *a2aWebhookPayload, orgID uuid.UUID) error {
 	switch payload.EventType {
 	case EventReviewMaterialQuote:
-		return h.handleMaterialQuote(ctx, payload)
+		return h.handleMaterialQuote(ctx, payload, orgID)
 	case EventReviewLaborBid:
-		return h.handleLaborBid(ctx, payload)
+		return h.handleLaborBid(ctx, payload, orgID)
 	case EventUpdateSchedule:
-		return h.handleUpdateSchedule(ctx, payload)
+		return h.handleUpdateSchedule(ctx, payload, orgID)
 	case EventDeliveryConfirmation:
-		return h.handleDeliveryConfirmation(ctx, payload)
+		return h.handleDeliveryConfirmation(ctx, payload, orgID)
 	case EventCreateFeedCard:
-		return h.handleCreateFeedCard(ctx, payload)
+		return h.handleCreateFeedCard(ctx, payload, orgID)
 	default:
 		h.logger.Warn("unknown event type", "event_type", payload.EventType)
 		return nil // Don't fail on unknown events — forward compatibility
@@ -184,7 +208,7 @@ type materialLineItem struct {
 	CurrencyCode   string `json:"currency_code"`
 }
 
-func (h *A2AHandler) handleMaterialQuote(ctx context.Context, webhook *a2aWebhookPayload) error {
+func (h *A2AHandler) handleMaterialQuote(ctx context.Context, webhook *a2aWebhookPayload, orgID uuid.UUID) error {
 	var p materialQuotePayload
 	if err := json.Unmarshal(webhook.Payload, &p); err != nil {
 		return fmt.Errorf("parsing material quote payload: %w", err)
@@ -198,9 +222,6 @@ func (h *A2AHandler) handleMaterialQuote(ctx context.Context, webhook *a2aWebhoo
 		{"label": "Review Quote", "action_type": "open_quote", "payload": map[string]string{"rfq_id": p.RFQID}},
 		{"label": "Dismiss", "action_type": "dismiss"},
 	})
-
-	// Use a default org for system-generated cards
-	orgID := defaultOrgID()
 
 	card := &models.FeedCard{
 		OrgID:    orgID,
@@ -226,7 +247,7 @@ type laborBidPayload struct {
 	AIAnalysis   string `json:"ai_analysis"`
 }
 
-func (h *A2AHandler) handleLaborBid(ctx context.Context, webhook *a2aWebhookPayload) error {
+func (h *A2AHandler) handleLaborBid(ctx context.Context, webhook *a2aWebhookPayload, orgID uuid.UUID) error {
 	var p laborBidPayload
 	if err := json.Unmarshal(webhook.Payload, &p); err != nil {
 		return fmt.Errorf("parsing labor bid payload: %w", err)
@@ -239,8 +260,6 @@ func (h *A2AHandler) handleLaborBid(ctx context.Context, webhook *a2aWebhookPayl
 		{"label": "Review Bid", "action_type": "open_bid", "payload": map[string]string{"rfq_id": p.RFQID}},
 		{"label": "Dismiss", "action_type": "dismiss"},
 	})
-
-	orgID := defaultOrgID()
 
 	card := &models.FeedCard{
 		OrgID:    orgID,
@@ -258,14 +277,15 @@ func (h *A2AHandler) handleLaborBid(ctx context.Context, webhook *a2aWebhookPayl
 
 // updateSchedulePayload matches Brain's update_schedule event.
 type updateSchedulePayload struct {
-	EventType    string   `json:"event_type"`
-	DeliveryDate string   `json:"delivery_date"`
+	EventType    string    `json:"event_type"`
+	ProjectID    string    `json:"project_id"` // UUID of the affected project
+	DeliveryDate string    `json:"delivery_date"`
 	Constraints  struct {
 		WBSCodes []string `json:"wbs_codes"`
 	} `json:"constraints"`
 }
 
-func (h *A2AHandler) handleUpdateSchedule(ctx context.Context, webhook *a2aWebhookPayload) error {
+func (h *A2AHandler) handleUpdateSchedule(ctx context.Context, webhook *a2aWebhookPayload, orgID uuid.UUID) error {
 	var p updateSchedulePayload
 	if err := json.Unmarshal(webhook.Payload, &p); err != nil {
 		return fmt.Errorf("parsing update_schedule payload: %w", err)
@@ -274,8 +294,6 @@ func (h *A2AHandler) handleUpdateSchedule(ctx context.Context, webhook *a2aWebho
 	// Create a feed card notifying the schedule change
 	body := fmt.Sprintf("Schedule update: %s delivery on %s affecting WBS codes: %v",
 		p.EventType, p.DeliveryDate, p.Constraints.WBSCodes)
-
-	orgID := defaultOrgID()
 
 	card := &models.FeedCard{
 		OrgID:    orgID,
@@ -291,13 +309,50 @@ func (h *A2AHandler) handleUpdateSchedule(ctx context.Context, webhook *a2aWebho
 		return fmt.Errorf("creating schedule update card: %w", err)
 	}
 
-	// TODO: In future sprints, trigger CPM recalculation via delay_cascade River job
-	// This requires project ID resolution from WBS codes
-	h.logger.Info("schedule update received, CPM recalculation deferred",
-		"event_type", p.EventType,
-		"delivery_date", p.DeliveryDate,
-		"wbs_codes", p.Constraints.WBSCodes,
-	)
+	// Resolve project ID for CPM recalculation
+	var projectID uuid.UUID
+	if p.ProjectID != "" {
+		pid, parseErr := uuid.Parse(p.ProjectID)
+		if parseErr != nil {
+			h.logger.Warn("invalid project_id in update_schedule payload, falling back to org lookup",
+				"project_id", p.ProjectID, "error", parseErr)
+		} else {
+			projectID = pid
+		}
+	}
+
+	// Fallback: resolve project from org if no explicit project_id
+	if projectID == uuid.Nil {
+		resolved, resolveErr := h.a2aStore.GetProjectIDByRFQ(ctx, orgID)
+		if resolveErr != nil || resolved == nil {
+			h.logger.Warn("could not resolve project for CPM recalculation",
+				"org_id", orgID, "error", resolveErr)
+			return nil // Feed card created; cascade skipped gracefully
+		}
+		projectID = *resolved
+	}
+
+	// Enqueue delay cascade job for CPM recalculation
+	if h.enqueuer != nil {
+		if enqErr := h.enqueuer.EnqueueDelayCascade(ctx, projectID); enqErr != nil {
+			h.logger.Error("failed to enqueue delay_cascade job",
+				"project_id", projectID,
+				"error", enqErr,
+			)
+			// Non-fatal: the feed card was already created
+		} else {
+			h.logger.Info("delay_cascade job enqueued",
+				"project_id", projectID,
+				"event_type", p.EventType,
+				"delivery_date", p.DeliveryDate,
+				"wbs_codes", p.Constraints.WBSCodes,
+			)
+		}
+	} else {
+		h.logger.Warn("no job enqueuer configured, CPM recalculation skipped",
+			"project_id", projectID,
+		)
+	}
 
 	return nil
 }
@@ -309,7 +364,7 @@ type deliveryConfirmationPayload struct {
 	ConvergenceStatus  string `json:"convergence_status"`
 }
 
-func (h *A2AHandler) handleDeliveryConfirmation(ctx context.Context, webhook *a2aWebhookPayload) error {
+func (h *A2AHandler) handleDeliveryConfirmation(ctx context.Context, webhook *a2aWebhookPayload, orgID uuid.UUID) error {
 	var p deliveryConfirmationPayload
 	if err := json.Unmarshal(webhook.Payload, &p); err != nil {
 		return fmt.Errorf("parsing delivery_confirmation payload: %w", err)
@@ -322,8 +377,6 @@ func (h *A2AHandler) handleDeliveryConfirmation(ctx context.Context, webhook *a2
 	if p.ConvergenceStatus == "complete" {
 		priority = models.PriorityLow
 	}
-
-	orgID := defaultOrgID()
 
 	card := &models.FeedCard{
 		OrgID:    orgID,
@@ -347,13 +400,11 @@ type createFeedCardPayload struct {
 	Priority string          `json:"priority"`
 }
 
-func (h *A2AHandler) handleCreateFeedCard(ctx context.Context, webhook *a2aWebhookPayload) error {
+func (h *A2AHandler) handleCreateFeedCard(ctx context.Context, webhook *a2aWebhookPayload, orgID uuid.UUID) error {
 	var p createFeedCardPayload
 	if err := json.Unmarshal(webhook.Payload, &p); err != nil {
 		return fmt.Errorf("parsing create_feed_card payload: %w", err)
 	}
-
-	orgID := defaultOrgID()
 
 	card := &models.FeedCard{
 		OrgID:    orgID,
@@ -369,9 +420,30 @@ func (h *A2AHandler) handleCreateFeedCard(ctx context.Context, webhook *a2aWebho
 	return err
 }
 
-// defaultOrgID returns the dev placeholder org ID for system-generated cards.
-// In production, org context would be extracted from the webhook payload or JWT claims.
-func defaultOrgID() uuid.UUID {
+// resolveOrgID extracts and validates the org_id from the webhook payload.
+// Falls back to the dev placeholder org ID when devMode is true and the
+// payload omits org_id. Returns an error in production if org_id is missing.
+func (h *A2AHandler) resolveOrgID(payload *a2aWebhookPayload) (uuid.UUID, error) {
+	if payload.OrgID != "" {
+		orgID, err := uuid.Parse(payload.OrgID)
+		if err != nil {
+			return uuid.Nil, fmt.Errorf("invalid org_id in webhook payload: %w", err)
+		}
+		return orgID, nil
+	}
+
+	// Fallback: only valid in dev mode
+	if h.devMode {
+		h.logger.Warn("org_id missing from webhook payload, using dev default")
+		return devFallbackOrgID(), nil
+	}
+
+	return uuid.Nil, fmt.Errorf("org_id is required in webhook payload")
+}
+
+// devFallbackOrgID returns the dev placeholder org ID for local development.
+// MUST NOT be used in production — resolveOrgID enforces this.
+func devFallbackOrgID() uuid.UUID {
 	id, _ := uuid.Parse("00000000-0000-0000-0000-000000000001")
 	return id
 }

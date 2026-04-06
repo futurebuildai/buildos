@@ -26,6 +26,7 @@ type RouterConfig struct {
 	CORSAllowedOrigins []string
 	RateLimitRPS       float64
 	RateLimitBurst     int
+	JobEnqueuer        JobEnqueuer // Optional: River-backed job enqueuer for A2A handler
 }
 
 // NewRouter creates the Chi router with all route groups and middleware.
@@ -77,7 +78,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	field := NewFieldHandler(fieldSyncSvc)
 	fleet := NewFleetHandler(fleetSvc)
 	hr := NewHRHandler(hrSvc)
-	a2a := NewA2AHandler(cfg.JWKS, a2aStore, feedSvc, procSvc, cfg.Logger)
+	a2a := NewA2AHandler(cfg.JWKS, a2aStore, feedSvc, procSvc, cfg.JobEnqueuer, cfg.DevBypass, cfg.Logger)
 
 	// Auth middleware
 	authMiddleware := mw.Auth(cfg.JWKS, cfg.IssuerURL, cfg.DevBypass, cfg.Logger)

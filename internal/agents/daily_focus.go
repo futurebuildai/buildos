@@ -26,9 +26,10 @@ type BriefingResult struct {
 
 // DailyFocusAgent generates morning briefing feed cards per project.
 type DailyFocusAgent struct {
-	pool    *pgxpool.Pool
-	feedSvc *service.FeedService
-	logger  *slog.Logger
+	pool         *pgxpool.Pool
+	feedSvc      *service.FeedService
+	logger       *slog.Logger
+	claudeRunner *AgentRunner // nil = SQL heuristics only, set = Claude-powered reasoning
 }
 
 // NewDailyFocusAgent creates a new DailyFocusAgent.
@@ -93,8 +94,26 @@ func (a *DailyFocusAgent) GenerateBriefings(ctx context.Context, orgID uuid.UUID
 }
 
 // generateProjectBriefing builds a briefing for a single project.
-// In MVP, this uses structured queries. Claude AI integration comes later.
+// When claudeRunner is set, delegates to Claude for intelligent analysis.
+// Otherwise falls back to SQL heuristics.
 func (a *DailyFocusAgent) generateProjectBriefing(ctx context.Context, projectID uuid.UUID, projectName string) (*BriefingResult, error) {
+	// Claude-powered path: richer analysis with tool use
+	if a.claudeRunner != nil {
+		result, err := a.processProjectWithClaude(ctx, projectID, projectName)
+		if err != nil {
+			a.logger.Warn("claude briefing failed, falling back to SQL heuristics",
+				"project_id", projectID, "error", err)
+			// Fall through to SQL heuristics below
+		} else {
+			return result, nil
+		}
+	}
+
+	return a.generateProjectBriefingSQL(ctx, projectID, projectName)
+}
+
+// generateProjectBriefingSQL builds a briefing using direct SQL queries (fallback path).
+func (a *DailyFocusAgent) generateProjectBriefingSQL(ctx context.Context, projectID uuid.UUID, projectName string) (*BriefingResult, error) {
 	today := time.Now().UTC().Truncate(24 * time.Hour)
 	tomorrow := today.Add(24 * time.Hour)
 

@@ -1,13 +1,14 @@
 package models
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
 )
 
 // FeedCard represents a user-facing notification/action card.
-// Matches the feed_cards table from migration 003.
+// Matches the feed_cards table from migration 003 + migration 010 enhancements.
 type FeedCard struct {
 	ID           uuid.UUID  `json:"id"`
 	OrgID        uuid.UUID  `json:"org_id"`
@@ -23,6 +24,15 @@ type FeedCard struct {
 	ActionedAt   *time.Time `json:"actioned_at,omitempty"`
 	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`
+
+	// Agent-related fields (migration 010)
+	Headline    *string          `json:"headline,omitempty"`
+	Consequence *string          `json:"consequence,omitempty"`
+	Horizon     *string          `json:"horizon,omitempty"`
+	AgentSource *string          `json:"agent_source,omitempty"`
+	Deadline    *time.Time       `json:"deadline,omitempty"`
+	EngineData  json.RawMessage  `json:"engine_data,omitempty"`
+	TaskID      *uuid.UUID       `json:"task_id,omitempty"`
 }
 
 // FeedPriority constants matching the feed_cards.priority column.
@@ -48,6 +58,7 @@ const (
 	CardTypeWeatherAlert    = "weather_alert"
 	CardTypeSubConfirmation = "sub_confirmation"
 	CardTypeProgress        = "progress_update"
+	CardTypeAgentApproval   = "agent_approval"
 )
 
 // AgentType identifies which autonomous agent generated an action.
@@ -85,3 +96,28 @@ type FeedFilter struct {
 	Limit    int
 	Offset   int
 }
+
+// AgentPendingAction represents a human-in-the-loop approval record.
+// Created when an agent recommends a state-changing action via create_approval_card.
+// The action is executed when a human approves it.
+type AgentPendingAction struct {
+	ID          uuid.UUID       `json:"id"`
+	OrgID       uuid.UUID       `json:"org_id"`
+	CardID      *uuid.UUID      `json:"card_id,omitempty"`
+	AgentSource string          `json:"agent_source"`
+	ActionType  string          `json:"action_type"`
+	ActionData  json.RawMessage `json:"action_data"`
+	Status      string          `json:"status"`
+	ResolvedBy  *string         `json:"resolved_by,omitempty"`
+	ResolvedAt  *time.Time      `json:"resolved_at,omitempty"`
+	ExpiresAt   *time.Time      `json:"expires_at,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+}
+
+// PendingAction status constants.
+const (
+	PendingActionPending  = "pending"
+	PendingActionApproved = "approved"
+	PendingActionRejected = "rejected"
+	PendingActionExpired  = "expired"
+)

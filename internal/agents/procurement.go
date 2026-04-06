@@ -13,9 +13,10 @@ import (
 
 // ProcurementAgent monitors procurement items and generates alerts.
 type ProcurementAgent struct {
-	pool     *pgxpool.Pool
-	procSvc  *service.ProcurementService
-	logger   *slog.Logger
+	pool         *pgxpool.Pool
+	procSvc      *service.ProcurementService
+	logger       *slog.Logger
+	claudeRunner *AgentRunner // nil = template cards only, set = Claude-powered reasoning
 }
 
 // NewProcurementAgent creates a new ProcurementAgent.
@@ -58,6 +59,12 @@ func (a *ProcurementAgent) RunCheck(ctx context.Context) error {
 		}
 
 		if len(changes) > 0 {
+			// Claude-powered path: generate intelligent approval cards
+			if a.claudeRunner != nil {
+				a.runCheckWithClaude(ctx, orgID, changes)
+			}
+
+			// Always create template-based alert cards as baseline
 			if err := a.procSvc.CreateAlertCards(ctx, changes); err != nil {
 				a.logger.Error("failed to create procurement alerts",
 					"org_id", orgID, "error", err)

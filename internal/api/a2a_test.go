@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"log/slog"
 	"testing"
 )
 
@@ -30,7 +31,8 @@ func TestA2AWebhookPayloadParsing(t *testing.T) {
 		"trace_id": "trace-001",
 		"idempotency_key": "key-001",
 		"timestamp": "2026-04-02T14:30:00Z",
-		"iss": "fb-brain"
+		"iss": "fb-brain",
+		"org_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 	}`
 
 	var p a2aWebhookPayload
@@ -49,6 +51,9 @@ func TestA2AWebhookPayloadParsing(t *testing.T) {
 	}
 	if p.Issuer != "fb-brain" {
 		t.Errorf("expected iss=fb-brain, got %s", p.Issuer)
+	}
+	if p.OrgID != "a1b2c3d4-e5f6-7890-abcd-ef1234567890" {
+		t.Errorf("expected org_id=a1b2c3d4-e5f6-7890-abcd-ef1234567890, got %s", p.OrgID)
 	}
 	if p.Payload == nil {
 		t.Error("expected payload to be non-nil")
@@ -189,10 +194,66 @@ func TestCreateFeedCardPayloadParsing(t *testing.T) {
 	}
 }
 
-func TestDefaultOrgID(t *testing.T) {
-	id := defaultOrgID()
+func TestDevFallbackOrgID(t *testing.T) {
+	id := devFallbackOrgID()
 	if id.String() != "00000000-0000-0000-0000-000000000001" {
 		t.Errorf("expected dev placeholder org ID, got %s", id.String())
+	}
+}
+
+func TestResolveOrgID(t *testing.T) {
+	h := &A2AHandler{devMode: true, logger: slog.Default()}
+
+	// Valid org_id in payload
+	payload := &a2aWebhookPayload{OrgID: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"}
+	orgID, err := h.resolveOrgID(payload)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if orgID.String() != "a1b2c3d4-e5f6-7890-abcd-ef1234567890" {
+		t.Errorf("expected org_id from payload, got %s", orgID.String())
+	}
+
+	// Empty org_id falls back in dev mode
+	payload = &a2aWebhookPayload{}
+	orgID, err = h.resolveOrgID(payload)
+	if err != nil {
+		t.Fatalf("expected dev fallback, got error: %v", err)
+	}
+	if orgID.String() != "00000000-0000-0000-0000-000000000001" {
+		t.Errorf("expected dev fallback org ID, got %s", orgID.String())
+	}
+
+	// Empty org_id fails in production mode
+	hProd := &A2AHandler{devMode: false}
+	_, err = hProd.resolveOrgID(payload)
+	if err == nil {
+		t.Error("expected error for missing org_id in production mode")
+	}
+
+	// Invalid UUID format
+	payload = &a2aWebhookPayload{OrgID: "not-a-uuid"}
+	_, err = h.resolveOrgID(payload)
+	if err == nil {
+		t.Error("expected error for invalid UUID format")
+	}
+}
+
+func TestUpdateSchedulePayloadProjectID(t *testing.T) {
+	raw := `{
+		"event_type": "material_delivery",
+		"project_id": "11111111-2222-3333-4444-555555555555",
+		"delivery_date": "2026-05-15",
+		"constraints": {"wbs_codes": ["9.1", "9.2"]}
+	}`
+
+	var p updateSchedulePayload
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		t.Fatalf("failed to parse: %v", err)
+	}
+
+	if p.ProjectID != "11111111-2222-3333-4444-555555555555" {
+		t.Errorf("expected project_id=11111111-2222-3333-4444-555555555555, got %s", p.ProjectID)
 	}
 }
 

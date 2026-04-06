@@ -30,6 +30,12 @@ type Config struct {
 	CORSAllowedOrigins []string
 	RateLimitRPS       float64
 	RateLimitBurst     int
+
+	// AI (Anthropic Claude)
+	AnthropicAPIKey string // ANTHROPIC_API_KEY env var (required for AI features)
+
+	// FutureShade (autonomous execution engine)
+	FutureShadeEnabled bool // FUTURESHADE_ENABLED env var (default: false)
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -55,6 +61,9 @@ func Load() (*Config, error) {
 		CORSAllowedOrigins: getEnvStringSlice("CORS_ALLOWED_ORIGINS", []string{"http://localhost:3000"}),
 		RateLimitRPS:       getEnvFloat64("RATE_LIMIT_RPS", 100),
 		RateLimitBurst:     getEnvInt("RATE_LIMIT_BURST", 200),
+
+		AnthropicAPIKey:    os.Getenv("ANTHROPIC_API_KEY"),
+		FutureShadeEnabled: getEnvBool("FUTURESHADE_ENABLED", false),
 	}, nil
 }
 
