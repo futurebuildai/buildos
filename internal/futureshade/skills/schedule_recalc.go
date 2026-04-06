@@ -10,8 +10,7 @@ import (
 )
 
 // ScheduleRecalcResult holds the output of a schedule recalculation.
-// Defined here to avoid depending on service.ScheduleService directly.
-// TODO: Wire to actual service types when integration is ready.
+// Matches the CPMRecalcResult from the schedule tools package.
 type ScheduleRecalcResult struct {
 	TaskCount         int       `json:"task_count"`
 	CriticalPathCount int       `json:"critical_path_count"`
@@ -19,7 +18,7 @@ type ScheduleRecalcResult struct {
 }
 
 // ScheduleRecalcExecutor defines the interface for schedule recalculation.
-// This avoids a direct dependency on the service package.
+// Implemented by tools.ScheduleEngine.RecalculateSchedule when wired to the physics engine.
 type ScheduleRecalcExecutor interface {
 	RecalculateSchedule(ctx context.Context, projectID, orgID uuid.UUID) (*ScheduleRecalcResult, error)
 }
