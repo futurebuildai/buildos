@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -24,6 +25,11 @@ type Config struct {
 
 	// Dev
 	DevAuthBypass bool
+
+	// Security
+	CORSAllowedOrigins []string
+	RateLimitRPS       float64
+	RateLimitBurst     int
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -45,6 +51,10 @@ func Load() (*Config, error) {
 		BrainIssuerURL: os.Getenv("BRAIN_ISSUER_URL"),
 
 		DevAuthBypass: getEnvBool("DEV_AUTH_BYPASS", false),
+
+		CORSAllowedOrigins: getEnvStringSlice("CORS_ALLOWED_ORIGINS", []string{"http://localhost:3000"}),
+		RateLimitRPS:       getEnvFloat64("RATE_LIMIT_RPS", 100),
+		RateLimitBurst:     getEnvInt("RATE_LIMIT_BURST", 200),
 	}, nil
 }
 
@@ -77,6 +87,31 @@ func getEnvDuration(key string, fallback time.Duration) time.Duration {
 	if v := os.Getenv(key); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			return d
+		}
+	}
+	return fallback
+}
+
+func getEnvFloat64(key string, fallback float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
+	}
+	return fallback
+}
+
+func getEnvStringSlice(key string, fallback []string) []string {
+	if v := os.Getenv(key); v != "" {
+		parts := strings.Split(v, ",")
+		result := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if trimmed := strings.TrimSpace(p); trimmed != "" {
+				result = append(result, trimmed)
+			}
+		}
+		if len(result) > 0 {
+			return result
 		}
 	}
 	return fallback

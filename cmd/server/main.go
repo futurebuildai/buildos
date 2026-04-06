@@ -53,11 +53,14 @@ func run(logger *slog.Logger) error {
 
 	// Build the router with all route groups
 	router := api.NewRouter(api.RouterConfig{
-		Pool:      pool,
-		JWKS:      jwks,
-		IssuerURL: cfg.BrainIssuerURL,
-		DevBypass: cfg.DevAuthBypass,
-		Logger:    logger,
+		Pool:               pool,
+		JWKS:               jwks,
+		IssuerURL:          cfg.BrainIssuerURL,
+		DevBypass:          cfg.DevAuthBypass,
+		Logger:             logger,
+		CORSAllowedOrigins: cfg.CORSAllowedOrigins,
+		RateLimitRPS:       cfg.RateLimitRPS,
+		RateLimitBurst:     cfg.RateLimitBurst,
 	})
 
 	srv := &http.Server{

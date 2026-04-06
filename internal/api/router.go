@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
@@ -17,11 +18,14 @@ import (
 
 // RouterConfig holds all dependencies needed to build the API router.
 type RouterConfig struct {
-	Pool         *pgxpool.Pool
-	JWKS         *mw.JWKSProvider
-	IssuerURL    string
-	DevBypass    bool
-	Logger       *slog.Logger
+	Pool               *pgxpool.Pool
+	JWKS               *mw.JWKSProvider
+	IssuerURL          string
+	DevBypass          bool
+	Logger             *slog.Logger
+	CORSAllowedOrigins []string
+	RateLimitRPS       float64
+	RateLimitBurst     int
 }
 
 // NewRouter creates the Chi router with all route groups and middleware.
@@ -33,6 +37,10 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	r.Use(chimw.RealIP)
 	r.Use(chimw.Recoverer)
 	r.Use(chimw.Logger)
+	r.Use(mw.CORS(cfg.CORSAllowedOrigins))
+	r.Use(mw.SecurityHeaders)
+	r.Use(mw.RateLimit(cfg.RateLimitRPS, cfg.RateLimitBurst))
+	r.Use(mw.MaxBodySize(1 << 20)) // 1 MB
 
 	// Health check (no auth)
 	r.Get("/health", healthHandler(cfg.Pool))
@@ -204,8 +212,17 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	})
 
 	// Serve Lit SPA frontend from frontend/dist (built by Vite)
+	// API routes that don't match get JSON 404; everything else falls through to SPA.
 	spaHandler := newSPAHandler("frontend/dist")
-	r.NotFound(spaHandler)
+	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"code":"NOT_FOUND","message":"endpoint not found"}}`))
+			return
+		}
+		spaHandler(w, r)
+	})
 
 	return r
 }
