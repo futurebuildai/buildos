@@ -11,9 +11,14 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/futurebuild/futurebuild-os/internal/futureshade/skills"
 	"github.com/futurebuild/futurebuild-os/internal/models"
 	"github.com/futurebuild/futurebuild-os/internal/service"
 )
+
+// Compile-time interface satisfaction check: DailyFocusAgent implements
+// skills.DailyFocusExecutor so it can be wired via skills.WireConfig.
+var _ skills.DailyFocusExecutor = (*DailyFocusAgent)(nil)
 
 // BriefingResult holds the output of a daily briefing generation.
 type BriefingResult struct {

@@ -134,6 +134,13 @@ type PhysicsConfig struct {
 	// Default: 0.75
 	SizeAdjustmentExponent float64
 
+	// WorkDaysPerWeek is the number of working days per week for CPM scheduling.
+	// Controls which weekdays are treated as working days in the StandardCalendar.
+	// Valid range: 1-7. Values outside this range are clamped to defaults.
+	// Default: 5 (Monday through Friday).
+	// Set to 6 for Saturday-inclusive schedules, 7 for continuous operations.
+	WorkDaysPerWeek int
+
 	// ConfigVersion for audit traceability.
 	// Logged when schedules are calculated to track which config was used.
 	ConfigVersion string
@@ -145,6 +152,7 @@ func DefaultPhysicsConfig() PhysicsConfig {
 	return PhysicsConfig{
 		StandardHouseSizeSF:    2250.0,
 		SizeAdjustmentExponent: 0.75,
+		WorkDaysPerWeek:        5,
 		ConfigVersion:          "default-v1",
 	}
 }
@@ -157,6 +165,9 @@ func (c PhysicsConfig) WithDefaults() PhysicsConfig {
 	}
 	if c.SizeAdjustmentExponent <= 0 {
 		c.SizeAdjustmentExponent = defaults.SizeAdjustmentExponent
+	}
+	if c.WorkDaysPerWeek <= 0 || c.WorkDaysPerWeek > 7 {
+		c.WorkDaysPerWeek = defaults.WorkDaysPerWeek
 	}
 	if c.ConfigVersion == "" {
 		c.ConfigVersion = defaults.ConfigVersion

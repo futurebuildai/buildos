@@ -8,9 +8,8 @@ import (
 )
 
 // DailyFocusExecutor defines the interface for the daily focus agent.
-// This avoids a direct dependency on the agents package, allowing for
-// circular dependency avoidance and easier testing.
-// TODO: Wire to agents.DailyFocusAgent when integration is ready.
+// This avoids a direct import of the agents package, preventing circular dependencies.
+// Satisfied by agents.DailyFocusAgent — wired via WireConfig in wire.go.
 type DailyFocusExecutor interface {
 	GenerateBriefings(ctx context.Context, orgID uuid.UUID) error
 }

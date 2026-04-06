@@ -8,8 +8,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/futurebuild/futurebuild-os/internal/futureshade/skills"
 	"github.com/futurebuild/futurebuild-os/internal/service"
 )
+
+// Compile-time interface satisfaction check: ProcurementAgent implements
+// skills.ProcurementExecutor so it can be wired via skills.WireConfig.
+var _ skills.ProcurementExecutor = (*ProcurementAgent)(nil)
 
 // ProcurementAgent monitors procurement items and generates alerts.
 type ProcurementAgent struct {

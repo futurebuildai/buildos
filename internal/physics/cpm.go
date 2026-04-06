@@ -75,9 +75,9 @@ type Calendar interface {
 // - Duration represents calendar days, not labor hours
 // - A "5-day task" spans Mon-Fri (5 calendar days, not 40 hours)
 //
-// TODO: Per code review, this should be made configurable per project.
-// Future enhancement: Add WorkHoursPerDay to PhysicsConfig or ProjectSettings
-// to support hour-level precision for labor scheduling.
+// Work week length is configurable per project via PhysicsConfig.WorkDaysPerWeek.
+// Use NewStandardCalendar(workDaysPerWeek) to construct a calendar with
+// the desired work week. Default is 5 (Mon-Fri).
 const WorkDay = 8 * time.Hour
 
 // StandardCalendar implements a configurable work week calendar.
@@ -90,6 +90,31 @@ type StandardCalendar struct {
 	// Holidays is a list of non-working dates. Comparison is by month and day only,
 	// ignoring year (e.g., Dec 25 matches any year's Christmas).
 	Holidays []time.Time
+}
+
+// NewStandardCalendar creates a StandardCalendar with the given number of
+// working days per week. Days are assigned starting from Monday.
+//
+//   - workDaysPerWeek=5 -> Mon-Fri (default)
+//   - workDaysPerWeek=6 -> Mon-Sat
+//   - workDaysPerWeek=7 -> Mon-Sun (no weekends)
+//
+// If workDaysPerWeek is <= 0 or > 7, it defaults to 5 (Mon-Fri).
+// This value is typically sourced from config.PhysicsConfig.WorkDaysPerWeek.
+func NewStandardCalendar(workDaysPerWeek int) *StandardCalendar {
+	if workDaysPerWeek <= 0 || workDaysPerWeek > 7 {
+		workDaysPerWeek = 5
+	}
+
+	// Map count to weekdays starting from Monday.
+	allDays := []time.Weekday{
+		time.Monday, time.Tuesday, time.Wednesday,
+		time.Thursday, time.Friday, time.Saturday, time.Sunday,
+	}
+
+	return &StandardCalendar{
+		WorkDays: allDays[:workDaysPerWeek],
+	}
 }
 
 // SchedulingConfig holds configurable parameters for CPM scheduling.

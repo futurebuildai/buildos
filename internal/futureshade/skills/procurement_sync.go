@@ -6,8 +6,8 @@ import (
 )
 
 // ProcurementExecutor defines the interface for the procurement agent.
-// This avoids a direct dependency on the agents package.
-// TODO: Wire to agents.ProcurementAgent when integration is ready.
+// This avoids a direct import of the agents package, preventing circular dependencies.
+// Satisfied by agents.ProcurementAgent — wired via WireConfig in wire.go.
 type ProcurementExecutor interface {
 	RunCheck(ctx context.Context) error
 }
