@@ -55,9 +55,9 @@ func (svc *ProcurementService) CreateItem(ctx context.Context, item *models.Proc
 	return svc.store.CreateItem(ctx, item)
 }
 
-// GetItem returns a procurement item by ID.
-func (svc *ProcurementService) GetItem(ctx context.Context, itemID uuid.UUID) (*models.ProcurementItem, error) {
-	item, err := svc.store.GetItem(ctx, itemID)
+// GetItem returns a procurement item by ID, scoped to org.
+func (svc *ProcurementService) GetItem(ctx context.Context, orgID, itemID uuid.UUID) (*models.ProcurementItem, error) {
+	item, err := svc.store.GetItem(ctx, orgID, itemID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrProcurementNotFound

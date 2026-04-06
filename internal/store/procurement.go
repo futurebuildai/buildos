@@ -43,15 +43,15 @@ func (s *ProcurementStore) CreateItem(ctx context.Context, item *models.Procurem
 	return id, nil
 }
 
-// GetItem returns a procurement item by ID.
-func (s *ProcurementStore) GetItem(ctx context.Context, itemID uuid.UUID) (*models.ProcurementItem, error) {
+// GetItem returns a procurement item by ID, scoped to org.
+func (s *ProcurementStore) GetItem(ctx context.Context, orgID, itemID uuid.UUID) (*models.ProcurementItem, error) {
 	var item models.ProcurementItem
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, org_id, project_id, description,
 			estimated_cost_cents, estimated_cost_currency_code,
 			status, must_order_date, expected_delivery_date,
 			supplier_name, supplier_contact, created_at, updated_at
-		FROM procurement_items WHERE id = $1`, itemID,
+		FROM procurement_items WHERE id = $1 AND org_id = $2`, itemID, orgID,
 	).Scan(
 		&item.ID, &item.OrgID, &item.ProjectID, &item.Description,
 		&item.EstimatedCostCents, &item.EstimatedCostCurrencyCode,
