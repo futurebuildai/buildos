@@ -563,7 +563,7 @@ func BackwardPass(g *DependencyGraph, schedule map[uuid.UUID]TaskSchedule, cal C
 	}
 
 	if len(schedule) == 0 {
-		return nil, nil
+		return []string{}, nil
 	}
 
 	// Find project end date (max EF across all tasks)

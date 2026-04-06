@@ -2,12 +2,16 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// ErrNoActiveProjects is returned when no active projects exist for an org.
+var ErrNoActiveProjects = errors.New("no active projects for org")
 
 // A2AWebhookLog represents a logged A2A webhook for idempotency.
 type A2AWebhookLog struct {
@@ -252,7 +256,7 @@ func (s *A2AStore) GetProjectIDByRFQ(ctx context.Context, orgID uuid.UUID) (*uui
 	).Scan(&projectID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return nil, nil
+			return nil, ErrNoActiveProjects
 		}
 		return nil, fmt.Errorf("looking up project: %w", err)
 	}

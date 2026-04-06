@@ -44,6 +44,8 @@ func (a *SubLiaisonAgent) WithClaudeRunner(runner *AgentRunner) *SubLiaisonAgent
 
 // ScanPending scans pending subcontractor approvals and generates notification cards.
 // Looks for tasks starting within the next 5 business days that have no confirmed sub.
+// NOTE: Not yet invoked from SubLiaisonScanWorker (which uses procurement-item-based scanning).
+// Will be wired when task-level subcontractor confirmation tracking is activated.
 func (a *SubLiaisonAgent) ScanPending(ctx context.Context) error {
 	a.logger.Info("sub_liaison: scanning for unconfirmed subcontractors")
 
@@ -152,6 +154,8 @@ func (a *SubLiaisonAgent) ScanPending(ctx context.Context) error {
 
 // ProcessInbound handles an inbound message from a subcontractor.
 // Uses Claude for NLU when available, falls back to keyword matching.
+// NOTE: Not yet invoked from a worker or handler. Will be wired when the inbound
+// SMS/email webhook receiver is implemented.
 func (a *SubLiaisonAgent) ProcessInbound(ctx context.Context, contactName, contactCompany, taskName string, taskID, projectID, orgID uuid.UUID, messageBody string) error {
 	a.logger.Info("sub_liaison: processing inbound message",
 		"contact", contactName,

@@ -13,6 +13,8 @@ import (
 
 // StreamAgentRunner executes Claude-powered agent conversations with streaming output.
 // Same tool-use loop as AgentRunner, but streams text deltas to an output channel.
+// StreamRunner is available for future SSE streaming use cases (e.g., real-time
+// agent responses in the field portal).
 type StreamAgentRunner struct {
 	aiClient ai.StreamingClient
 	tools    *tools.Registry

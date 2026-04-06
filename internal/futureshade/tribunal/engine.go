@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -119,7 +120,7 @@ func (e *ConsensusEngine) Review(ctx context.Context, req TribunalRequest) (*Tri
 
 	if err := json.Unmarshal([]byte(cleanText), &finalVerdict); err != nil {
 		// JSON parse failed - defaults above ensure REJECTED status
-		_ = err // logged implicitly via the default summary
+		slog.Debug("tribunal coordinator JSON parse failure", "error", err, "decision_id", decisionID)
 	}
 
 	// Persist Everything
@@ -133,7 +134,7 @@ func (e *ConsensusEngine) Review(ctx context.Context, req TribunalRequest) (*Tri
 		for _, v := range votes {
 			if err := e.saveVote(ctx, v); err != nil {
 				// Log error but don't fail the whole operation for individual vote save failures
-				_ = err
+				slog.Debug("tribunal vote save failure", "error", err, "decision_id", decisionID, "expert_role", v.ExpertRole)
 			}
 		}
 	}

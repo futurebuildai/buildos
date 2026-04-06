@@ -829,7 +829,7 @@ func TestBackwardPass_EmptySchedule(t *testing.T) {
 	criticalPath, err := BackwardPass(g, schedule, &StandardCalendar{}, nil)
 
 	require.NoError(t, err)
-	assert.Nil(t, criticalPath, "Empty schedule should produce nil critical path")
+	assert.Empty(t, criticalPath, "Empty schedule should produce empty critical path")
 }
 
 // TestCalendar_SkipsWeekends verifies that AddWorkingDays correctly skips weekends.
