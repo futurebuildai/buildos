@@ -10,6 +10,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+
+	"github.com/futurebuild/futurebuild-os/internal/a2a"
 )
 
 // Registry holds the River client and workers configuration.
@@ -22,7 +24,12 @@ type Registry struct {
 
 // NewRegistry creates a River worker registry with all job workers registered.
 // It initializes the River client but does not start it — call Start() separately.
-func NewRegistry(pool *pgxpool.Pool, logger *slog.Logger) (*Registry, error) {
+// The emitter parameter is optional; if nil, the A2A dispatch worker logs but does not send.
+func NewRegistry(pool *pgxpool.Pool, logger *slog.Logger, emitter ...*a2a.Emitter) (*Registry, error) {
+	var a2aEmitter *a2a.Emitter
+	if len(emitter) > 0 {
+		a2aEmitter = emitter[0]
+	}
 	workers := river.NewWorkers()
 
 	// Register all job workers.
@@ -36,10 +43,11 @@ func NewRegistry(pool *pgxpool.Pool, logger *slog.Logger) (*Registry, error) {
 	river.AddWorker(workers, NewMaintenanceRemindersWorker(pool))
 	river.AddWorker(workers, NewFieldNotificationRetryWorker(pool))
 	river.AddWorker(workers, NewDelayCascadeWorker(pool))
-	river.AddWorker(workers, NewA2AWebhookDispatchWorker(pool))
+	river.AddWorker(workers, NewA2AWebhookDispatchWorker(pool, a2aEmitter))
 	river.AddWorker(workers, &SubLiaisonScanWorker{})
 	river.AddWorker(workers, NewPipelineAnalyticsWorker(pool))
 	river.AddWorker(workers, NewPermitIssuedTransitionWorker(pool))
+	river.AddWorker(workers, NewDriftDetectionWorker(pool))
 
 	periodicJobs := []*river.PeriodicJob{
 		river.NewPeriodicJob(
@@ -88,6 +96,13 @@ func NewRegistry(pool *pgxpool.Pool, logger *slog.Logger) (*Registry, error) {
 			river.PeriodicInterval(24*time.Hour),
 			func() (river.JobArgs, *river.InsertOpts) {
 				return SubLiaisonScanArgs{}, nil
+			},
+			&river.PeriodicJobOpts{RunOnStart: false},
+		),
+		river.NewPeriodicJob(
+			river.PeriodicInterval(24*time.Hour),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return DriftDetectionArgs{}, nil
 			},
 			&river.PeriodicJobOpts{RunOnStart: false},
 		),

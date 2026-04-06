@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math"
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
+	"github.com/futurebuild/futurebuild-os/internal/a2a"
 	"github.com/futurebuild/futurebuild-os/internal/agents"
 	"github.com/futurebuild/futurebuild-os/internal/models"
 	"github.com/futurebuild/futurebuild-os/internal/physics"
@@ -83,6 +85,12 @@ type PermitIssuedTransitionArgs struct {
 }
 
 func (PermitIssuedTransitionArgs) Kind() string { return "permit_issued_transition" }
+
+type DriftDetectionArgs struct {
+	OrgID uuid.UUID `json:"org_id"`
+}
+
+func (DriftDetectionArgs) Kind() string { return "drift_detection" }
 
 // --- Workers ---
 
@@ -798,12 +806,14 @@ func (w *DelayCascadeWorker) Work(ctx context.Context, job *river.Job[DelayCasca
 // A2AWebhookDispatchWorker sends outbound A2A webhooks from OS to Brain.
 type A2AWebhookDispatchWorker struct {
 	river.WorkerDefaults[A2AWebhookDispatchArgs]
-	pool *pgxpool.Pool
+	pool    *pgxpool.Pool
+	emitter *a2a.Emitter // nil = log-only mode (no emitter configured)
 }
 
 // NewA2AWebhookDispatchWorker creates a worker with database access.
-func NewA2AWebhookDispatchWorker(pool *pgxpool.Pool) *A2AWebhookDispatchWorker {
-	return &A2AWebhookDispatchWorker{pool: pool}
+// If emitter is nil, the worker logs dispatches but does not send them.
+func NewA2AWebhookDispatchWorker(pool *pgxpool.Pool, emitter *a2a.Emitter) *A2AWebhookDispatchWorker {
+	return &A2AWebhookDispatchWorker{pool: pool, emitter: emitter}
 }
 
 func (w *A2AWebhookDispatchWorker) Work(ctx context.Context, job *river.Job[A2AWebhookDispatchArgs]) error {
@@ -812,16 +822,34 @@ func (w *A2AWebhookDispatchWorker) Work(ctx context.Context, job *river.Job[A2AW
 		"trace_id", job.Args.TraceID,
 	)
 
-	// TODO: In production, this would:
-	// 1. Sign the payload with JWS RS256 (OS signing key)
-	// 2. Send POST to Brain's A2A webhook endpoint
-	// 3. Handle retries with exponential backoff
-	// For now, log the dispatch and mark as completed.
-	slog.InfoContext(ctx, "a2a_webhook_dispatch: completed (simulated)",
+	if w.emitter == nil {
+		slog.InfoContext(ctx, "a2a_webhook_dispatch: no emitter configured, skipping",
+			"event_type", job.Args.EventType,
+			"trace_id", job.Args.TraceID,
+		)
+		return nil
+	}
+
+	// Emit the webhook via the JWS-signed A2A emitter.
+	// The payload from the job args is a raw JSON string; send as-is.
+	var payload any
+	if job.Args.Payload != "" {
+		payload = json.RawMessage(job.Args.Payload)
+	}
+
+	if err := w.emitter.Emit(ctx, job.Args.EventType, payload); err != nil {
+		slog.ErrorContext(ctx, "a2a_webhook_dispatch: emit failed",
+			"event_type", job.Args.EventType,
+			"trace_id", job.Args.TraceID,
+			"error", err,
+		)
+		return fmt.Errorf("a2a webhook dispatch: %w", err)
+	}
+
+	slog.InfoContext(ctx, "a2a_webhook_dispatch: completed",
 		"event_type", job.Args.EventType,
 		"trace_id", job.Args.TraceID,
 	)
-
 	return nil
 }
 
@@ -912,5 +940,36 @@ func (w *PermitIssuedTransitionWorker) Work(ctx context.Context, job *river.Job[
 		"project_id", prospect.ProjectID,
 		"stage", prospect.PipelineStage,
 	)
+	return nil
+}
+
+// DriftDetectionWorker runs the drift detection agent for a specific org.
+// Analyzes actual vs. predicted task durations and emits calibration_drift feed cards.
+// Periodic: daily at 07:00 UTC.
+type DriftDetectionWorker struct {
+	river.WorkerDefaults[DriftDetectionArgs]
+	pool *pgxpool.Pool
+}
+
+// NewDriftDetectionWorker creates a worker with database access.
+func NewDriftDetectionWorker(pool *pgxpool.Pool) *DriftDetectionWorker {
+	return &DriftDetectionWorker{pool: pool}
+}
+
+func (w *DriftDetectionWorker) Work(ctx context.Context, job *river.Job[DriftDetectionArgs]) error {
+	slog.InfoContext(ctx, "drift_detection: starting", "org_id", job.Args.OrgID)
+
+	feedStore := store.NewFeedStore(w.pool)
+	feedSvc := service.NewFeedService(feedStore)
+	feedWriter := agents.NewPgFeedWriter(feedSvc.CreateCard)
+
+	driftRepo := agents.NewPgDriftRepository(w.pool)
+	agent := agents.NewDriftDetectionAgent(driftRepo).WithFeedWriter(feedWriter)
+
+	if err := agent.Execute(ctx); err != nil {
+		return fmt.Errorf("drift_detection: %w", err)
+	}
+
+	slog.InfoContext(ctx, "drift_detection: completed", "org_id", job.Args.OrgID)
 	return nil
 }

@@ -36,6 +36,10 @@ type Config struct {
 
 	// FutureShade (autonomous execution engine)
 	FutureShadeEnabled bool // FUTURESHADE_ENABLED env var (default: false)
+
+	// A2A (OS -> Brain reverse webhooks)
+	A2ATargetURL     string // A2A_TARGET_URL env var (Brain's webhook endpoint)
+	A2ASigningKeyPath string // A2A_SIGNING_KEY_PATH env var (path to RS256 private key PEM)
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -64,6 +68,9 @@ func Load() (*Config, error) {
 
 		AnthropicAPIKey:    os.Getenv("ANTHROPIC_API_KEY"),
 		FutureShadeEnabled: getEnvBool("FUTURESHADE_ENABLED", false),
+
+		A2ATargetURL:      getEnvStr("A2A_TARGET_URL", "http://localhost:8082/api/v1/a2a/webhook"),
+		A2ASigningKeyPath: os.Getenv("A2A_SIGNING_KEY_PATH"),
 	}, nil
 }
 

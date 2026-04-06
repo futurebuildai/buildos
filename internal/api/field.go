@@ -3,24 +3,38 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/futurebuild/futurebuild-os/internal/agents"
 	mw "github.com/futurebuild/futurebuild-os/internal/api/middleware"
 	"github.com/futurebuild/futurebuild-os/internal/models"
 	"github.com/futurebuild/futurebuild-os/internal/service"
+	"github.com/futurebuild/futurebuild-os/internal/store"
+	"github.com/futurebuild/futurebuild-os/pkg/ai"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // FieldHandler handles field sync endpoints.
 type FieldHandler struct {
-	svc *service.FieldSyncService
+	svc      *service.FieldSyncService
+	aiClient ai.Client     // optional: nil disables vision verification
+	pool     *pgxpool.Pool // for vision store writes
 }
 
 // NewFieldHandler creates a new FieldHandler.
 func NewFieldHandler(svc *service.FieldSyncService) *FieldHandler {
 	return &FieldHandler{svc: svc}
+}
+
+// WithVision enables the vision verification endpoint.
+func (h *FieldHandler) WithVision(aiClient ai.Client, pool *pgxpool.Pool) *FieldHandler {
+	h.aiClient = aiClient
+	h.pool = pool
+	return h
 }
 
 // Sync returns feed cards and tasks updated since the given timestamp.
@@ -235,4 +249,89 @@ func (h *FieldHandler) DailyLog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, r, http.StatusCreated, map[string]any{"id": id, "status": "logged"})
+}
+
+// VerifyProgress uses Claude vision to verify construction progress from a photo.
+// POST /api/v1/field/verify-progress
+func (h *FieldHandler) VerifyProgress(w http.ResponseWriter, r *http.Request) {
+	if h.aiClient == nil || h.pool == nil {
+		writeErrorResponse(w, r, http.StatusServiceUnavailable, "FEATURE_DISABLED", "vision verification is not configured")
+		return
+	}
+
+	claims, ok := mw.ClaimsFromContext(r.Context())
+	if !ok {
+		writeErrorResponse(w, r, http.StatusUnauthorized, "UNAUTHORIZED", "missing claims")
+		return
+	}
+
+	orgID, err := uuid.Parse(claims.OrgID)
+	if err != nil {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid org_id in claims")
+		return
+	}
+
+	var body struct {
+		TaskID           string `json:"task_id"`
+		PhotoURL         string `json:"photo_url"`
+		ExpectedProgress int    `json:"expected_progress"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid JSON body")
+		return
+	}
+
+	taskID, err := uuid.Parse(body.TaskID)
+	if err != nil {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid task_id")
+		return
+	}
+
+	if body.PhotoURL == "" {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "photo_url is required")
+		return
+	}
+
+	if body.ExpectedProgress < 0 || body.ExpectedProgress > 100 {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "expected_progress must be 0-100")
+		return
+	}
+
+	// Run vision verification
+	agent := agents.NewVisionVerificationAgent(h.aiClient)
+	result, err := agent.VerifyProgress(r.Context(), taskID, body.PhotoURL, body.ExpectedProgress)
+	if err != nil {
+		slog.Error("vision verification failed", "task_id", taskID, "error", err)
+		writeErrorResponse(w, r, http.StatusInternalServerError, "AI_ERROR", "vision verification failed")
+		return
+	}
+
+	// Persist the verification result
+	issuesJSON, _ := json.Marshal(result.Issues)
+	visionStore := store.NewVisionStore(h.pool)
+	verificationID, err := visionStore.SaveVerification(r.Context(), &store.VisionVerification{
+		OrgID:             orgID,
+		TaskID:            taskID,
+		PhotoURL:          body.PhotoURL,
+		ExpectedProgress:  body.ExpectedProgress,
+		EstimatedProgress: result.EstimatedProgress,
+		Confidence:        result.Confidence,
+		Notes:             result.Notes,
+		Issues:            issuesJSON,
+		RequiresReview:    result.RequiresReview,
+	})
+	if err != nil {
+		slog.Error("failed to save vision verification", "task_id", taskID, "error", err)
+		// Non-fatal: return the result even if persistence fails
+	}
+
+	writeJSON(w, r, http.StatusOK, map[string]any{
+		"id":                 verificationID,
+		"task_id":            result.TaskID,
+		"estimated_progress": result.EstimatedProgress,
+		"confidence":         result.Confidence,
+		"notes":              result.Notes,
+		"issues":             result.Issues,
+		"requires_review":    result.RequiresReview,
+	})
 }

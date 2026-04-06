@@ -11,6 +11,7 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/futurebuild/futurebuild-os/internal/agents"
 	mw "github.com/futurebuild/futurebuild-os/internal/api/middleware"
 	"github.com/futurebuild/futurebuild-os/internal/service"
 	"github.com/futurebuild/futurebuild-os/internal/store"
@@ -26,7 +27,8 @@ type RouterConfig struct {
 	CORSAllowedOrigins []string
 	RateLimitRPS       float64
 	RateLimitBurst     int
-	JobEnqueuer        JobEnqueuer // Optional: River-backed job enqueuer for A2A handler
+	JobEnqueuer        JobEnqueuer                // Optional: River-backed job enqueuer for A2A handler
+	BidLevelingAgent   *agents.BidLevelingAgent   // Optional: Claude-powered bid comparison (nil = AI not configured)
 }
 
 // NewRouter creates the Chi router with all route groups and middleware.
@@ -79,6 +81,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	fleet := NewFleetHandler(fleetSvc)
 	hr := NewHRHandler(hrSvc)
 	a2a := NewA2AHandler(cfg.JWKS, a2aStore, feedSvc, procSvc, cfg.JobEnqueuer, cfg.DevBypass, cfg.Logger)
+	bidLeveling := NewBidLevelingHandler(cfg.BidLevelingAgent)
 
 	// Auth middleware
 	authMiddleware := mw.Auth(cfg.JWKS, cfg.IssuerURL, cfg.DevBypass, cfg.Logger)
@@ -202,13 +205,24 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		})
 
 		// --------------------------------------------------------
-		// 4. Field Sync — all authenticated roles (primarily field_worker)
+		// 4. Procurement AI — bid leveling (owner, admin only)
+		// --------------------------------------------------------
+		if bidLeveling != nil {
+			r.Route("/api/v1/procurement", func(r chi.Router) {
+				r.Use(mw.RequireRole(mw.RoleOwner, mw.RoleAdmin))
+				r.Post("/bids/analyze", bidLeveling.AnalyzeBids)
+			})
+		}
+
+		// --------------------------------------------------------
+		// 5. Field Sync — all authenticated roles (primarily field_worker)
 		// --------------------------------------------------------
 		r.Route("/api/v1/field", func(r chi.Router) {
 			r.Get("/sync", field.Sync)
 			r.Post("/progress", field.ReportProgress)
 			r.Post("/checkin", field.Checkin)
 			r.Post("/daily-log", field.DailyLog)
+			r.Post("/verify-progress", field.VerifyProgress)
 		})
 	})
 
