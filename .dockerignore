@@ -1,0 +1,11 @@
+.git
+.env
+.env.*
+.agents
+node_modules
+bin
+*.md
+**/*_test.go
+mobile/
+reference-vault/
+.github

@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -49,10 +50,22 @@ func (h *FeedHandler) List(w http.ResponseWriter, r *http.Request) {
 		Status:   r.URL.Query().Get("status"),
 	}
 	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
-		filter.Limit, _ = strconv.Atoi(limitStr)
+		parsed, err := strconv.Atoi(limitStr)
+		if err != nil {
+			slog.Debug("invalid limit query param, using default", "error", err, "value", limitStr)
+			filter.Limit = 20
+		} else {
+			filter.Limit = parsed
+		}
 	}
 	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
-		filter.Offset, _ = strconv.Atoi(offsetStr)
+		parsed, err := strconv.Atoi(offsetStr)
+		if err != nil {
+			slog.Debug("invalid offset query param, using default", "error", err, "value", offsetStr)
+			filter.Offset = 0
+		} else {
+			filter.Offset = parsed
+		}
 	}
 
 	if filter.Limit > 100 {

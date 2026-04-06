@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"math"
 
 	"github.com/futurebuild/futurebuild-os/internal/service"
 	"github.com/futurebuild/futurebuild-os/pkg/ai"
@@ -75,7 +77,9 @@ func RegisterBudgetToolsWithService(r *Registry, budgetSvc *service.BudgetServic
 				CurrencyCode string `json:"currency_code"`
 			}
 			if input != nil {
-				_ = json.Unmarshal(input, &params)
+				if err := json.Unmarshal(input, &params); err != nil {
+					slog.Warn("failed to parse budget summary input", "error", err)
+				}
 			}
 			if params.CurrencyCode == "" {
 				params.CurrencyCode = "USD"
@@ -107,12 +111,14 @@ func RegisterBudgetToolsWithService(r *Registry, budgetSvc *service.BudgetServic
 			// Also count pending invoices
 			var pendingInvoiceCount int
 			var pendingInvoiceCents int64
-			_ = pool.QueryRow(ctx, `
+			if err := pool.QueryRow(ctx, `
 				SELECT COUNT(*), COALESCE(SUM(amount_cents), 0)
 				FROM invoices
 				WHERE project_id = $1 AND currency_code = $2 AND status = 'pending'`,
 				scope.ProjectID, params.CurrencyCode,
-			).Scan(&pendingInvoiceCount, &pendingInvoiceCents)
+			).Scan(&pendingInvoiceCount, &pendingInvoiceCents); err != nil {
+				slog.Warn("failed to query pending invoices for budget summary", "error", err, "project_id", scope.ProjectID)
+			}
 
 			result := map[string]interface{}{
 				"project_id":              scope.ProjectID,
@@ -173,19 +179,24 @@ func RegisterBudgetToolsWithService(r *Registry, budgetSvc *service.BudgetServic
 				avgCostPerSqftCents = 15000 // $150.00
 			}
 
-			estimatedCents := int64(params.SqftDelta * float64(avgCostPerSqftCents))
+			// Use math.Round to prevent truncation bias in float→int conversion.
+		// SqftDelta is inherently float (square footage), so float intermediate is acceptable
+		// for estimation context. Ledger transactions must use pure integer math.
+		estimatedCents := int64(math.Round(params.SqftDelta * float64(avgCostPerSqftCents)))
 
 			// If specific WBS categories provided, try to get category-specific averages
 			var categoryBreakdown []map[string]interface{}
 			if len(params.WBSCategories) > 0 {
 				for _, wbs := range params.WBSCategories {
 					var catAvgCents int64
-					_ = pool.QueryRow(ctx, `
+					if err := pool.QueryRow(ctx, `
 						SELECT COALESCE(AVG(actual_cost_cents), 0)
 						FROM project_budgets
 						WHERE project_id = $1 AND wbs_code = $2`,
 						scope.ProjectID, wbs,
-					).Scan(&catAvgCents)
+					).Scan(&catAvgCents); err != nil {
+						slog.Warn("failed to query category average for cost estimate", "error", err, "wbs_code", wbs)
+					}
 
 					categoryBreakdown = append(categoryBreakdown, map[string]interface{}{
 						"wbs_code":                 wbs,

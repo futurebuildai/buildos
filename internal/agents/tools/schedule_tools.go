@@ -371,9 +371,8 @@ func RegisterScheduleTools(r *Registry) {
 			if err != nil {
 				return "", fmt.Errorf("invalid task_id: %w", err)
 			}
-			_ = taskID
 			return fmt.Sprintf(`{"success":true,"project_id":"%s","task_id":"%s","delay_days":%d,"reason":"%s","message":"Task delay applied"}`,
-				scope.ProjectID, params.TaskID, params.DelayDays, params.Reason), nil
+				scope.ProjectID, taskID, params.DelayDays, params.Reason), nil
 		},
 	})
 

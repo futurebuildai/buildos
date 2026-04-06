@@ -128,10 +128,16 @@ func (g *ExecutionGateway) ExecutePlan(ctx context.Context, decisionID uuid.UUID
 		if g.repo != nil {
 			if execErr != nil {
 				errMsg := execErr.Error()
-				_ = g.repo.UpdateExecutionStatus(ctx, execID, StatusFailed, nil, &errMsg, int(duration.Milliseconds()))
+				if updateErr := g.repo.UpdateExecutionStatus(ctx, execID, StatusFailed, nil, &errMsg, int(duration.Milliseconds())); updateErr != nil {
+					g.logger.Warn("failed to update execution status to failed",
+						"error", updateErr, "execution_id", execID, "skill_id", action.SkillID)
+				}
 			} else {
 				summary := result.Summary
-				_ = g.repo.UpdateExecutionStatus(ctx, execID, StatusCompleted, &summary, nil, int(duration.Milliseconds()))
+				if updateErr := g.repo.UpdateExecutionStatus(ctx, execID, StatusCompleted, &summary, nil, int(duration.Milliseconds())); updateErr != nil {
+					g.logger.Warn("failed to update execution status to completed",
+						"error", updateErr, "execution_id", execID, "skill_id", action.SkillID)
+				}
 			}
 		}
 

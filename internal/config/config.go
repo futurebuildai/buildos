@@ -49,7 +49,7 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("DATABASE_URL is required")
 	}
 
-	return &Config{
+	cfg := &Config{
 		DatabaseURL: dbURL,
 		DBPoolMax:   getEnvInt("DB_POOL_MAX", 25),
 		DBPoolMin:   getEnvInt("DB_POOL_MIN", 5),
@@ -71,7 +71,14 @@ func Load() (*Config, error) {
 
 		A2ATargetURL:      getEnvStr("A2A_TARGET_URL", "http://localhost:8082/api/v1/a2a/webhook"),
 		A2ASigningKeyPath: os.Getenv("A2A_SIGNING_KEY_PATH"),
-	}, nil
+	}
+
+	// Production safety guard: refuse to start with dev-bypass enabled in production.
+	if cfg.DevAuthBypass && os.Getenv("RAILWAY_ENVIRONMENT") == "production" {
+		return nil, fmt.Errorf("FATAL: DEV_AUTH_BYPASS=true is not allowed when RAILWAY_ENVIRONMENT=production")
+	}
+
+	return cfg, nil
 }
 
 func getEnvStr(key, fallback string) string {

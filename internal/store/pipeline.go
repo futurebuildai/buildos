@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -168,10 +169,12 @@ func (s *PipelineStore) ListEstimatesByProspect(ctx context.Context, prospectID 
 func (s *PipelineStore) CreateEstimate(ctx context.Context, e *models.PipelineEstimate) (uuid.UUID, error) {
 	// Auto-increment version
 	var maxVersion int
-	_ = s.pool.QueryRow(ctx,
+	if err := s.pool.QueryRow(ctx,
 		`SELECT COALESCE(MAX(version), 0) FROM pre_construction_estimates WHERE prospect_id = $1`,
 		e.ProspectID,
-	).Scan(&maxVersion)
+	).Scan(&maxVersion); err != nil {
+		slog.Warn("failed to query max estimate version, defaulting to 0", "error", err, "prospect_id", e.ProspectID)
+	}
 
 	lineItems := e.LineItems
 	if lineItems == nil {

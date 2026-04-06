@@ -31,7 +31,7 @@ func (r *Repository) ListDecisions(ctx context.Context, filter ListDecisionsFilt
 		filter.Offset = 0
 	}
 
-	// Build query with conditions
+	// Build query with conditions — org_id is always required for tenant isolation
 	baseQuery := `
 		SELECT
 			d.id,
@@ -47,9 +47,9 @@ func (r *Repository) ListDecisions(ctx context.Context, filter ListDecisionsFilt
 
 	countQuery := `SELECT COUNT(*) FROM tribunal_decisions d`
 
-	var conditions []string
-	var args []interface{}
-	argNum := 1
+	conditions := []string{fmt.Sprintf("d.org_id = $1")}
+	args := []interface{}{filter.OrgID}
+	argNum := 2
 
 	// Add filters
 	if filter.Status != "" {
@@ -139,17 +139,17 @@ func (r *Repository) ListDecisions(ctx context.Context, filter ListDecisionsFilt
 	}, nil
 }
 
-// GetDecision returns a single decision with all its votes.
-func (r *Repository) GetDecision(ctx context.Context, id uuid.UUID) (*DecisionDetail, error) {
+// GetDecision returns a single decision with all its votes, scoped by org_id.
+func (r *Repository) GetDecision(ctx context.Context, orgID, id uuid.UUID) (*DecisionDetail, error) {
 	// Get decision
 	decisionQuery := `
 		SELECT id, case_id, status, category, description, created_at
 		FROM tribunal_decisions
-		WHERE id = $1
+		WHERE id = $1 AND org_id = $2
 	`
 
 	var d DecisionDetail
-	err := r.db.QueryRow(ctx, decisionQuery, id).Scan(
+	err := r.db.QueryRow(ctx, decisionQuery, id, orgID).Scan(
 		&d.ID, &d.CaseID, &d.Status, &d.Category, &d.Description, &d.Timestamp,
 	)
 	if err != nil {
@@ -219,10 +219,10 @@ func extractPolicyLinks(votes []ModelVote) []string {
 // CreateDecision stores a new Tribunal decision.
 func (r *Repository) CreateDecision(ctx context.Context, id uuid.UUID, req TribunalRequest, status DecisionStatus, score float64, summary string) error {
 	query := `
-		INSERT INTO tribunal_decisions (id, case_id, category, description, status, reasoning, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, NOW())
+		INSERT INTO tribunal_decisions (id, org_id, case_id, category, description, status, reasoning, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
 	`
-	_, err := r.db.Exec(ctx, query, id, req.CaseID, req.Category, req.Intent, status, summary)
+	_, err := r.db.Exec(ctx, query, id, req.OrgID, req.CaseID, req.Category, req.Intent, status, summary)
 	if err != nil {
 		return fmt.Errorf("create decision: %w", err)
 	}
@@ -247,12 +247,12 @@ func (r *Repository) CreateVote(ctx context.Context, v ModelVote) error {
 	return nil
 }
 
-// DecisionExistsByCaseID checks if a decision with the given case_id already exists.
+// DecisionExistsByCaseID checks if a decision with the given case_id already exists within the org.
 // Used for idempotency checks.
-func (r *Repository) DecisionExistsByCaseID(ctx context.Context, caseID string) (bool, error) {
-	query := `SELECT EXISTS(SELECT 1 FROM tribunal_decisions WHERE case_id = $1)`
+func (r *Repository) DecisionExistsByCaseID(ctx context.Context, orgID uuid.UUID, caseID string) (bool, error) {
+	query := `SELECT EXISTS(SELECT 1 FROM tribunal_decisions WHERE case_id = $1 AND org_id = $2)`
 	var exists bool
-	err := r.db.QueryRow(ctx, query, caseID).Scan(&exists)
+	err := r.db.QueryRow(ctx, query, caseID, orgID).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("check decision exists: %w", err)
 	}

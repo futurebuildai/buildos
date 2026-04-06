@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -80,7 +81,9 @@ func (s *FeedStore) ListFeedCards(ctx context.Context, orgID uuid.UUID, userID *
 		AND status != 'expired'
 		AND (target_user_id = $2 OR target_role = $3 OR (target_user_id IS NULL AND target_role IS NULL))`
 	var total int
-	_ = s.pool.QueryRow(ctx, countQuery, orgID, userID, role).Scan(&total)
+	if err := s.pool.QueryRow(ctx, countQuery, orgID, userID, role).Scan(&total); err != nil {
+		slog.Warn("failed to query feed card count", "error", err, "org_id", orgID)
+	}
 
 	query += fmt.Sprintf(" ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'urgent' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END, created_at DESC LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
 	args = append(args, limit, offset)

@@ -593,7 +593,10 @@ func (w *FieldNotificationRetryWorker) Work(ctx context.Context, job *river.Job[
 
 	for _, entry := range dlqEntries {
 		if entry.RetryCount >= entry.MaxRetries {
-			_ = a2aStore.FailDLQEntry(ctx, entry.ID, "max retries exceeded")
+			if err := a2aStore.FailDLQEntry(ctx, entry.ID, "max retries exceeded"); err != nil {
+				slog.ErrorContext(ctx, "failed to mark DLQ entry as failed, may cause infinite retry loop",
+					"error", err, "entry_id", entry.ID)
+			}
 			continue
 		}
 
@@ -610,7 +613,10 @@ func (w *FieldNotificationRetryWorker) Work(ctx context.Context, job *river.Job[
 			if entry.RetryCount < len(backoffSchedule) {
 				backoff = backoffSchedule[entry.RetryCount]
 			}
-			_ = a2aStore.IncrementDLQRetry(ctx, entry.ID, err.Error(), backoff)
+			if retryErr := a2aStore.IncrementDLQRetry(ctx, entry.ID, err.Error(), backoff); retryErr != nil {
+				slog.ErrorContext(ctx, "failed to increment DLQ retry count, may cause infinite retry loop",
+					"error", retryErr, "entry_id", entry.ID, "original_error", err.Error())
+			}
 		}
 	}
 
@@ -625,7 +631,10 @@ func (w *FieldNotificationRetryWorker) Work(ctx context.Context, job *river.Job[
 
 	for _, entry := range outboxEntries {
 		if entry.RetryCount >= entry.MaxRetries {
-			_ = a2aStore.FailOutboxEntry(ctx, entry.ID, "max retries exceeded")
+			if err := a2aStore.FailOutboxEntry(ctx, entry.ID, "max retries exceeded"); err != nil {
+				slog.ErrorContext(ctx, "failed to mark outbox entry as failed, may cause infinite retry loop",
+					"error", err, "entry_id", entry.ID)
+			}
 			continue
 		}
 
@@ -647,7 +656,10 @@ func (w *FieldNotificationRetryWorker) Work(ctx context.Context, job *river.Job[
 			if entry.RetryCount < len(backoffSchedule) {
 				backoff = backoffSchedule[entry.RetryCount]
 			}
-			_ = a2aStore.IncrementOutboxRetry(ctx, entry.ID, markErr.Error(), backoff)
+			if retryErr := a2aStore.IncrementOutboxRetry(ctx, entry.ID, markErr.Error(), backoff); retryErr != nil {
+				slog.ErrorContext(ctx, "failed to increment outbox retry count, may cause infinite retry loop",
+					"error", retryErr, "entry_id", entry.ID, "original_error", markErr.Error())
+			}
 		}
 	}
 

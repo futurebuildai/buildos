@@ -124,27 +124,33 @@ func (a *DailyFocusAgent) generateProjectBriefingSQL(ctx context.Context, projec
 
 	// Count today's scheduled tasks
 	var todayTaskCount int
-	_ = a.pool.QueryRow(ctx, `
+	if err := a.pool.QueryRow(ctx, `
 		SELECT COUNT(*) FROM project_tasks
 		WHERE project_id = $1
 			AND scheduled_start >= $2 AND scheduled_start < $3`,
-		projectID, today, tomorrow).Scan(&todayTaskCount)
+		projectID, today, tomorrow).Scan(&todayTaskCount); err != nil {
+		a.logger.Warn("failed to query today's task count for briefing", "error", err, "project_id", projectID)
+	}
 
 	// Count overdue tasks
 	var overdueCount int
-	_ = a.pool.QueryRow(ctx, `
+	if err := a.pool.QueryRow(ctx, `
 		SELECT COUNT(*) FROM project_tasks
 		WHERE project_id = $1
 			AND scheduled_end < $2
 			AND status NOT IN ('completed', 'cancelled')`,
-		projectID, today).Scan(&overdueCount)
+		projectID, today).Scan(&overdueCount); err != nil {
+		a.logger.Warn("failed to query overdue task count for briefing", "error", err, "project_id", projectID)
+	}
 
 	// Check critical procurement items
 	var criticalProcCount int
-	_ = a.pool.QueryRow(ctx, `
+	if err := a.pool.QueryRow(ctx, `
 		SELECT COUNT(*) FROM procurement_items
 		WHERE project_id = $1 AND status = 'CRITICAL'`,
-		projectID).Scan(&criticalProcCount)
+		projectID).Scan(&criticalProcCount); err != nil {
+		a.logger.Warn("failed to query critical procurement count for briefing", "error", err, "project_id", projectID)
+	}
 
 	// Build briefing
 	bullets := []string{

@@ -72,6 +72,7 @@ type DecisionDetail struct {
 
 // ListDecisionsFilter holds query parameters for filtering decisions.
 type ListDecisionsFilter struct {
+	OrgID     uuid.UUID      `json:"org_id"`
 	Limit     int            `json:"limit"`
 	Offset    int            `json:"offset"`
 	Status    DecisionStatus `json:"status,omitempty"`
@@ -90,10 +91,11 @@ type ListDecisionsResponse struct {
 
 // TribunalRequest represents a request for a Tribunal decision.
 type TribunalRequest struct {
-	CaseID   string `json:"case_id"`
-	Category string `json:"category"` // Category of the case (e.g., "code_review", "scheduling")
-	Intent   string `json:"intent"`   // The standardized intent or problem description
-	Context  string `json:"context"`  // Additional context (file snapshots, diffs)
+	OrgID    uuid.UUID `json:"org_id"`
+	CaseID   string    `json:"case_id"`
+	Category string    `json:"category"` // Category of the case (e.g., "code_review", "scheduling")
+	Intent   string    `json:"intent"`   // The standardized intent or problem description
+	Context  string    `json:"context"`  // Additional context (file snapshots, diffs)
 }
 
 // TribunalResponse represents the final consensus decision.

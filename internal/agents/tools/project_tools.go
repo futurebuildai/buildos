@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/futurebuild/futurebuild-os/pkg/ai"
@@ -39,7 +40,9 @@ func RegisterProjectTools(r *Registry) {
 				StatusFilter string `json:"status_filter"`
 			}
 			if input != nil {
-				_ = json.Unmarshal(input, &params)
+				if err := json.Unmarshal(input, &params); err != nil {
+					slog.Warn("failed to parse list_tasks input", "error", err)
+				}
 			}
 			return fmt.Sprintf(`{"project_id":"%s","tasks":[],"total":0,"filter":"%s","message":"Task list (stub)"}`,
 				scope.ProjectID, params.StatusFilter), nil
@@ -74,7 +77,7 @@ func RegisterProjectTools(r *Registry) {
 				return "", fmt.Errorf("parse input: %w", err)
 			}
 			// TODO: wire to real WeatherService.GetForecast
-			return fmt.Sprintf(`{"latitude":%.4f,"longitude":%.4f,"forecast":[],"message":"Weather forecast (stub)"}`,
+			return fmt.Sprintf(`{"latitude":%.4f,"longitude":%.4f,"status":"unavailable","forecast":[],"message":"Weather forecast integration pending"}`,
 				params.Latitude, params.Longitude), nil
 		},
 	})
@@ -158,13 +161,16 @@ func RegisterProjectToolsWithPool(r *Registry, pool *pgxpool.Pool) {
 			// Enrich with budget totals
 			var totalEstimatedCents, totalActualCents int64
 			var budgetCurrency string
-			_ = pool.QueryRow(ctx, `
+			if err := pool.QueryRow(ctx, `
 				SELECT COALESCE(SUM(estimated_cost_cents), 0),
 					   COALESCE(SUM(actual_cost_cents), 0),
 					   COALESCE(MAX(estimated_cost_currency_code), 'USD')
 				FROM project_budgets WHERE project_id = $1`,
 				scope.ProjectID,
-			).Scan(&totalEstimatedCents, &totalActualCents, &budgetCurrency)
+			).Scan(&totalEstimatedCents, &totalActualCents, &budgetCurrency); err != nil {
+				slog.Warn("failed to query budget totals for project details", "error", err, "project_id", scope.ProjectID)
+				budgetCurrency = "USD"
+			}
 
 			result := map[string]interface{}{
 				"project":                   p,
@@ -191,7 +197,9 @@ func RegisterProjectToolsWithPool(r *Registry, pool *pgxpool.Pool) {
 				StatusFilter string `json:"status_filter"`
 			}
 			if input != nil {
-				_ = json.Unmarshal(input, &params)
+				if err := json.Unmarshal(input, &params); err != nil {
+					slog.Warn("failed to parse list_tasks input", "error", err)
+				}
 			}
 
 			query := `
@@ -338,13 +346,15 @@ func RegisterProjectToolsWithPool(r *Registry, pool *pgxpool.Pool) {
 			// On-track heuristic: no blocked tasks and no overdue incomplete tasks
 			var overdueCount int
 			today := time.Now().UTC().Truncate(24 * time.Hour)
-			_ = pool.QueryRow(ctx, `
+			if err := pool.QueryRow(ctx, `
 				SELECT COUNT(*) FROM project_tasks
 				WHERE project_id = $1
 					AND planned_end < $2
 					AND status NOT IN ('Completed')`,
 				scope.ProjectID, today,
-			).Scan(&overdueCount)
+			).Scan(&overdueCount); err != nil {
+				slog.Warn("failed to query overdue task count for forecast", "error", err, "project_id", scope.ProjectID)
+			}
 			forecast.OnTrack = (forecast.BlockedTasks == 0 && overdueCount == 0)
 
 			b, _ := json.Marshal(forecast)
@@ -368,7 +378,7 @@ func RegisterProjectToolsWithPool(r *Registry, pool *pgxpool.Pool) {
 				return "", fmt.Errorf("parse input: %w", err)
 			}
 			// TODO: wire to real WeatherService.GetForecast
-			return fmt.Sprintf(`{"latitude":%.4f,"longitude":%.4f,"forecast":[],"message":"Weather forecast (stub — integration pending)"}`,
+			return fmt.Sprintf(`{"latitude":%.4f,"longitude":%.4f,"status":"unavailable","forecast":[],"message":"Weather forecast integration pending"}`,
 				params.Latitude, params.Longitude), nil
 		},
 	})
