@@ -9,7 +9,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	mw "github.com/futurebuild/futurebuild-os/internal/api/middleware"
 	"github.com/futurebuild/futurebuild-os/internal/models"
 	"github.com/futurebuild/futurebuild-os/internal/service"
 )
@@ -190,8 +189,6 @@ func (h *HRHandler) ListCertifications(w http.ResponseWriter, r *http.Request) {
 		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid employee ID")
 		return
 	}
-
-	_ = mw.MustClaimsFromContext(r.Context()) // Auth check
 
 	certs, err := h.hrSvc.ListCertifications(r.Context(), employeeID)
 	if err != nil {

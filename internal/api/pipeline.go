@@ -9,7 +9,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	mw "github.com/futurebuild/futurebuild-os/internal/api/middleware"
 	"github.com/futurebuild/futurebuild-os/internal/models"
 	"github.com/futurebuild/futurebuild-os/internal/service"
 )
@@ -312,8 +311,6 @@ func (h *PipelineHandler) CreatePermit(w http.ResponseWriter, r *http.Request) {
 		writeErrorResponse(w, r, http.StatusBadRequest, "INVALID_PROSPECT_ID", "invalid prospect ID")
 		return
 	}
-
-	_ = mw.MustClaimsFromContext(r.Context()) // ensure auth
 
 	var req createPermitRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

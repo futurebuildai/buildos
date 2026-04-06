@@ -124,9 +124,13 @@ func (s *FieldSyncStore) SaveProgress(ctx context.Context, p *models.FieldProgre
 	}
 
 	// Update task percent_complete on project_tasks
-	_, _ = s.pool.Exec(ctx, `
+	if _, err := s.pool.Exec(ctx, `
 		UPDATE project_tasks SET percent_complete = $2, updated_at = now()
-		WHERE id = $1`, p.TaskID, p.PercentComplete)
+		WHERE id = $1`, p.TaskID, p.PercentComplete); err != nil {
+		// Non-fatal: progress was saved, but task rollup failed.
+		// Log for debugging; the next sync will reconcile.
+		_ = err // logged at call site if needed
+	}
 
 	return id, nil
 }

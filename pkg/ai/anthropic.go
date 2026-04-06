@@ -194,8 +194,9 @@ func (c *AnthropicClient) StreamGenerateContent(ctx context.Context, req Generat
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	// Use a longer timeout client for streaming (no overall timeout - context controls)
-	streamClient := &http.Client{}
+	// Streaming uses context for cancellation. Add a 10-minute dial/TLS backstop
+	// to prevent leaked connections if the caller forgets to cancel the context.
+	streamClient := &http.Client{Timeout: 10 * time.Minute}
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", anthropicBaseURL, bytes.NewBuffer(reqBody))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
