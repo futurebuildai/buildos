@@ -101,6 +101,53 @@ func getEnvFloat64(key string, fallback float64) float64 {
 	return fallback
 }
 
+// =============================================================================
+// Physics Engine Configuration
+// =============================================================================
+
+// PhysicsConfig holds tunable physics engine parameters.
+// These control the DHSM (Duration & House Size Model) calculations.
+// See CPM_RES_MODEL_SPEC.md Section 11.2.1
+type PhysicsConfig struct {
+	// StandardHouseSizeSF is the baseline GSF where SAF = 1.0.
+	// Default: 2250.0 square feet.
+	StandardHouseSizeSF float64
+
+	// SizeAdjustmentExponent is the power curve for duration scaling.
+	// SAF = (GSF / StandardHouseSizeSF) ^ SizeAdjustmentExponent
+	// Default: 0.75
+	SizeAdjustmentExponent float64
+
+	// ConfigVersion for audit traceability.
+	// Logged when schedules are calculated to track which config was used.
+	ConfigVersion string
+}
+
+// DefaultPhysicsConfig returns a PhysicsConfig with safe production defaults.
+// FAANG Threshold: Zero-value safety - if config is unset, use sensible defaults.
+func DefaultPhysicsConfig() PhysicsConfig {
+	return PhysicsConfig{
+		StandardHouseSizeSF:    2250.0,
+		SizeAdjustmentExponent: 0.75,
+		ConfigVersion:          "default-v1",
+	}
+}
+
+// WithDefaults returns a PhysicsConfig with zero values replaced by defaults.
+func (c PhysicsConfig) WithDefaults() PhysicsConfig {
+	defaults := DefaultPhysicsConfig()
+	if c.StandardHouseSizeSF <= 0 {
+		c.StandardHouseSizeSF = defaults.StandardHouseSizeSF
+	}
+	if c.SizeAdjustmentExponent <= 0 {
+		c.SizeAdjustmentExponent = defaults.SizeAdjustmentExponent
+	}
+	if c.ConfigVersion == "" {
+		c.ConfigVersion = defaults.ConfigVersion
+	}
+	return c
+}
+
 func getEnvStringSlice(key string, fallback []string) []string {
 	if v := os.Getenv(key); v != "" {
 		parts := strings.Split(v, ",")
