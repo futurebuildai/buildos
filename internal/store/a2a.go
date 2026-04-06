@@ -140,6 +140,94 @@ func (s *A2AStore) CompleteDLQEntry(ctx context.Context, entryID uuid.UUID) erro
 	return err
 }
 
+// NotificationOutboxEntry represents a pending outbound notification.
+type NotificationOutboxEntry struct {
+	ID               uuid.UUID `json:"id"`
+	UserID           uuid.UUID `json:"user_id"`
+	OrgID            uuid.UUID `json:"org_id"`
+	NotificationType string    `json:"notification_type"`
+	Title            string    `json:"title"`
+	Body             string    `json:"body"`
+	Payload          []byte    `json:"payload,omitempty"`
+	Status           string    `json:"status"`
+	RetryCount       int       `json:"retry_count"`
+	MaxRetries       int       `json:"max_retries"`
+	LastError        *string   `json:"last_error,omitempty"`
+}
+
+// InsertOutboxEntry adds a notification to the outbox for delivery.
+func (s *A2AStore) InsertOutboxEntry(ctx context.Context, entry *NotificationOutboxEntry) (uuid.UUID, error) {
+	var id uuid.UUID
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO notification_outbox (user_id, org_id, notification_type, title, body, payload, status)
+		VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+		RETURNING id`,
+		entry.UserID, entry.OrgID, entry.NotificationType, entry.Title, entry.Body, entry.Payload,
+	).Scan(&id)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("inserting outbox entry: %w", err)
+	}
+	return id, nil
+}
+
+// ListPendingOutboxEntries returns outbox notifications ready for delivery.
+func (s *A2AStore) ListPendingOutboxEntries(ctx context.Context, limit int) ([]NotificationOutboxEntry, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, user_id, org_id, notification_type, title, body, payload,
+			status, retry_count, max_retries, last_error
+		FROM notification_outbox
+		WHERE status = 'pending'
+			AND (next_retry_at IS NULL OR next_retry_at <= now())
+			AND retry_count < max_retries
+		ORDER BY created_at
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("listing pending outbox entries: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []NotificationOutboxEntry
+	for rows.Next() {
+		var e NotificationOutboxEntry
+		if err := rows.Scan(&e.ID, &e.UserID, &e.OrgID, &e.NotificationType,
+			&e.Title, &e.Body, &e.Payload, &e.Status, &e.RetryCount,
+			&e.MaxRetries, &e.LastError); err != nil {
+			return nil, fmt.Errorf("scanning outbox entry: %w", err)
+		}
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}
+
+// MarkOutboxSent marks an outbox entry as successfully sent.
+func (s *A2AStore) MarkOutboxSent(ctx context.Context, entryID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE notification_outbox SET status = 'sent', sent_at = now(), updated_at = now()
+		WHERE id = $1`, entryID)
+	return err
+}
+
+// IncrementOutboxRetry bumps the retry count and sets the next retry time.
+func (s *A2AStore) IncrementOutboxRetry(ctx context.Context, entryID uuid.UUID, lastError string, backoffSeconds int) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE notification_outbox SET
+			retry_count = retry_count + 1,
+			last_error = $2,
+			next_retry_at = now() + ($3 || ' seconds')::interval,
+			updated_at = now()
+		WHERE id = $1`, entryID, lastError, fmt.Sprintf("%d", backoffSeconds))
+	return err
+}
+
+// FailOutboxEntry marks an outbox entry as permanently failed.
+func (s *A2AStore) FailOutboxEntry(ctx context.Context, entryID uuid.UUID, lastError string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE notification_outbox SET
+			status = 'failed', last_error = $2, updated_at = now()
+		WHERE id = $1`, entryID, lastError)
+	return err
+}
+
 // UpdateProcurementStatus updates a procurement item's status by item ID.
 func (s *A2AStore) UpdateProcurementStatus(ctx context.Context, itemID uuid.UUID, status string) error {
 	tag, err := s.pool.Exec(ctx, `

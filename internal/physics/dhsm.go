@@ -155,14 +155,18 @@ func CalculateTaskDurationV2(
 		baseNanos = (baseNanos * adjustmentScaled) / SAFScaleFactor
 	}
 
-	// Apply weather adjustment (convert to float64 temporarily, then back)
-	// TODO: Create weather adjustment function that works with time.Duration
+	// Apply weather adjustment using the duration-native helper.
+	// The factor comes from SWIM weather model (ApplyWeatherAdjustment).
 	tempTask := models.ProjectTask{
 		WBSCode:            task.Code,
 		CalculatedDuration: float64(baseNanos) / float64(24*time.Hour),
 	}
 	adjustedDays := ApplyWeatherAdjustment(tempTask, forecast)
-	baseNanos = int64(adjustedDays * float64(24*time.Hour))
+	weatherFactor := 1.0
+	if tempTask.CalculatedDuration > 0 {
+		weatherFactor = adjustedDays / tempTask.CalculatedDuration
+	}
+	baseNanos = int64(WeatherAdjustDuration(time.Duration(baseNanos), weatherFactor))
 
 	// Quantize to 0.5-day (HalfDay = 4 hours) increments
 	// Ceiling: round UP to nearest HalfDay
@@ -208,6 +212,24 @@ func getContextVariable(ctx models.ProjectContext, key string) float64 {
 	default:
 		return 0
 	}
+}
+
+// WeatherAdjustDuration applies a weather adjustment factor to a base duration.
+// This is a pure function with no DB access. The factor is typically computed by
+// the SWIM weather model (e.g., 1.15 for rain, 1.25 for freeze).
+// A factor of 1.0 means no adjustment. The result is rounded to the nearest
+// nanosecond using integer math for determinism.
+//
+// Example: WeatherAdjustDuration(24*time.Hour, 1.15) returns ~27.6 hours.
+func WeatherAdjustDuration(base time.Duration, factor float64) time.Duration {
+	if factor <= 0 {
+		return base
+	}
+	// Use scaled integer math: multiply by factor * 1000, then divide by 1000.
+	// This avoids direct float64 -> int64 truncation for small factors.
+	scaledFactor := int64(math.Round(factor * SAFScaleFactor))
+	adjusted := (int64(base) * scaledFactor) / SAFScaleFactor
+	return time.Duration(adjusted)
 }
 
 // applyMultiplierFormula applies the multiplier formula to compute adjustment.

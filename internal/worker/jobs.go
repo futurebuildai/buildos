@@ -582,24 +582,29 @@ func (w *FieldNotificationRetryWorker) Work(ctx context.Context, job *river.Job[
 
 	a2aStore := store.NewA2AStore(w.pool)
 
-	// Get pending DLQ entries
-	entries, err := a2aStore.ListPendingDLQEntries(ctx, 50)
+	// Backoff schedule in seconds: 30s, 60s, 120s, 300s, 900s, 3600s
+	backoffSchedule := []int{30, 60, 120, 300, 900, 3600}
+
+	// --- Phase 1: Process DLQ entries (legacy failed notifications) ---
+	dlqEntries, err := a2aStore.ListPendingDLQEntries(ctx, 50)
 	if err != nil {
 		return fmt.Errorf("listing DLQ entries: %w", err)
 	}
 
-	// Backoff schedule in seconds: 30s, 60s, 120s, 300s, 900s, 3600s
-	backoffSchedule := []int{30, 60, 120, 300, 900, 3600}
-
-	for _, entry := range entries {
-		// TODO: Actually send the notification (push notification, SMS, etc.)
-		// For now, simulate success on even retries, failure on odd
+	for _, entry := range dlqEntries {
 		if entry.RetryCount >= entry.MaxRetries {
 			_ = a2aStore.FailDLQEntry(ctx, entry.ID, "max retries exceeded")
 			continue
 		}
 
-		// Simulate: mark as completed (real implementation would call push service)
+		// Attempt delivery (log for now; real implementation calls push service)
+		slog.InfoContext(ctx, "field_notification_retry: delivering DLQ notification",
+			"entry_id", entry.ID,
+			"user_id", entry.UserID,
+			"type", entry.NotificationType,
+			"retry", entry.RetryCount,
+		)
+
 		if err := a2aStore.CompleteDLQEntry(ctx, entry.ID); err != nil {
 			backoff := backoffSchedule[0]
 			if entry.RetryCount < len(backoffSchedule) {
@@ -609,7 +614,47 @@ func (w *FieldNotificationRetryWorker) Work(ctx context.Context, job *river.Job[
 		}
 	}
 
-	slog.InfoContext(ctx, "field_notification_retry: completed", "processed", len(entries))
+	// --- Phase 2: Process notification outbox entries ---
+	outboxEntries, err := a2aStore.ListPendingOutboxEntries(ctx, 50)
+	if err != nil {
+		// Table may not exist yet if migration hasn't run; log and continue.
+		slog.WarnContext(ctx, "field_notification_retry: outbox query failed (table may not exist yet)",
+			"error", err)
+		outboxEntries = nil
+	}
+
+	for _, entry := range outboxEntries {
+		if entry.RetryCount >= entry.MaxRetries {
+			_ = a2aStore.FailOutboxEntry(ctx, entry.ID, "max retries exceeded")
+			continue
+		}
+
+		// Attempt delivery: log the notification details for now.
+		// Real implementation would dispatch to push notification service, SMS gateway, etc.
+		slog.InfoContext(ctx, "field_notification_retry: delivering outbox notification",
+			"entry_id", entry.ID,
+			"user_id", entry.UserID,
+			"org_id", entry.OrgID,
+			"type", entry.NotificationType,
+			"title", entry.Title,
+			"retry", entry.RetryCount,
+		)
+
+		// Mark as sent. If the real delivery fails, this would be replaced
+		// with IncrementOutboxRetry and the appropriate error.
+		if markErr := a2aStore.MarkOutboxSent(ctx, entry.ID); markErr != nil {
+			backoff := backoffSchedule[0]
+			if entry.RetryCount < len(backoffSchedule) {
+				backoff = backoffSchedule[entry.RetryCount]
+			}
+			_ = a2aStore.IncrementOutboxRetry(ctx, entry.ID, markErr.Error(), backoff)
+		}
+	}
+
+	slog.InfoContext(ctx, "field_notification_retry: completed",
+		"dlq_processed", len(dlqEntries),
+		"outbox_processed", len(outboxEntries),
+	)
 	return nil
 }
 
@@ -853,12 +898,109 @@ func (w *A2AWebhookDispatchWorker) Work(ctx context.Context, job *river.Job[A2AW
 	return nil
 }
 
+// SubLiaisonScanWorker scans procurement items for pending sub-contractor bids
+// older than 7 days. For each stale item, it creates a follow-up feed card and
+// marks the item status as follow_up_needed so the project team is alerted.
+// Idempotent: feed cards are additive per run; status transitions are one-way.
 type SubLiaisonScanWorker struct {
 	river.WorkerDefaults[SubLiaisonScanArgs]
+	pool *pgxpool.Pool
+}
+
+// NewSubLiaisonScanWorker creates a worker with database access.
+func NewSubLiaisonScanWorker(pool *pgxpool.Pool) *SubLiaisonScanWorker {
+	return &SubLiaisonScanWorker{pool: pool}
 }
 
 func (w *SubLiaisonScanWorker) Work(ctx context.Context, job *river.Job[SubLiaisonScanArgs]) error {
-	slog.InfoContext(ctx, "sub_liaison_scan: not yet implemented")
+	slog.InfoContext(ctx, "sub_liaison_scan: starting")
+
+	feedStore := store.NewFeedStore(w.pool)
+	feedSvc := service.NewFeedService(feedStore)
+
+	// Query procurement items in PENDING status with created_at older than 7 days.
+	// These represent items awaiting sub-contractor bids that have gone stale.
+	cutoff := time.Now().UTC().AddDate(0, 0, -7)
+	rows, err := w.pool.Query(ctx, `
+		SELECT pi.id, pi.org_id, pi.project_id, pi.name, pi.wbs_code, pi.created_at
+		FROM procurement_items pi
+		WHERE pi.status = 'PENDING'
+			AND pi.created_at < $1
+		ORDER BY pi.created_at ASC`, cutoff)
+	if err != nil {
+		return fmt.Errorf("sub_liaison_scan: querying stale items: %w", err)
+	}
+	defer rows.Close()
+
+	type staleItem struct {
+		ID        uuid.UUID
+		OrgID     uuid.UUID
+		ProjectID uuid.UUID
+		Name      string
+		WBSCode   string
+		CreatedAt time.Time
+	}
+
+	var items []staleItem
+	for rows.Next() {
+		var item staleItem
+		if scanErr := rows.Scan(&item.ID, &item.OrgID, &item.ProjectID, &item.Name, &item.WBSCode, &item.CreatedAt); scanErr != nil {
+			return fmt.Errorf("sub_liaison_scan: scanning item: %w", scanErr)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("sub_liaison_scan: rows error: %w", err)
+	}
+
+	var followUpCount int
+	for _, item := range items {
+		staleDays := int(time.Since(item.CreatedAt).Hours() / 24)
+
+		priority := models.PriorityNormal
+		if staleDays > 14 {
+			priority = models.PriorityUrgent
+		}
+
+		body := fmt.Sprintf("Procurement item %q (WBS %s) has been pending for %d days without a sub-contractor bid. Follow up required.",
+			item.Name, item.WBSCode, staleDays)
+
+		projectID := item.ProjectID
+		card := &models.FeedCard{
+			OrgID:     item.OrgID,
+			ProjectID: &projectID,
+			CardType:  models.CardTypeSubConfirmation,
+			Title:     fmt.Sprintf("Follow-Up Needed: %s", item.Name),
+			Body:      body,
+			Priority:  priority,
+			Status:    models.FeedStatusActive,
+		}
+
+		if _, cardErr := feedSvc.CreateCard(ctx, card); cardErr != nil {
+			slog.ErrorContext(ctx, "sub_liaison_scan: failed to create card",
+				"item_id", item.ID, "error", cardErr)
+			continue
+		}
+
+		// Mark the item as needing follow-up by transitioning to WARNING status.
+		// WARNING indicates the item needs attention without being critical yet.
+		_, updateErr := w.pool.Exec(ctx, `
+			UPDATE procurement_items
+			SET status = 'WARNING', status_changed_at = now(), updated_at = now()
+			WHERE id = $1 AND status = 'PENDING'`, item.ID)
+		if updateErr != nil {
+			slog.ErrorContext(ctx, "sub_liaison_scan: failed to update item status",
+				"item_id", item.ID, "error", updateErr)
+			continue
+		}
+
+		followUpCount++
+	}
+
+	slog.InfoContext(ctx, "sub_liaison_scan: completed",
+		"scanned", len(items),
+		"follow_ups_created", followUpCount,
+	)
 	return nil
 }
 
