@@ -21,6 +21,7 @@ type RouterConfig struct {
 	BudgetService   BudgetServicer
 	PipelineService PipelineServicer
 	ScheduleService ScheduleServicer
+	FeedService     FeedServicer
 	A2AService      A2AServicer
 	A2AVerifier     JWSVerifier
 }
@@ -44,7 +45,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	financials := NewFinancialsHandler(cfg.BudgetService)
 	pipeline := NewPipelineHandler(cfg.PipelineService)
 	procurement := &ProcurementHandler{}
-	feed := &FeedHandler{}
+	feed := NewFeedHandler(cfg.FeedService)
 	field := &FieldHandler{}
 	fleet := &FleetHandler{}
 	hr := &HRHandler{}
