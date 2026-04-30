@@ -217,6 +217,64 @@ func (s *FinancialsStore) ListLatestARAgingSnapshots(ctx context.Context, tx pgx
 	return out, rows.Err()
 }
 
+// ---------- Corporate rollup (write) ----------
+
+// UpsertCorporateRollupForQuarter aggregates active project_budgets across
+// every org and writes one corporate_budgets row per (org, fiscal_year,
+// quarter, currency_code). Existing rows for the given (year, quarter)
+// are updated in place.
+//
+// Aggregation rules:
+//   - Only projects with status IN ('active', 'completed') contribute.
+//     Archived projects are excluded — they're historical and shouldn't
+//     skew current-quarter totals.
+//   - Each project_budgets row contributes to the bucket matching its
+//     own currency_code. The chk_budget_currency_match constraint
+//     guarantees within-row consistency, so estimated_cost_currency_code
+//     is the canonical bucket key.
+//   - project_count is COUNT(DISTINCT project_id) within each
+//     (org, currency_code) bucket — a single project with budgets in
+//     two currencies counts in both buckets.
+//
+// Returns rows-affected (inserts + updates).
+func (s *FinancialsStore) UpsertCorporateRollupForQuarter(ctx context.Context, tx pgx.Tx, fiscalYear, quarter int) (int64, error) {
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO corporate_budgets (
+			org_id, fiscal_year, quarter, currency_code,
+			total_estimated_cents, total_committed_cents, total_actual_cents,
+			project_count, last_rollup_at, updated_at
+		)
+		SELECT
+			p.org_id,
+			$1::INTEGER,
+			$2::INTEGER,
+			pb.estimated_cost_currency_code,
+			SUM(pb.estimated_cost_cents)::BIGINT,
+			SUM(pb.committed_cost_cents)::BIGINT,
+			SUM(pb.actual_cost_cents)::BIGINT,
+			COUNT(DISTINCT p.id),
+			now(),
+			now()
+		FROM projects p
+		INNER JOIN project_budgets pb ON pb.project_id = p.id
+		WHERE p.status IN ('active', 'completed')
+		GROUP BY p.org_id, pb.estimated_cost_currency_code
+		ON CONFLICT (org_id, fiscal_year, quarter, currency_code)
+		DO UPDATE SET
+			total_estimated_cents = EXCLUDED.total_estimated_cents,
+			total_committed_cents = EXCLUDED.total_committed_cents,
+			total_actual_cents    = EXCLUDED.total_actual_cents,
+			project_count         = EXCLUDED.project_count,
+			last_rollup_at        = now(),
+			updated_at            = now()`,
+		fiscalYear, quarter,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("upsert corporate_budgets: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // ---------- Invoices ----------
 
 // ListInvoices returns invoices for a project, newest first.

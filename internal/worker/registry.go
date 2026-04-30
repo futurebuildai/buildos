@@ -20,9 +20,16 @@ type Registry struct {
 	logger  *slog.Logger
 }
 
+// Dependencies bundles non-trivial services that workers need. Workers
+// without dependencies stay zero-init; new workers gain fields here as
+// they require service-layer access.
+type Dependencies struct {
+	BudgetRunner BudgetRunner // CorporateRollupWorker
+}
+
 // NewRegistry creates a River worker registry with all job workers registered.
 // It initializes the River client but does not start it — call Start() separately.
-func NewRegistry(pool *pgxpool.Pool, logger *slog.Logger) (*Registry, error) {
+func NewRegistry(pool *pgxpool.Pool, logger *slog.Logger, deps Dependencies) (*Registry, error) {
 	workers := river.NewWorkers()
 
 	// Register all job workers.
@@ -31,7 +38,7 @@ func NewRegistry(pool *pgxpool.Pool, logger *slog.Logger) (*Registry, error) {
 	river.AddWorker(workers, &DailyBriefingWorker{})
 	river.AddWorker(workers, &ProcurementCheckWorker{})
 	river.AddWorker(workers, &HydrateProjectWorker{})
-	river.AddWorker(workers, &CorporateRollupWorker{})
+	river.AddWorker(workers, NewCorporateRollupWorker(deps.BudgetRunner))
 	river.AddWorker(workers, &CertificationAlertsWorker{})
 	river.AddWorker(workers, &MaintenanceRemindersWorker{})
 	river.AddWorker(workers, &FieldNotificationRetryWorker{})

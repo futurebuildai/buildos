@@ -228,6 +228,36 @@ func (s *BudgetService) UpdateInvoice(ctx context.Context, callerOrgID uuid.UUID
 	return inv, nil
 }
 
+// ---------- Periodic rollup ----------
+
+// RunCorporateRollup aggregates active project_budgets across every org
+// into one corporate_budgets row per (org, current calendar quarter,
+// currency_code). Idempotent within a quarter: re-runs upsert the same
+// rows. Quarter rollover creates new rows automatically.
+//
+// Returns rows-affected for telemetry (insert + update count).
+func (s *BudgetService) RunCorporateRollup(ctx context.Context) (int64, error) {
+	year, quarter := currentFiscalQuarter(time.Now().UTC())
+	var rows int64
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		var qErr error
+		rows, qErr = s.store.UpsertCorporateRollupForQuarter(ctx, tx, year, quarter)
+		return qErr
+	})
+	if err != nil {
+		return 0, err
+	}
+	return rows, nil
+}
+
+// currentFiscalQuarter returns the calendar year and quarter (1–4) for t.
+// BuildOS uses calendar quarters: Q1=Jan–Mar, Q2=Apr–Jun, Q3=Jul–Sep,
+// Q4=Oct–Dec. If a tenant adopts a non-calendar fiscal year later, the
+// rollup logic will need to learn per-tenant fiscal start months.
+func currentFiscalQuarter(t time.Time) (year, quarter int) {
+	return t.Year(), int(t.Month()-1)/3 + 1
+}
+
 // ---------- helpers ----------
 
 // validateOptionalCurrency validates a currency code if non-empty.

@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/futurebuildai/buildos/internal/config"
+	"github.com/futurebuildai/buildos/internal/service"
 	"github.com/futurebuildai/buildos/internal/store"
 	"github.com/futurebuildai/buildos/internal/worker"
 )
@@ -45,7 +46,13 @@ func run(logger *slog.Logger) error {
 
 	logger.Info("database connected for worker", "max_conns", cfg.DBPoolMax)
 
-	registry, err := worker.NewRegistry(pool, logger)
+	// Stores + services for workers that need service-layer access.
+	financialsStore := store.NewFinancialsStore()
+	budgetService := service.NewBudgetService(pool, financialsStore)
+
+	registry, err := worker.NewRegistry(pool, logger, worker.Dependencies{
+		BudgetRunner: budgetService,
+	})
 	if err != nil {
 		return fmt.Errorf("creating worker registry: %w", err)
 	}

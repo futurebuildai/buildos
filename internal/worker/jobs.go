@@ -2,11 +2,21 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/riverqueue/river"
 )
+
+// BudgetRunner is the dependency surface CorporateRollupWorker needs from
+// the service layer. Defined as an interface here (consumer side) to keep
+// the worker package free of an internal/service import — service already
+// imports worker for River job args, and a back-edge would create a cycle.
+type BudgetRunner interface {
+	RunCorporateRollup(ctx context.Context) (rowsAffected int64, err error)
+}
 
 // --- Job Args (implement river.JobArgs) ---
 
@@ -102,12 +112,35 @@ func (w *HydrateProjectWorker) Work(ctx context.Context, job *river.Job[HydrateP
 	return nil
 }
 
+// CorporateRollupWorker aggregates project_budgets into corporate_budgets
+// once per scheduled run. Idempotent within a calendar quarter; quarter
+// rollover creates new rows automatically. See
+// service.BudgetService.RunCorporateRollup for the aggregation rules.
 type CorporateRollupWorker struct {
 	river.WorkerDefaults[CorporateRollupArgs]
+	Runner BudgetRunner
+}
+
+// NewCorporateRollupWorker panics if runner is nil — wiring error should
+// fail at startup, not at the first scheduled tick.
+func NewCorporateRollupWorker(runner BudgetRunner) *CorporateRollupWorker {
+	if runner == nil {
+		panic("worker: CorporateRollupWorker requires non-nil BudgetRunner")
+	}
+	return &CorporateRollupWorker{Runner: runner}
 }
 
 func (w *CorporateRollupWorker) Work(ctx context.Context, job *river.Job[CorporateRollupArgs]) error {
-	slog.InfoContext(ctx, "corporate_rollup: not yet implemented")
+	started := time.Now()
+	rows, err := w.Runner.RunCorporateRollup(ctx)
+	if err != nil {
+		slog.ErrorContext(ctx, "corporate_rollup failed", "error", err)
+		return fmt.Errorf("corporate_rollup: %w", err)
+	}
+	slog.InfoContext(ctx, "corporate_rollup completed",
+		"rows_affected", rows,
+		"duration_ms", time.Since(started).Milliseconds(),
+	)
 	return nil
 }
 
