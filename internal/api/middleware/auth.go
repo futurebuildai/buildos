@@ -14,6 +14,8 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
+
+	"github.com/futurebuildai/buildos/internal/brain"
 )
 
 // Claims represents the JWT claims issued by The Brain OIDC Provider.
@@ -212,8 +214,12 @@ func Auth(jwks *JWKSProvider, issuerURL, authMode string, logger *slog.Logger) f
 				return
 			}
 
-			// Inject claims into context
+			// Inject claims AND raw token into context. Service-layer
+			// code that calls Brain reads the token from ctx via
+			// brain.TokenFromContext — no need to plumb it through every
+			// service-method signature.
 			ctx := ContextWithClaims(r.Context(), claims)
+			ctx = brain.ContextWithToken(ctx, rawToken)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
