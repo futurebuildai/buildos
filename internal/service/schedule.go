@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
+	"github.com/futurebuildai/buildos/internal/models"
 	"github.com/futurebuildai/buildos/internal/physics"
 	"github.com/futurebuildai/buildos/internal/store"
 	"github.com/futurebuildai/buildos/internal/worker"
@@ -36,12 +38,16 @@ func NewScheduleService(pool *pgxpool.Pool, scheduleStore *store.ScheduleStore, 
 
 // RecalculateSchedule runs the CPM physics engine and persists results.
 // All operations execute within a single pgx.BeginTxFunc transaction to prevent
-// "phantom jobs" that reference data not yet committed.
-func (s *ScheduleService) RecalculateSchedule(ctx context.Context, projectID uuid.UUID) (*physics.CPMResult, time.Duration, error) {
+// "phantom jobs" that reference data not yet committed. Cross-tenant guard:
+// returns ErrNotFound if the project doesn't belong to callerOrgID.
+func (s *ScheduleService) RecalculateSchedule(ctx context.Context, projectID, callerOrgID uuid.UUID) (*physics.CPMResult, time.Duration, error) {
 	var cpmResult *physics.CPMResult
 	var computeTime time.Duration
 
 	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if err := s.scheduleStore.VerifyProjectInOrg(ctx, tx, projectID, callerOrgID); err != nil {
+			return err
+		}
 		// 1. Load tasks and dependencies from DB
 		tasks, err := s.scheduleStore.GetProjectTasks(ctx, tx, projectID)
 		if err != nil {
@@ -133,8 +139,165 @@ func (s *ScheduleService) RecalculateSchedule(ctx context.Context, projectID uui
 	})
 
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, 0, ErrNotFound
+		}
 		return nil, 0, err
 	}
 
 	return cpmResult, computeTime, nil
+}
+
+// GanttView is the response shape for GET /schedule/gantt: the full task
+// list, the IDs of critical-path tasks (in WBS order), and the project
+// end date computed from stored CPM results. Critical path is read from
+// is_critical column rather than re-running the physics engine — the
+// engine results are persisted by RecalculateSchedule.
+type GanttView struct {
+	Tasks        []models.ProjectTask `json:"tasks"`
+	CriticalPath []uuid.UUID          `json:"critical_path"`
+	ProjectEnd   time.Time            `json:"project_end"`
+}
+
+// GetGantt returns the Gantt-shaped view of a project's stored schedule.
+// Returns ErrNotFound for tenant mismatches and missing projects.
+func (s *ScheduleService) GetGantt(ctx context.Context, projectID, callerOrgID uuid.UUID) (GanttView, error) {
+	var view GanttView
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		if err := s.scheduleStore.VerifyProjectInOrg(ctx, tx, projectID, callerOrgID); err != nil {
+			return err
+		}
+		tasks, err := s.scheduleStore.GetProjectTasks(ctx, tx, projectID)
+		if err != nil {
+			return err
+		}
+		view = ganttFromTasks(tasks)
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return GanttView{}, ErrNotFound
+		}
+		return GanttView{}, err
+	}
+	return view, nil
+}
+
+// ganttFromTasks assembles the GanttView from a task slice, picking out
+// is_critical=true tasks (in WBS order — input is pre-sorted) and the
+// project end as the max early_finish across all tasks. A project that
+// has never been recalculated (no CPM results yet) returns zero ProjectEnd
+// and an empty critical path; the frontend can detect this and prompt
+// the user to run /recalculate.
+func ganttFromTasks(tasks []models.ProjectTask) GanttView {
+	view := GanttView{Tasks: tasks, CriticalPath: make([]uuid.UUID, 0)}
+	for _, t := range tasks {
+		if t.IsCritical {
+			view.CriticalPath = append(view.CriticalPath, t.ID)
+		}
+		if t.EarlyFinish != nil && t.EarlyFinish.After(view.ProjectEnd) {
+			view.ProjectEnd = *t.EarlyFinish
+		}
+	}
+	return view
+}
+
+// ListProjectTasksInput controls a task listing.
+type ListProjectTasksInput struct {
+	ProjectID  uuid.UUID
+	OrgID      uuid.UUID
+	Status     string // optional
+	IsCritical *bool  // optional
+}
+
+// ListProjectTasks returns tasks for a project with optional filters.
+// Validates status if provided.
+func (s *ScheduleService) ListProjectTasks(ctx context.Context, in ListProjectTasksInput) ([]models.ProjectTask, error) {
+	if in.Status != "" && !isValidTaskStatus(in.Status) {
+		return nil, fmt.Errorf("%w: status %q is not one of {pending, in_progress, completed}", ErrInvalidInput, in.Status)
+	}
+	var out []models.ProjectTask
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		if err := s.scheduleStore.VerifyProjectInOrg(ctx, tx, in.ProjectID, in.OrgID); err != nil {
+			return err
+		}
+		var qErr error
+		out, qErr = s.scheduleStore.ListProjectTasks(ctx, tx, store.ListTasksParams{
+			ProjectID:  in.ProjectID,
+			Status:     in.Status,
+			IsCritical: in.IsCritical,
+		})
+		return qErr
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return out, nil
+}
+
+// UpdateTaskInput is the service-layer input for partial-updating a task.
+// AssignedCrew uses a pointer-to-slice so callers can distinguish:
+//   nil          → no change
+//   &[]uuid.UUID{} → clear crew
+//   &[]uuid.UUID{ids...} → replace crew
+type UpdateTaskInput struct {
+	TaskID          uuid.UUID
+	ProjectID       uuid.UUID
+	OrgID           uuid.UUID
+	PercentComplete *int
+	Status          *string
+	AssignedCrew    *[]uuid.UUID
+}
+
+// UpdateTask modifies a task. Validates status and percent_complete
+// ranges. Does NOT trigger CPM recalculation — caller must POST
+// /schedule/recalculate to reshuffle the critical path.
+func (s *ScheduleService) UpdateTask(ctx context.Context, in UpdateTaskInput) (models.ProjectTask, error) {
+	if in.PercentComplete != nil && (*in.PercentComplete < 0 || *in.PercentComplete > 100) {
+		return models.ProjectTask{}, fmt.Errorf("%w: percent_complete must be 0..100", ErrInvalidInput)
+	}
+	if in.Status != nil && !isValidTaskStatus(*in.Status) {
+		return models.ProjectTask{}, fmt.Errorf("%w: status %q is not one of {pending, in_progress, completed}", ErrInvalidInput, *in.Status)
+	}
+
+	var task models.ProjectTask
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if err := s.scheduleStore.VerifyProjectInOrg(ctx, tx, in.ProjectID, in.OrgID); err != nil {
+			return err
+		}
+		updated, err := s.scheduleStore.UpdateTask(ctx, tx, store.UpdateTaskParams{
+			TaskID:          in.TaskID,
+			ProjectID:       in.ProjectID,
+			PercentComplete: in.PercentComplete,
+			Status:          in.Status,
+			AssignedCrew:    in.AssignedCrew,
+		})
+		if err != nil {
+			return err
+		}
+		task = updated
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return models.ProjectTask{}, ErrNotFound
+		}
+		return models.ProjectTask{}, err
+	}
+	return task, nil
+}
+
+// isValidTaskStatus is the schedule-side analogue of
+// models.IsValidInvoiceStatus. Project_tasks status enum: pending,
+// in_progress, completed. (Schema CHECK constraint enforces same set.)
+func isValidTaskStatus(s string) bool {
+	switch s {
+	case "pending", "in_progress", "completed":
+		return true
+	default:
+		return false
+	}
 }

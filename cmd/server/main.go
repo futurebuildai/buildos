@@ -76,6 +76,8 @@ func run(logger *slog.Logger) error {
 	budgetService := service.NewBudgetService(pool, financialsStore)
 	pipelineStore := store.NewPipelineStore()
 	pipelineService := service.NewPipelineService(pool, pipelineStore, riverClient)
+	scheduleStore := store.NewScheduleStore()
+	scheduleService := service.NewScheduleService(pool, scheduleStore, riverClient)
 
 	// Build the router with all route groups
 	router := api.NewRouter(api.RouterConfig{
@@ -86,6 +88,7 @@ func run(logger *slog.Logger) error {
 		Logger:          logger,
 		BudgetService:   budgetService,
 		PipelineService: pipelineService,
+		ScheduleService: scheduleService,
 	})
 
 	srv := &http.Server{

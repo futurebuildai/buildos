@@ -20,6 +20,7 @@ type RouterConfig struct {
 	Logger          *slog.Logger
 	BudgetService   BudgetServicer
 	PipelineService PipelineServicer
+	ScheduleService ScheduleServicer
 }
 
 // NewRouter creates the Chi router with all route groups and middleware.
@@ -37,7 +38,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 
 	// Instantiate handlers
 	projects := &ProjectHandler{}
-	schedule := &ScheduleHandler{}
+	schedule := NewScheduleHandler(cfg.ScheduleService)
 	financials := NewFinancialsHandler(cfg.BudgetService)
 	pipeline := NewPipelineHandler(cfg.PipelineService)
 	procurement := &ProcurementHandler{}
