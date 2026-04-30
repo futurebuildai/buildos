@@ -99,6 +99,8 @@ func run(logger *slog.Logger) error {
 	feedService := service.NewFeedService(pool, feedCardsStore, logger)
 	procurementStore := store.NewProcurementStore()
 	procurementService := service.NewProcurementService(pool, procurementStore)
+	fleetStore := store.NewFleetStore()
+	fleetService := service.NewFleetService(pool, fleetStore)
 	a2aService := service.NewA2AService(pool, a2aStore, feedCardsStore, pipelineStore, cfg.DefaultOrgID)
 	a2aVerifier := api.NewJWKSVerifier(jwks) // verifies Brain's JWS using the same JWKS used for JWT validation
 
@@ -114,6 +116,7 @@ func run(logger *slog.Logger) error {
 		ScheduleService:    scheduleService,
 		FeedService:        feedService,
 		ProcurementService: procurementService,
+		FleetService:       fleetService,
 		A2AService:         a2aService,
 		A2AVerifier:        a2aVerifier,
 	})
