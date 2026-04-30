@@ -200,3 +200,58 @@ func (s *ProcurementStore) UpdateProcurementItem(ctx context.Context, tx pgx.Tx,
 	}
 	return item, nil
 }
+
+// RecomputeStatusesParams controls a bulk status sweep.
+//
+// WarningWindowDays defines how many days ahead of must_order_date a
+// row should flip from OK to WARNING. ORDERED rows are never touched
+// (a placed PO is terminal).
+type RecomputeStatusesParams struct {
+	WarningWindowDays int // typically 7
+	Now               time.Time
+}
+
+// RecomputeStatuses transitions every non-ORDERED row whose
+// must_order_date is set, in a single SQL pass:
+//
+//	must_order_date < now          → CRITICAL
+//	must_order_date < now + window → WARNING
+//	otherwise                      → OK
+//
+// status_changed_at is bumped iff status actually changed. Returns the
+// number of rows whose status flipped.
+func (s *ProcurementStore) RecomputeStatuses(ctx context.Context, tx pgx.Tx, p RecomputeStatusesParams) (int64, error) {
+	if p.WarningWindowDays < 0 {
+		return 0, fmt.Errorf("warning window must be >= 0, got %d", p.WarningWindowDays)
+	}
+	if p.Now.IsZero() {
+		p.Now = time.Now().UTC()
+	}
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE procurement_items
+		SET status = computed.new_status,
+		    status_changed_at = CASE
+		      WHEN computed.new_status <> procurement_items.status THEN now()
+		      ELSE procurement_items.status_changed_at
+		    END,
+		    updated_at = now()
+		FROM (
+		  SELECT id,
+		         CASE
+		           WHEN must_order_date < $1::date                 THEN 'CRITICAL'
+		           WHEN must_order_date < ($1::date + $2::int)     THEN 'WARNING'
+		           ELSE 'OK'
+		         END AS new_status
+		  FROM procurement_items
+		  WHERE status <> 'ORDERED' AND must_order_date IS NOT NULL
+		) AS computed
+		WHERE procurement_items.id = computed.id
+		  AND procurement_items.status <> computed.new_status`,
+		p.Now, p.WarningWindowDays,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("recompute procurement statuses: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}

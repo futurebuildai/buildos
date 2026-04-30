@@ -14,7 +14,13 @@ import (
 	"github.com/futurebuildai/buildos/internal/currency"
 	"github.com/futurebuildai/buildos/internal/models"
 	"github.com/futurebuildai/buildos/internal/store"
+	"github.com/futurebuildai/buildos/internal/worker"
 )
+
+// Compile-time check that ProcurementService satisfies the worker
+// package's interface. Catches signature drift at build time rather
+// than at the first scheduled tick.
+var _ worker.ProcurementChecker = (*ProcurementService)(nil)
 
 // Sentinel errors specific to ProcurementService. ErrInvalidInput and
 // ErrNotFound are reused from budget.go (the package-level sentinels
@@ -226,4 +232,38 @@ func (s *ProcurementService) UpdateProcurementItem(ctx context.Context, callerOr
 		return models.ProcurementItem{}, fmt.Errorf("update procurement item: %w", err)
 	}
 	return item, nil
+}
+
+// DefaultProcurementWarningWindowDays is the lead-time horizon at which
+// an OK row flips to WARNING. Picked at 7 days based on the typical
+// residential build cadence — far enough to react, close enough to be
+// actionable. ProcurementCheckWorker scheduled daily; one full warning
+// → critical → expedite cycle gives the contractor a ~7-day runway.
+const DefaultProcurementWarningWindowDays = 7
+
+// RecomputeStatuses runs the daily procurement health sweep, flipping
+// every non-ORDERED row to OK / WARNING / CRITICAL per its
+// must_order_date relative to today + the warning window. Returns the
+// number of rows whose status actually changed (useful for
+// observability — a healthy fleet should mostly produce zero or one
+// per day; thousands of transitions in one tick is a smell).
+//
+// This is the worker-side entrypoint. The worker lives in
+// internal/worker; this method satisfies its consumer-side interface.
+func (s *ProcurementService) RecomputeStatuses(ctx context.Context) (int64, error) {
+	var changed int64
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		got, err := s.store.RecomputeStatuses(ctx, tx, store.RecomputeStatusesParams{
+			WarningWindowDays: DefaultProcurementWarningWindowDays,
+		})
+		if err != nil {
+			return err
+		}
+		changed = got
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("recompute procurement statuses: %w", err)
+	}
+	return changed, nil
 }

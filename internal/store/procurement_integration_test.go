@@ -331,3 +331,106 @@ func TestProcurementStore_UpdateAndStatusChangedAt(t *testing.T) {
 		}
 	})
 }
+
+func TestProcurementStore_RecomputeStatuses_BulkTransition(t *testing.T) {
+	pool := testdb.NewPool(t)
+	s := NewProcurementStore()
+	ctx := context.Background()
+
+	orgID := uuid.New()
+	projectID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Acme Builders")
+	testdb.SeedProject(t, pool, projectID, orgID, "Test Project")
+
+	now := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	window := 7
+
+	// Seed three items with different distance to must_order_date.
+	//
+	//   past:    must_order=apr-25  → CRITICAL (now is may-1)
+	//   warn:    must_order=may-5   → WARNING  (within 7-day window)
+	//   future:  must_order=jun-1   → OK       (well outside window)
+	//   ordered: must_order=apr-25 status=ORDERED → unchanged
+	specs := []struct {
+		name      string
+		needBy    time.Time
+		leadDays  int
+		buffer    int
+		setOrdered bool
+	}{
+		{"past", time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC), 5, 1, false},   // must_order = apr-25
+		{"warn", time.Date(2026, 5, 12, 0, 0, 0, 0, time.UTC), 5, 2, false},  // must_order = may-5
+		{"future", time.Date(2026, 6, 8, 0, 0, 0, 0, time.UTC), 5, 2, false}, // must_order = jun-1
+		{"ordered", time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC), 5, 1, true},
+	}
+
+	ids := make(map[string]uuid.UUID, len(specs))
+	err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		for _, sp := range specs {
+			needBy := sp.needBy
+			it, err := s.CreateProcurementItem(ctx, tx, CreateProcurementItemParams{
+				ProjectID:                 projectID,
+				OrgID:                     orgID,
+				Name:                      sp.name,
+				WBSCode:                   "01.00.00",
+				EstimatedCostCents:        1000,
+				EstimatedCostCurrencyCode: "USD",
+				LeadTimeDays:              sp.leadDays,
+				WeatherBufferDays:         sp.buffer,
+				NeedByDate:                &needBy,
+			})
+			if err != nil {
+				return err
+			}
+			ids[sp.name] = it.ID
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Mark the "ordered" row as ORDERED — recompute must skip it.
+	if _, err := pool.Exec(ctx, `UPDATE procurement_items SET status = 'ORDERED' WHERE id = $1`, ids["ordered"]); err != nil {
+		t.Fatalf("set ORDERED: %v", err)
+	}
+
+	var rowsChanged int64
+	err = pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		got, err := s.RecomputeStatuses(ctx, tx, RecomputeStatusesParams{
+			WarningWindowDays: window,
+			Now:               now,
+		})
+		if err != nil {
+			return err
+		}
+		rowsChanged = got
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("recompute: %v", err)
+	}
+
+	// past + warn flipped from default OK → CRITICAL/WARNING; future
+	// stayed at OK. ordered was skipped. Total flips = 2.
+	if rowsChanged != 2 {
+		t.Errorf("rowsChanged = %d, want 2", rowsChanged)
+	}
+
+	// Verify the final statuses.
+	want := map[string]string{
+		"past":    models.ProcurementStatusCritical,
+		"warn":    models.ProcurementStatusWarning,
+		"future":  models.ProcurementStatusOK,
+		"ordered": models.ProcurementStatusOrdered,
+	}
+	for name, id := range ids {
+		var status string
+		if err := pool.QueryRow(ctx, `SELECT status FROM procurement_items WHERE id = $1`, id).Scan(&status); err != nil {
+			t.Fatalf("read status %s: %v", name, err)
+		}
+		if status != want[name] {
+			t.Errorf("%s: status = %q, want %q", name, status, want[name])
+		}
+	}
+}

@@ -116,12 +116,43 @@ func (w *DailyBriefingWorker) Work(ctx context.Context, job *river.Job[DailyBrie
 	return nil
 }
 
+// ProcurementChecker is the dependency surface ProcurementCheckWorker
+// needs from the service layer. Defined here (consumer side) for the
+// same reason BudgetRunner / NotificationDeliverer are — keeps worker
+// free of an internal/service import (service already imports worker
+// for River args, and a back-edge would create a cycle).
+type ProcurementChecker interface {
+	RecomputeStatuses(ctx context.Context) (rowsChanged int64, err error)
+}
+
+// ProcurementCheckWorker runs the daily procurement health sweep:
+// flips OK/WARNING/CRITICAL based on each row's must_order_date
+// relative to today + the warning window. ORDERED rows are terminal.
 type ProcurementCheckWorker struct {
 	river.WorkerDefaults[ProcurementCheckArgs]
+	Checker ProcurementChecker
+}
+
+// NewProcurementCheckWorker panics if checker is nil — wiring errors
+// should fail at startup, not at the first scheduled tick.
+func NewProcurementCheckWorker(c ProcurementChecker) *ProcurementCheckWorker {
+	if c == nil {
+		panic("worker: ProcurementCheckWorker requires non-nil ProcurementChecker")
+	}
+	return &ProcurementCheckWorker{Checker: c}
 }
 
 func (w *ProcurementCheckWorker) Work(ctx context.Context, job *river.Job[ProcurementCheckArgs]) error {
-	slog.InfoContext(ctx, "procurement_check: not yet implemented")
+	started := time.Now()
+	rows, err := w.Checker.RecomputeStatuses(ctx)
+	if err != nil {
+		slog.ErrorContext(ctx, "procurement_check failed", "error", err)
+		return fmt.Errorf("procurement_check: %w", err)
+	}
+	slog.InfoContext(ctx, "procurement_check completed",
+		"rows_changed", rows,
+		"duration_ms", time.Since(started).Milliseconds(),
+	)
 	return nil
 }
 

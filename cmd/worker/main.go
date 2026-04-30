@@ -57,9 +57,13 @@ func run(logger *slog.Logger) error {
 	notifStore := store.NewNotificationsStore()
 	notifService := service.NewNotificationDeliveryService(pool, service.NewLoggingSender(logger), notifStore, logger)
 
+	procurementStore := store.NewProcurementStore()
+	procurementService := service.NewProcurementService(pool, procurementStore)
+
 	registry, err := worker.NewRegistry(pool, logger, worker.Dependencies{
 		BudgetRunner:          budgetService,
 		NotificationDeliverer: notifService,
+		ProcurementChecker:    procurementService,
 	})
 	if err != nil {
 		return fmt.Errorf("creating worker registry: %w", err)

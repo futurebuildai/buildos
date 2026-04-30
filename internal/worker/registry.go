@@ -26,6 +26,7 @@ type Registry struct {
 type Dependencies struct {
 	BudgetRunner          BudgetRunner          // CorporateRollupWorker
 	NotificationDeliverer NotificationDeliverer // FieldNotificationRetryWorker
+	ProcurementChecker    ProcurementChecker    // ProcurementCheckWorker
 }
 
 // NewRegistry creates a River worker registry with all job workers registered.
@@ -37,7 +38,7 @@ func NewRegistry(pool *pgxpool.Pool, logger *slog.Logger, deps Dependencies) (*R
 	// Sprint 0: register placeholder workers to validate the wiring.
 	// Full implementations arrive in later sprints.
 	river.AddWorker(workers, &DailyBriefingWorker{})
-	river.AddWorker(workers, &ProcurementCheckWorker{})
+	river.AddWorker(workers, NewProcurementCheckWorker(deps.ProcurementChecker))
 	river.AddWorker(workers, &HydrateProjectWorker{})
 	river.AddWorker(workers, NewCorporateRollupWorker(deps.BudgetRunner))
 	river.AddWorker(workers, &CertificationAlertsWorker{})
