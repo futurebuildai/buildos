@@ -125,6 +125,7 @@ func run(logger *slog.Logger) error {
 		A2AService:         a2aService,
 		A2AVerifier:        a2aVerifier,
 		BrainPinger:        brainClient,
+		BillingClient:      brainClient.Billing,
 	})
 
 	srv := &http.Server{

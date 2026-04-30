@@ -37,7 +37,8 @@ type RouterConfig struct {
 	FieldService       FieldServicer
 	A2AService         A2AServicer
 	A2AVerifier        JWSVerifier
-	BrainPinger        BrainPinger // optional — when nil, /ready skips the Brain check
+	BrainPinger        BrainPinger   // optional — when nil, /ready skips the Brain check
+	BillingClient      BillingClient // optional — when nil, /billing/* routes return 501
 }
 
 // NewRouter creates the Chi router with all route groups and middleware.
@@ -73,6 +74,10 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	fleet := NewFleetHandler(cfg.FleetService)
 	hr := NewHRHandler(cfg.HRService)
 	a2a := NewA2AHandler(cfg.A2AVerifier, cfg.A2AService, cfg.Logger)
+	var billing *BillingHandler
+	if cfg.BillingClient != nil {
+		billing = NewBillingHandler(cfg.BillingClient)
+	}
 
 	// Auth middleware
 	authMiddleware := mw.Auth(cfg.JWKS, cfg.IssuerURL, cfg.DevAuthMode, cfg.Logger)
@@ -194,6 +199,18 @@ func NewRouter(cfg RouterConfig) http.Handler {
 			r.Post("/{cardID}/action", feed.Action)
 			r.Post("/{cardID}/dismiss", feed.Dismiss)
 		})
+
+		// --------------------------------------------------------
+		// 3.5 Billing — proxy to Brain. Owner/admin only since
+		//     usage data is sensitive operational/financial info.
+		// --------------------------------------------------------
+		if billing != nil {
+			r.Route("/api/v1/billing", func(r chi.Router) {
+				r.Use(mw.RequireRole(mw.RoleOwner, mw.RoleAdmin))
+				r.Get("/usage", billing.Usage)
+				r.Get("/usage/daily", billing.DailyUsage)
+			})
+		}
 
 		// --------------------------------------------------------
 		// 4. Field Sync — all authenticated roles (primarily field_worker)
