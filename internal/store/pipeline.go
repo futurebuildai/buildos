@@ -558,6 +558,56 @@ func (s *PipelineStore) MarkProspectPermitIssued(ctx context.Context, tx pgx.Tx,
 	return p, nil
 }
 
+// ---------- Pipeline analytics ----------
+
+// ListPipelineAnalytics returns one row per currency_code summing the
+// in-flight pipeline. Each prospect contributes its LATEST estimate's
+// total to the bucket matching that estimate's currency_code; LOST
+// prospects are excluded. Prospects without any estimate are excluded
+// (nothing to weight). Two totals per currency:
+//   - total_estimated_cents: SUM of latest-estimate totals
+//   - weighted_revenue_cents: SUM(total × probability_pct / 100)
+//
+// Probability comes from pre_construction_prospects.probability_pct,
+// which the AdvanceStage flow keeps in sync with PipelineStage.Probability().
+func (s *PipelineStore) ListPipelineAnalytics(ctx context.Context, tx pgx.Tx, orgID uuid.UUID) ([]models.PipelineAnalyticsRow, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT
+			e.currency_code,
+			SUM(e.total_estimated_cents)::BIGINT                                   AS total_estimated_cents,
+			SUM(e.total_estimated_cents * pr.probability_pct / 100)::BIGINT        AS weighted_revenue_cents,
+			COUNT(DISTINCT pr.id)                                                  AS prospect_count
+		FROM pre_construction_prospects pr
+		INNER JOIN LATERAL (
+			SELECT total_estimated_cents, currency_code
+			FROM pre_construction_estimates
+			WHERE prospect_id = pr.id
+			ORDER BY version DESC
+			LIMIT 1
+		) e ON TRUE
+		WHERE pr.org_id = $1
+		  AND pr.pipeline_stage <> 'LOST'
+		GROUP BY e.currency_code
+		ORDER BY e.currency_code`, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("query pipeline_analytics: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]models.PipelineAnalyticsRow, 0)
+	for rows.Next() {
+		var row models.PipelineAnalyticsRow
+		if err := rows.Scan(
+			&row.CurrencyCode, &row.TotalEstimatedCents,
+			&row.WeightedRevenueCents, &row.ProspectCount,
+		); err != nil {
+			return nil, fmt.Errorf("scan pipeline_analytics: %w", err)
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
 // CreatePermitParams is the input for inserting a permit. Currency is
 // validated by the service layer before the call.
 type CreatePermitParams struct {

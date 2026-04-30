@@ -28,6 +28,7 @@ type PipelineServicer interface {
 	UpdateEstimateStatus(ctx context.Context, in service.UpdateEstimateStatusInput) (models.PipelineEstimate, error)
 	CreatePermit(ctx context.Context, in service.CreatePermitInput) (models.Permit, error)
 	UpdatePermit(ctx context.Context, in service.UpdatePermitInput) (models.Permit, error)
+	GetPipelineAnalytics(ctx context.Context, orgID uuid.UUID) ([]models.PipelineAnalyticsRow, error)
 }
 
 // PipelineHandler handles /api/v1/org/{orgID}/pipeline/* endpoints.
@@ -481,12 +482,23 @@ func (h *PipelineHandler) UpdatePermit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, map[string]any{"permit": permit})
 }
 
-// ---------- Analytics — Sprint 3 PR 3 ----------
+// ---------- Analytics ----------
 
-// Analytics returns weighted pipeline revenue grouped by currency. (Sprint 3 PR 3)
+// Analytics returns per-currency pipeline rollups: total estimated,
+// weighted revenue, and prospect count. Computed on demand from a
+// single SQL aggregation in the service layer; no cache.
 // GET /api/v1/org/{orgID}/pipeline/analytics
 func (h *PipelineHandler) Analytics(w http.ResponseWriter, r *http.Request) {
-	writeNotImplemented(w, r)
+	orgID, ok := requireOrgIDFromURL(w, r)
+	if !ok {
+		return
+	}
+	rows, err := h.svc.GetPipelineAnalytics(r.Context(), orgID)
+	if err != nil {
+		writePipelineError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, map[string]any{"analytics": rows})
 }
 
 // ---------- helpers ----------

@@ -582,6 +582,23 @@ func (s *PipelineService) UpdatePermit(ctx context.Context, in UpdatePermitInput
 	return permit, nil
 }
 
+// ---------- Analytics ----------
+
+// GetPipelineAnalytics returns weighted-revenue and prospect-count
+// totals per currency for the given org. Backed by a single SQL
+// aggregation in a read-only tx — no caching layer yet (a future
+// pipeline_analytics River job could write a precomputed cache table
+// once the analytics surface is heavy enough to justify the hop).
+func (s *PipelineService) GetPipelineAnalytics(ctx context.Context, orgID uuid.UUID) ([]models.PipelineAnalyticsRow, error) {
+	var out []models.PipelineAnalyticsRow
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var qErr error
+		out, qErr = s.store.ListPipelineAnalytics(ctx, tx, orgID)
+		return qErr
+	})
+	return out, err
+}
+
 // ---------- Lose ----------
 
 // LoseProspect transitions a prospect to LOST. Reason is required.

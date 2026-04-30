@@ -263,3 +263,21 @@ type ProspectWithDetails struct {
 	Estimates []PipelineEstimate `json:"estimates"`
 	Permits   []Permit           `json:"permits"`
 }
+
+// PipelineAnalyticsRow is one row of the pipeline analytics rollup,
+// keyed by currency_code. Returned by
+// GET /api/v1/org/{orgID}/pipeline/analytics. The two totals serve
+// distinct purposes:
+//
+//	TotalEstimatedCents  — "revenue if every active prospect closes"
+//	                        (no probability weighting)
+//	WeightedRevenueCents — "expected revenue" (each prospect's total
+//	                        × pipeline-stage probability)
+//
+// The frontend renders the gap as the contractor's pipeline risk.
+type PipelineAnalyticsRow struct {
+	CurrencyCode         string `json:"currency_code"`
+	TotalEstimatedCents  int64  `json:"total_estimated_cents"`
+	WeightedRevenueCents int64  `json:"weighted_revenue_cents"`
+	ProspectCount        int    `json:"prospect_count"`
+}

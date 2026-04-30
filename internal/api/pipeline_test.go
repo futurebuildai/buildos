@@ -34,10 +34,12 @@ type mockPipelineService struct {
 	createEstimateErr    error
 	updateEstimateResult models.PipelineEstimate
 	updateEstimateErr    error
-	createPermitResult   models.Permit
-	createPermitErr      error
-	updatePermitResult   models.Permit
-	updatePermitErr      error
+	createPermitResult models.Permit
+	createPermitErr    error
+	updatePermitResult models.Permit
+	updatePermitErr    error
+	analyticsResult    []models.PipelineAnalyticsRow
+	analyticsErr       error
 
 	// Captured args for assertions.
 	lastListInput           service.ListProspectsInput
@@ -49,6 +51,7 @@ type mockPipelineService struct {
 	lastUpdateEstimateInput service.UpdateEstimateStatusInput
 	lastCreatePermitInput   service.CreatePermitInput
 	lastUpdatePermitInput   service.UpdatePermitInput
+	lastAnalyticsOrgID      uuid.UUID
 	lastGetProspectID       uuid.UUID
 	lastGetCallerOrg        uuid.UUID
 }
@@ -95,6 +98,10 @@ func (m *mockPipelineService) CreatePermit(_ context.Context, in service.CreateP
 func (m *mockPipelineService) UpdatePermit(_ context.Context, in service.UpdatePermitInput) (models.Permit, error) {
 	m.lastUpdatePermitInput = in
 	return m.updatePermitResult, m.updatePermitErr
+}
+func (m *mockPipelineService) GetPipelineAnalytics(_ context.Context, orgID uuid.UUID) ([]models.PipelineAnalyticsRow, error) {
+	m.lastAnalyticsOrgID = orgID
+	return m.analyticsResult, m.analyticsErr
 }
 
 const (
@@ -482,5 +489,49 @@ func TestUpdatePermit_TerminalSourceReturns409(t *testing.T) {
 	h.UpdatePermit(w, r)
 	if w.Code != http.StatusConflict {
 		t.Errorf("status=%d, want 409", w.Code)
+	}
+}
+
+// ---------- Analytics ----------
+
+func TestAnalytics_OK(t *testing.T) {
+	svc := &mockPipelineService{
+		analyticsResult: []models.PipelineAnalyticsRow{
+			{CurrencyCode: "USD", TotalEstimatedCents: 5_000_000, WeightedRevenueCents: 1_250_000, ProspectCount: 4},
+			{CurrencyCode: "CAD", TotalEstimatedCents: 2_000_000, WeightedRevenueCents: 500_000, ProspectCount: 2},
+		},
+	}
+	h := NewPipelineHandler(svc)
+	r := buildRequest(t, "GET", "/api/v1/org/"+testOrgID+"/pipeline/analytics",
+		testOrgID, map[string]string{"orgID": testOrgID}, nil)
+	w := httptest.NewRecorder()
+	h.Analytics(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, body=%s", w.Code, w.Body.String())
+	}
+	if svc.lastAnalyticsOrgID.String() != testOrgID {
+		t.Errorf("service got org_id=%s, want %s", svc.lastAnalyticsOrgID, testOrgID)
+	}
+	var resp struct {
+		Data struct {
+			Analytics []models.PipelineAnalyticsRow `json:"analytics"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Data.Analytics) != 2 {
+		t.Errorf("expected 2 currency rows, got %d", len(resp.Data.Analytics))
+	}
+}
+
+func TestAnalytics_OrgMismatchReturns403(t *testing.T) {
+	h := NewPipelineHandler(&mockPipelineService{})
+	r := buildRequest(t, "GET", "/api/v1/org/"+otherOrgID+"/pipeline/analytics",
+		testOrgID, map[string]string{"orgID": otherOrgID}, nil)
+	w := httptest.NewRecorder()
+	h.Analytics(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status=%d, want 403", w.Code)
 	}
 }
