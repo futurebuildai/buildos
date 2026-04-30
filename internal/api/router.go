@@ -18,12 +18,13 @@ type RouterConfig struct {
 	IssuerURL       string
 	DevAuthMode     string
 	Logger          *slog.Logger
-	BudgetService   BudgetServicer
-	PipelineService PipelineServicer
-	ScheduleService ScheduleServicer
-	FeedService     FeedServicer
-	A2AService      A2AServicer
-	A2AVerifier     JWSVerifier
+	BudgetService      BudgetServicer
+	PipelineService    PipelineServicer
+	ScheduleService    ScheduleServicer
+	FeedService        FeedServicer
+	ProcurementService ProcurementServicer
+	A2AService         A2AServicer
+	A2AVerifier        JWSVerifier
 }
 
 // NewRouter creates the Chi router with all route groups and middleware.
@@ -44,7 +45,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	schedule := NewScheduleHandler(cfg.ScheduleService)
 	financials := NewFinancialsHandler(cfg.BudgetService)
 	pipeline := NewPipelineHandler(cfg.PipelineService)
-	procurement := &ProcurementHandler{}
+	procurement := NewProcurementHandler(cfg.ProcurementService)
 	feed := NewFeedHandler(cfg.FeedService)
 	field := &FieldHandler{}
 	fleet := &FleetHandler{}
