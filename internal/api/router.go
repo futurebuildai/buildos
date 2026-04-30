@@ -20,6 +20,16 @@ type BrainPinger interface {
 	Ping(ctx context.Context) error
 }
 
+// JWKSCacheReporter exposes the JWKS provider's cache state to the
+// readiness probe. The probe treats keyCount == 0 (never fetched, or
+// upstream returned empty) as unhealthy and age > 2*ttl as stale —
+// the upstream has been unreachable long enough that cached keys may
+// be past Brain's rotation horizon.
+type JWKSCacheReporter interface {
+	CacheStatus() (keyCount int, age time.Duration)
+	CacheTTL() time.Duration
+}
+
 // RouterConfig holds all dependencies needed to build the API router.
 type RouterConfig struct {
 	Pool            *pgxpool.Pool
@@ -37,9 +47,10 @@ type RouterConfig struct {
 	FieldService       FieldServicer
 	A2AService         A2AServicer
 	A2AVerifier        JWSVerifier
-	BrainPinger        BrainPinger    // optional — when nil, /ready skips the Brain check
-	BillingClient      BillingClient  // optional — when nil, /billing/* routes don't mount
-	AgentsService      AgentsServicer // optional — when nil, /agents/* routes don't mount
+	BrainPinger        BrainPinger       // optional — when nil, /ready skips the Brain check
+	JWKSReporter       JWKSCacheReporter // optional — when nil, /ready skips the JWKS check
+	BillingClient      BillingClient     // optional — when nil, /billing/* routes don't mount
+	AgentsService      AgentsServicer    // optional — when nil, /agents/* routes don't mount
 }
 
 // NewRouter creates the Chi router with all route groups and middleware.
@@ -62,7 +73,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	//             Pings the database and (optionally) Brain's /health.
 	//             Used by load balancers / k8s readiness gates.
 	r.Get("/health", livenessHandler())
-	r.Get("/ready", readinessHandler(cfg.Pool, cfg.BrainPinger, cfg.Logger))
+	r.Get("/ready", readinessHandler(cfg.Pool, cfg.BrainPinger, cfg.JWKSReporter, cfg.Logger))
 
 	// Instantiate handlers
 	projects := &ProjectHandler{}
@@ -256,14 +267,15 @@ func livenessHandler() http.HandlerFunc {
 }
 
 // readinessHandler returns the readiness probe — the server can
-// actually serve traffic. Checks the database pool and (when wired)
-// Brain's /health. Both checks run in parallel-ish under a 2s
-// deadline so a slow upstream doesn't block the load balancer's
-// poll cadence.
+// actually serve traffic. Checks the database pool, (when wired)
+// Brain's /health, and (when wired) the JWKS cache freshness. All
+// checks run under a 2s deadline so a slow upstream doesn't block
+// the load balancer's poll cadence.
 //
 // Response body always includes per-component status so ops can
-// distinguish "DB down" from "Brain down" from a single curl.
-func readinessHandler(pool *pgxpool.Pool, brain BrainPinger, logger *slog.Logger) http.HandlerFunc {
+// distinguish "DB down" from "Brain down" from "JWKS stale" from a
+// single curl.
+func readinessHandler(pool *pgxpool.Pool, brain BrainPinger, jwksRep JWKSCacheReporter, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
@@ -286,14 +298,38 @@ func readinessHandler(pool *pgxpool.Pool, brain BrainPinger, logger *slog.Logger
 			}
 		}
 
-		ready := dbStatus == "ok" && brainStatus != "unhealthy"
+		// JWKS cache check: report unhealthy when we have NO keys
+		// (cold start, or upstream returned empty) OR the cache is
+		// >2x its TTL (we've been unable to refresh long enough that
+		// rotated Brain keys may have started rejecting our tokens).
+		jwksStatus := "skipped"
+		var jwksDetail string
+		if jwksRep != nil {
+			keyCount, age := jwksRep.CacheStatus()
+			ttl := jwksRep.CacheTTL()
+			switch {
+			case keyCount == 0:
+				jwksStatus = "unhealthy"
+				jwksDetail = "no keys cached"
+			case ttl > 0 && age > 2*ttl:
+				jwksStatus = "unhealthy"
+				jwksDetail = "cache stale: age " + age.Round(time.Second).String()
+			default:
+				jwksStatus = "ok"
+			}
+		}
+
+		ready := dbStatus == "ok" &&
+			brainStatus != "unhealthy" &&
+			jwksStatus != "unhealthy"
 		w.Header().Set("Content-Type", "application/json")
 		if !ready {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			if logger != nil {
 				logger.WarnContext(ctx, "readiness probe failed",
 					"db_status", dbStatus, "db_error", dbErr,
-					"brain_status", brainStatus, "brain_error", brainErr)
+					"brain_status", brainStatus, "brain_error", brainErr,
+					"jwks_status", jwksStatus, "jwks_detail", jwksDetail)
 			}
 		} else {
 			w.WriteHeader(http.StatusOK)
@@ -307,7 +343,8 @@ func readinessHandler(pool *pgxpool.Pool, brain BrainPinger, logger *slog.Logger
 		// encoder. Keeps this allocation-light on a hot probe path.
 		body := `{"status":"` + statusWord +
 			`","components":{"database":"` + dbStatus +
-			`","brain":"` + brainStatus + `"}}`
+			`","brain":"` + brainStatus +
+			`","jwks":"` + jwksStatus + `"}}`
 		_, _ = w.Write([]byte(body))
 	}
 }

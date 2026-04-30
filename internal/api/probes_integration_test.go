@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/futurebuildai/buildos/internal/testdb"
 )
@@ -23,49 +24,71 @@ type scriptedPinger struct {
 
 func (p *scriptedPinger) Ping(_ context.Context) error { return p.err }
 
+// scriptedJWKS lets us script CacheStatus + CacheTTL outputs.
+type scriptedJWKS struct {
+	keyCount int
+	age      time.Duration
+	ttl      time.Duration
+}
+
+func (s *scriptedJWKS) CacheStatus() (int, time.Duration) { return s.keyCount, s.age }
+func (s *scriptedJWKS) CacheTTL() time.Duration           { return s.ttl }
+
 func probesQuietLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-func TestReadinessHandler_DBHealthyBrainHealthy(t *testing.T) {
-	pool := testdb.NewPool(t)
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
-	readinessHandler(pool, &scriptedPinger{}, probesQuietLogger()).ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("status = %d, want 200", rec.Code)
-	}
+func decodeReady(t *testing.T, rec *httptest.ResponseRecorder) (status string, components map[string]string) {
+	t.Helper()
 	var body struct {
 		Status     string            `json:"status"`
 		Components map[string]string `json:"components"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode: %v", err)
+		t.Fatalf("decode: %v\n%s", err, rec.Body.String())
 	}
-	if body.Status != "ok" {
-		t.Errorf("status = %q, want ok", body.Status)
-	}
-	if body.Components["database"] != "ok" || body.Components["brain"] != "ok" {
-		t.Errorf("components = %v, want both ok", body.Components)
-	}
+	return body.Status, body.Components
 }
 
-func TestReadinessHandler_DBHealthyNoBrainPinger(t *testing.T) {
+func TestReadinessHandler_AllHealthy(t *testing.T) {
 	pool := testdb.NewPool(t)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
-	readinessHandler(pool, nil, probesQuietLogger()).ServeHTTP(rec, req)
+
+	readinessHandler(
+		pool,
+		&scriptedPinger{},
+		&scriptedJWKS{keyCount: 3, age: 30 * time.Second, ttl: 5 * time.Minute},
+		probesQuietLogger(),
+	).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200", rec.Code)
 	}
-	var body struct {
-		Components map[string]string `json:"components"`
+	status, comps := decodeReady(t, rec)
+	if status != "ok" {
+		t.Errorf("status = %q", status)
 	}
-	_ = json.Unmarshal(rec.Body.Bytes(), &body)
-	if body.Components["brain"] != "skipped" {
-		t.Errorf("brain status = %q, want skipped (no pinger wired)", body.Components["brain"])
+	for k, want := range map[string]string{"database": "ok", "brain": "ok", "jwks": "ok"} {
+		if comps[k] != want {
+			t.Errorf("%s = %q, want %q", k, comps[k], want)
+		}
+	}
+}
+
+func TestReadinessHandler_OptionalDepsAllSkipped(t *testing.T) {
+	pool := testdb.NewPool(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
+
+	readinessHandler(pool, nil, nil, probesQuietLogger()).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+	_, comps := decodeReady(t, rec)
+	if comps["brain"] != "skipped" || comps["jwks"] != "skipped" {
+		t.Errorf("optional deps not marked skipped: %v", comps)
 	}
 }
 
@@ -73,45 +96,109 @@ func TestReadinessHandler_BrainUnhealthyFlipsReady(t *testing.T) {
 	pool := testdb.NewPool(t)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
-	readinessHandler(pool, &scriptedPinger{err: errors.New("dial: connection refused")}, probesQuietLogger()).
-		ServeHTTP(rec, req)
+
+	readinessHandler(
+		pool,
+		&scriptedPinger{err: errors.New("dial: connection refused")},
+		&scriptedJWKS{keyCount: 3, age: 30 * time.Second, ttl: 5 * time.Minute},
+		probesQuietLogger(),
+	).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", rec.Code)
 	}
-	var body struct {
-		Status     string            `json:"status"`
-		Components map[string]string `json:"components"`
+	status, comps := decodeReady(t, rec)
+	if status != "unhealthy" || comps["brain"] != "unhealthy" {
+		t.Errorf("expected brain unhealthy: %s %v", status, comps)
 	}
-	_ = json.Unmarshal(rec.Body.Bytes(), &body)
-	if body.Status != "unhealthy" {
-		t.Errorf("status = %q, want unhealthy", body.Status)
-	}
-	if body.Components["brain"] != "unhealthy" {
-		t.Errorf("brain status = %q, want unhealthy", body.Components["brain"])
-	}
-	if body.Components["database"] != "ok" {
-		t.Errorf("database status = %q, want ok", body.Components["database"])
+	if comps["database"] != "ok" {
+		t.Errorf("database should still be ok: %v", comps)
 	}
 }
 
 func TestReadinessHandler_DBUnhealthyFlipsReady(t *testing.T) {
-	// Reuse the testdb container, then close the pool to make Ping fail.
 	pool := testdb.NewPool(t)
 	pool.Close()
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
-	readinessHandler(pool, &scriptedPinger{}, probesQuietLogger()).ServeHTTP(rec, req)
+	readinessHandler(pool, &scriptedPinger{}, &scriptedJWKS{keyCount: 3, ttl: 5 * time.Minute}, probesQuietLogger()).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", rec.Code)
 	}
-	var body struct {
-		Components map[string]string `json:"components"`
+	_, comps := decodeReady(t, rec)
+	if comps["database"] != "unhealthy" {
+		t.Errorf("database = %q, want unhealthy", comps["database"])
 	}
-	_ = json.Unmarshal(rec.Body.Bytes(), &body)
-	if body.Components["database"] != "unhealthy" {
-		t.Errorf("database status = %q, want unhealthy", body.Components["database"])
+}
+
+func TestReadinessHandler_JWKSColdStartFlipsReady(t *testing.T) {
+	// keyCount == 0 means we've never successfully fetched. Treat as
+	// unhealthy: we can't validate any JWT until the JWKS arrives,
+	// so the LB shouldn't send us live traffic yet.
+	pool := testdb.NewPool(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	readinessHandler(
+		pool,
+		&scriptedPinger{},
+		&scriptedJWKS{keyCount: 0, ttl: 5 * time.Minute},
+		probesQuietLogger(),
+	).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", rec.Code)
+	}
+	_, comps := decodeReady(t, rec)
+	if comps["jwks"] != "unhealthy" {
+		t.Errorf("jwks = %q, want unhealthy", comps["jwks"])
+	}
+}
+
+func TestReadinessHandler_JWKSStaleFlipsReady(t *testing.T) {
+	// age > 2*ttl → stale. The provider's GetKeySet falls back to
+	// stale cache on refresh failures, so this state means we've
+	// been unable to refresh long enough that Brain may have
+	// rotated. Fail closed.
+	pool := testdb.NewPool(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	readinessHandler(
+		pool,
+		&scriptedPinger{},
+		&scriptedJWKS{keyCount: 3, age: 11 * time.Minute, ttl: 5 * time.Minute},
+		probesQuietLogger(),
+	).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", rec.Code)
+	}
+	_, comps := decodeReady(t, rec)
+	if comps["jwks"] != "unhealthy" {
+		t.Errorf("jwks = %q, want unhealthy", comps["jwks"])
+	}
+}
+
+func TestReadinessHandler_JWKSWithinTTLAcceptable(t *testing.T) {
+	// age < 2*ttl is fine — the TTL itself triggers a refresh on
+	// the next GetKeySet call, but the cache is not yet so old that
+	// it's likely past Brain's rotation horizon.
+	pool := testdb.NewPool(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	readinessHandler(
+		pool,
+		&scriptedPinger{},
+		&scriptedJWKS{keyCount: 3, age: 8 * time.Minute, ttl: 5 * time.Minute},
+		probesQuietLogger(),
+	).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+	_, comps := decodeReady(t, rec)
+	if comps["jwks"] != "ok" {
+		t.Errorf("jwks = %q, want ok", comps["jwks"])
 	}
 }

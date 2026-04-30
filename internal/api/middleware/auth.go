@@ -77,6 +77,33 @@ func NewJWKSProvider(jwksURL string, logger *slog.Logger) *JWKSProvider {
 	}
 }
 
+// CacheStatus reports on the JWKS provider's cache state for the
+// readiness probe. Two values:
+//
+//	keyCount: how many keys we currently hold (0 means we've never
+//	          successfully fetched, or the upstream returned an
+//	          empty set).
+//	age:      how long since the cache was last successfully filled.
+//	          time.Duration(0) when keyCount == 0 (never fetched).
+//
+// The probe treats keyCount == 0 OR age > 2*cacheTTL as unhealthy:
+// we're either booting cold or have lost the upstream long enough
+// that the cached keys are likely past Brain's rotation horizon.
+func (p *JWKSProvider) CacheStatus() (keyCount int, age time.Duration) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.keySet == nil {
+		return 0, 0
+	}
+	return len(p.keySet.Keys), time.Since(p.fetchedAt)
+}
+
+// CacheTTL returns the configured refresh interval. Used by the
+// readiness probe to compute its "stale" threshold.
+func (p *JWKSProvider) CacheTTL() time.Duration {
+	return p.cacheTTL
+}
+
 // GetKeySet returns the cached JWKS, refreshing if stale.
 func (p *JWKSProvider) GetKeySet(ctx context.Context) (*jose.JSONWebKeySet, error) {
 	p.mu.RLock()
