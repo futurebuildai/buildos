@@ -10,10 +10,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
 
 	"github.com/futurebuildai/buildos/internal/currency"
 	"github.com/futurebuildai/buildos/internal/models"
 	"github.com/futurebuildai/buildos/internal/store"
+	"github.com/futurebuildai/buildos/internal/worker"
 )
 
 // Pipeline-specific sentinel errors. Handlers map to HTTP codes:
@@ -31,15 +33,23 @@ var (
 
 // PipelineService orchestrates pre-construction prospect operations:
 // CRUD, stage transitions, estimate/permit attachments, and the atomic
-// Kanban→CPM transition (Sprint 3 PR 3).
+// Kanban→CPM transition.
+//
+// The RiverClient is held to enqueue HydrateProject jobs from inside the
+// transition tx (river.InsertTx) so the project insert + prospect
+// update + WBS-hydration enqueue all commit together — no phantom jobs
+// referencing rows that never made it.
 type PipelineService struct {
-	pool  *pgxpool.Pool
-	store *store.PipelineStore
+	pool        *pgxpool.Pool
+	store       *store.PipelineStore
+	riverClient *river.Client[pgx.Tx]
 }
 
-// NewPipelineService creates a new PipelineService.
-func NewPipelineService(pool *pgxpool.Pool, ps *store.PipelineStore) *PipelineService {
-	return &PipelineService{pool: pool, store: ps}
+// NewPipelineService creates a new PipelineService. riverClient may be
+// nil for read-only deployments (no Kanban→CPM transitions); the service
+// will return ErrNotImplemented when transition is attempted without one.
+func NewPipelineService(pool *pgxpool.Pool, ps *store.PipelineStore, riverClient *river.Client[pgx.Tx]) *PipelineService {
+	return &PipelineService{pool: pool, store: ps, riverClient: riverClient}
 }
 
 // ---------- Reads ----------
@@ -229,11 +239,7 @@ func (s *PipelineService) AdvanceProspect(ctx context.Context, in AdvanceProspec
 	}
 
 	if in.Target == models.StagePermitIssued {
-		// Atomic Kanban→CPM lands in Sprint 3 PR 3. Returning here keeps
-		// the wire contract honest — callers see a clear NOT_IMPLEMENTED
-		// rather than silently transitioning the stage without creating
-		// the construction Project.
-		return models.Prospect{}, fmt.Errorf("%w: PERMIT_ISSUED transition (atomic Kanban→CPM) lands in Sprint 3 PR 3", ErrNotImplemented)
+		return s.transitionToPermitIssued(ctx, in)
 	}
 
 	var prospect models.Prospect
@@ -253,6 +259,81 @@ func (s *PipelineService) AdvanceProspect(ctx context.Context, in AdvanceProspec
 		if err != nil {
 			return err
 		}
+		prospect = updated
+		return nil
+	})
+	if err != nil {
+		return models.Prospect{}, mapStoreError(err)
+	}
+	return prospect, nil
+}
+
+// transitionToPermitIssued runs the atomic Kanban→CPM transition.
+// In a single transaction:
+//
+//  1. Load the prospect (verifies ownership + stage = PERMIT_APPLIED).
+//  2. Insert a new row in projects, copying over name/address/gsf and
+//     anchoring permit_issued_date as the project_start_date.
+//  3. Update the prospect: stage=PERMIT_ISSUED, probability_pct=100,
+//     project_id pointing at the new construction row.
+//  4. Enqueue a HydrateProject River job — uses river.InsertTx so the
+//     job row commits with the project + prospect writes. No phantom
+//     jobs that reference rows that never made it.
+//
+// Async work (WBS hydration, initial CPM forward/backward pass) lands
+// in the HydrateProject worker (Sprint 4+).
+//
+// Required preconditions enforced before any DB writes:
+//   - in.PermitIssuedDate must be non-nil (the contract requires it).
+//   - prospect.GSF must be non-nil (CPM scheduling requires it).
+//   - prospect.PipelineStage must be PERMIT_APPLIED (CanTransition guard).
+//
+// If the RiverClient is nil (read-only deployments / partial wiring),
+// returns ErrNotImplemented so callers see a clear failure rather than
+// a silent missing-job-enqueue.
+func (s *PipelineService) transitionToPermitIssued(ctx context.Context, in AdvanceProspectInput) (models.Prospect, error) {
+	// Validate caller input before checking system state — keeps 400 vs
+	// 501 ordering consistent with the rest of the API.
+	if in.PermitIssuedDate == nil {
+		return models.Prospect{}, fmt.Errorf("%w: permit_issued_date is required for PERMIT_ISSUED transition", ErrInvalidInput)
+	}
+	if s.riverClient == nil {
+		return models.Prospect{}, fmt.Errorf("%w: RiverClient not wired; PERMIT_ISSUED transition unavailable", ErrNotImplemented)
+	}
+
+	var prospect models.Prospect
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		current, err := s.store.GetProspect(ctx, tx, in.ProspectID, in.OrgID)
+		if err != nil {
+			return err
+		}
+		if !models.CanTransition(current.PipelineStage, models.StagePermitIssued) {
+			return fmt.Errorf("%w: %s → PERMIT_ISSUED not permitted", ErrInvalidTransition, current.PipelineStage)
+		}
+		if current.GSF == nil {
+			return fmt.Errorf("%w: prospect.gsf is required before PERMIT_ISSUED transition (CPM needs square footage)", ErrInvalidInput)
+		}
+
+		projectID, err := s.store.CreateProjectFromProspect(ctx, tx, store.CreateProjectFromProspectParams{
+			OrgID:            current.OrgID,
+			Name:             current.Name,
+			Address:          current.Address,
+			GSF:              *current.GSF,
+			PermitIssuedDate: *in.PermitIssuedDate,
+		})
+		if err != nil {
+			return fmt.Errorf("create project: %w", err)
+		}
+
+		updated, err := s.store.MarkProspectPermitIssued(ctx, tx, in.ProspectID, in.OrgID, projectID)
+		if err != nil {
+			return fmt.Errorf("mark prospect permit_issued: %w", err)
+		}
+
+		if _, err := s.riverClient.InsertTx(ctx, tx, worker.HydrateProjectArgs{ProjectID: projectID}, nil); err != nil {
+			return fmt.Errorf("enqueue hydrate_project: %w", err)
+		}
+
 		prospect = updated
 		return nil
 	})

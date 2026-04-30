@@ -491,6 +491,73 @@ func (s *PipelineStore) ListPermitsForProspect(ctx context.Context, tx pgx.Tx, p
 	return out, rows.Err()
 }
 
+// ---------- Kanban → CPM atomic transition ----------
+
+// CreateProjectFromProspectParams is the input for the synchronous
+// project insert that runs as step 1 of the Kanban→CPM transition.
+// The service validates that a non-nil GSF is supplied — projects
+// without GSF can't be CPM-scheduled.
+type CreateProjectFromProspectParams struct {
+	OrgID            uuid.UUID
+	Name             string
+	Address          *string
+	GSF              int
+	PermitIssuedDate time.Time
+}
+
+// CreateProjectFromProspect inserts a row into the projects table and
+// returns its UUID. project_start_date is set to permit_issued_date so
+// the CPM forward-pass anchor matches the construction kickoff.
+func (s *PipelineStore) CreateProjectFromProspect(ctx context.Context, tx pgx.Tx, p CreateProjectFromProspectParams) (uuid.UUID, error) {
+	var id uuid.UUID
+	err := tx.QueryRow(ctx, `
+		INSERT INTO projects (
+			org_id, name, address, permit_issued_date, project_start_date,
+			status, gsf
+		) VALUES ($1, $2, $3, $4, $4, 'active', $5)
+		RETURNING id`,
+		p.OrgID, p.Name, p.Address, p.PermitIssuedDate, p.GSF,
+	).Scan(&id)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("insert project from prospect: %w", err)
+	}
+	return id, nil
+}
+
+// MarkProspectPermitIssued sets pipeline_stage='PERMIT_ISSUED',
+// probability_pct=100, and links the prospect to its newly-created
+// construction project. Caller passes the project_id returned by
+// CreateProjectFromProspect — the two writes ride the same tx so a
+// rollback removes both.
+func (s *PipelineStore) MarkProspectPermitIssued(ctx context.Context, tx pgx.Tx, prospectID, orgID, projectID uuid.UUID) (models.Prospect, error) {
+	var p models.Prospect
+	var stage string
+	err := tx.QueryRow(ctx, `
+		UPDATE pre_construction_prospects
+		SET pipeline_stage  = 'PERMIT_ISSUED',
+		    probability_pct = 100,
+		    project_id      = $3,
+		    updated_at      = now()
+		WHERE id = $1 AND org_id = $2
+		RETURNING id, org_id, name, client_name, client_email, client_phone,
+		          address, gsf, pipeline_stage, probability_pct, source, notes,
+		          lost_reason, project_id, created_at, updated_at`,
+		prospectID, orgID, projectID,
+	).Scan(
+		&p.ID, &p.OrgID, &p.Name, &p.ClientName, &p.ClientEmail, &p.ClientPhone,
+		&p.Address, &p.GSF, &stage, &p.ProbabilityPct, &p.Source, &p.Notes,
+		&p.LostReason, &p.ProjectID, &p.CreatedAt, &p.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return models.Prospect{}, ErrNotFound
+		}
+		return models.Prospect{}, fmt.Errorf("mark prospect permit_issued: %w", err)
+	}
+	p.PipelineStage = models.PipelineStage(stage)
+	return p, nil
+}
+
 // CreatePermitParams is the input for inserting a permit. Currency is
 // validated by the service layer before the call.
 type CreatePermitParams struct {

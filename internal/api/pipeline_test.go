@@ -244,8 +244,10 @@ func TestAdvanceProspect_TerminalSourceReturns409(t *testing.T) {
 	}
 }
 
-func TestAdvanceProspect_PermitIssuedReturns501(t *testing.T) {
-	// Service returns ErrNotImplemented for PERMIT_ISSUED until Sprint 3 PR 3.
+func TestAdvanceProspect_ErrNotImplementedMaps501(t *testing.T) {
+	// Service returns ErrNotImplemented in partial-wiring deployments
+	// (e.g., a server with no RiverClient configured can't perform the
+	// Kanban→CPM transition). The handler must surface this as 501.
 	h := NewPipelineHandler(&mockPipelineService{
 		advanceErr: service.ErrNotImplemented,
 	})

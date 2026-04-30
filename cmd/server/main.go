@@ -10,6 +10,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+
 	"github.com/futurebuildai/buildos/internal/api"
 	"github.com/futurebuildai/buildos/internal/api/middleware"
 	"github.com/futurebuildai/buildos/internal/config"
@@ -58,11 +62,20 @@ func run(logger *slog.Logger) error {
 			"production_safe", false)
 	}
 
+	// River insert-only client. The API server enqueues jobs from inside
+	// service-layer transactions (river.InsertTx); workers run separately
+	// via cmd/worker. No Workers / Queues config here — this client only
+	// writes to river_job rows; cmd/worker drains them.
+	riverClient, err := river.NewClient[pgx.Tx](riverpgxv5.New(pool), &river.Config{})
+	if err != nil {
+		return fmt.Errorf("creating river insert client: %w", err)
+	}
+
 	// Stores + services
 	financialsStore := store.NewFinancialsStore()
 	budgetService := service.NewBudgetService(pool, financialsStore)
 	pipelineStore := store.NewPipelineStore()
-	pipelineService := service.NewPipelineService(pool, pipelineStore)
+	pipelineService := service.NewPipelineService(pool, pipelineStore, riverClient)
 
 	// Build the router with all route groups
 	router := api.NewRouter(api.RouterConfig{
