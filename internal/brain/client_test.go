@@ -271,6 +271,51 @@ func TestBilling_GetDailyUsage_NoRange_NoQuery(t *testing.T) {
 	}
 }
 
+func TestPing_OKReturnsNil(t *testing.T) {
+	c, stop := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" {
+			t.Errorf("path = %q, want /health", r.URL.Path)
+		}
+		// Auth header MUST NOT be required by Brain's /health.
+		if r.Header.Get("Authorization") != "" {
+			t.Errorf("Ping should not send Authorization header; got %q", r.Header.Get("Authorization"))
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	defer stop()
+
+	if err := c.Ping(context.Background()); err != nil {
+		t.Errorf("Ping returned %v, want nil", err)
+	}
+}
+
+func TestPing_5xxReturnsHTTPError(t *testing.T) {
+	c, stop := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+	defer stop()
+
+	err := c.Ping(context.Background())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("err = %v, want HTTPError(503)", err)
+	}
+}
+
+func TestPing_TransportErrorWrapped(t *testing.T) {
+	c, err := NewClient(Config{BaseURL: "http://127.0.0.1:1"}) // closed port
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if perr := c.Ping(context.Background()); perr == nil {
+		t.Fatal("expected error from closed port")
+	}
+}
+
 func TestNewClient_BaseURLRequired(t *testing.T) {
 	_, err := NewClient(Config{})
 	if err == nil {

@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
@@ -10,6 +12,13 @@ import (
 
 	mw "github.com/futurebuildai/buildos/internal/api/middleware"
 )
+
+// BrainPinger is the consumer-side interface for the readiness probe's
+// Brain check. Defined here to keep the router free of the
+// internal/brain import — and to let tests substitute a fake.
+type BrainPinger interface {
+	Ping(ctx context.Context) error
+}
 
 // RouterConfig holds all dependencies needed to build the API router.
 type RouterConfig struct {
@@ -28,6 +37,7 @@ type RouterConfig struct {
 	FieldService       FieldServicer
 	A2AService         A2AServicer
 	A2AVerifier        JWSVerifier
+	BrainPinger        BrainPinger // optional — when nil, /ready skips the Brain check
 }
 
 // NewRouter creates the Chi router with all route groups and middleware.
@@ -40,8 +50,17 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	r.Use(chimw.Recoverer)
 	r.Use(chimw.Logger)
 
-	// Health check (no auth)
-	r.Get("/health", healthHandler(cfg.Pool))
+	// Probes (no auth):
+	//
+	//   /health — liveness. The process is up. Always returns 200 once
+	//             the server has started; used by orchestrators to
+	//             decide whether to restart the container.
+	//
+	//   /ready  — readiness. The process can serve traffic right now.
+	//             Pings the database and (optionally) Brain's /health.
+	//             Used by load balancers / k8s readiness gates.
+	r.Get("/health", livenessHandler())
+	r.Get("/ready", readinessHandler(cfg.Pool, cfg.BrainPinger, cfg.Logger))
 
 	// Instantiate handlers
 	projects := &ProjectHandler{}
@@ -190,16 +209,71 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	return r
 }
 
-func healthHandler(pool *pgxpool.Pool) http.HandlerFunc {
+// livenessHandler returns the liveness probe. Always 200 — if the
+// HTTP listener can answer, the process is alive. We deliberately do
+// NOT check the database here; an unreachable DB is a readiness
+// problem, not a liveness one (restarting the process won't help).
+func livenessHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if err := pool.Ping(r.Context()); err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte(`{"status":"unhealthy","error":"database unreachable"}`))
-			return
-		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok","version":"0.1.0"}`))
+	}
+}
+
+// readinessHandler returns the readiness probe — the server can
+// actually serve traffic. Checks the database pool and (when wired)
+// Brain's /health. Both checks run in parallel-ish under a 2s
+// deadline so a slow upstream doesn't block the load balancer's
+// poll cadence.
+//
+// Response body always includes per-component status so ops can
+// distinguish "DB down" from "Brain down" from a single curl.
+func readinessHandler(pool *pgxpool.Pool, brain BrainPinger, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+
+		dbStatus := "ok"
+		var dbErr error
+		if err := pool.Ping(ctx); err != nil {
+			dbStatus = "unhealthy"
+			dbErr = err
+		}
+
+		brainStatus := "skipped" // when no brainPinger is wired
+		var brainErr error
+		if brain != nil {
+			if err := brain.Ping(ctx); err != nil {
+				brainStatus = "unhealthy"
+				brainErr = err
+			} else {
+				brainStatus = "ok"
+			}
+		}
+
+		ready := dbStatus == "ok" && brainStatus != "unhealthy"
+		w.Header().Set("Content-Type", "application/json")
+		if !ready {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			if logger != nil {
+				logger.WarnContext(ctx, "readiness probe failed",
+					"db_status", dbStatus, "db_error", dbErr,
+					"brain_status", brainStatus, "brain_error", brainErr)
+			}
+		} else {
+			w.WriteHeader(http.StatusOK)
+		}
+
+		statusWord := "ok"
+		if !ready {
+			statusWord = "unhealthy"
+		}
+		// Hand-rolled JSON — a few fixed fields, no need for a struct +
+		// encoder. Keeps this allocation-light on a hot probe path.
+		body := `{"status":"` + statusWord +
+			`","components":{"database":"` + dbStatus +
+			`","brain":"` + brainStatus + `"}}`
+		_, _ = w.Write([]byte(body))
 	}
 }

@@ -74,9 +74,9 @@ func run(logger *slog.Logger) error {
 
 	// Brain client — typed wrapper for The Brain's REST API (Maestro
 	// AI, billing, future Hub/MCP). Each method takes a ctx that carries
-	// the caller's Bearer token (auth middleware stashes it). Future
-	// service-layer code that needs AI or billing data injects this
-	// client; no consumers in Sprint 0–3, so we just construct and log.
+	// the caller's Bearer token (auth middleware stashes it). The Ping
+	// method is unauth and powers the /ready readiness probe; service-
+	// layer agents land in Phase B.
 	brainClient, err := brain.NewClient(brain.Config{
 		BaseURL: cfg.BrainIssuerURL, // Brain's API + OIDC live on the same host
 		Logger:  logger,
@@ -84,7 +84,6 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("creating brain client: %w", err)
 	}
-	_ = brainClient // placeholder until first consumer (Sprint 5 agents)
 	logger.Info("brain client initialized", "base_url", cfg.BrainIssuerURL)
 
 	// Stores + services
@@ -125,6 +124,7 @@ func run(logger *slog.Logger) error {
 		FieldService:       fieldService,
 		A2AService:         a2aService,
 		A2AVerifier:        a2aVerifier,
+		BrainPinger:        brainClient,
 	})
 
 	srv := &http.Server{

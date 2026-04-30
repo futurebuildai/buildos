@@ -78,6 +78,34 @@ func NewClient(cfg Config) (*Client, error) {
 	return c, nil
 }
 
+// Ping issues an unauthenticated GET /health to Brain and returns nil
+// on a 2xx response, an error otherwise. Used by BuildOS's /ready
+// probe to confirm Brain reachability — no token is required (Brain's
+// /health is always public). The single attempt has a short context
+// deadline so a Brain hiccup doesn't stall the readiness response;
+// callers should pass a ctx with WithTimeout.
+//
+// Body content is intentionally ignored: a 2xx response is sufficient
+// signal regardless of what Brain reports inside the envelope.
+func (c *Client) Ping(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)
+	if err != nil {
+		return fmt.Errorf("brain: build ping request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("brain: ping transport: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 400 {
+		return &HTTPError{StatusCode: resp.StatusCode}
+	}
+	return nil
+}
+
 // doRequest is the shared transport. It:
 //   - Pulls the Bearer token from ctx via TokenFromContext.
 //   - Marshals body to JSON if non-nil.
