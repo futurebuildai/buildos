@@ -13,13 +13,18 @@ import (
 
 	"github.com/futurebuildai/buildos/internal/a2asigner"
 	"github.com/futurebuildai/buildos/internal/config"
+	"github.com/futurebuildai/buildos/internal/obs"
 	"github.com/futurebuildai/buildos/internal/service"
 	"github.com/futurebuildai/buildos/internal/store"
 	"github.com/futurebuildai/buildos/internal/worker"
 )
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	// Same correlating handler as cmd/server — when a River job runs
+	// with a request_id in ctx (rare, but can happen for jobs enqueued
+	// from a request scope), the worker's log line stamps it too.
+	jsonH := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
+	logger := slog.New(obs.NewCorrelatingHandler(jsonH))
 	slog.SetDefault(logger)
 
 	if err := run(logger); err != nil {
@@ -101,10 +106,42 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("creating worker registry: %w", err)
 	}
 
+	// River semantics: a cancelled Start(ctx) is a HARD stop — in-flight
+	// jobs have their contexts cancelled, then the client waits for
+	// them to return. We want a GRACEFUL shutdown: stop fetching new
+	// jobs, wait for in-progress jobs to finish naturally, then exit.
+	//
+	// To get that, Start() runs against a never-cancelling background
+	// context, and SIGTERM (the signal-cancelled `ctx` above) triggers
+	// an explicit Stop() with a 30s budget. The 30s ceiling is the
+	// k8s default terminationGracePeriodSeconds; aligning here avoids
+	// kubelet sending SIGKILL while we're still draining.
 	logger.Info("starting river worker, waiting for jobs")
+	startCtx := context.Background()
+	startErrCh := make(chan error, 1)
+	go func() {
+		if err := registry.Start(startCtx); err != nil {
+			startErrCh <- err
+		}
+	}()
 
-	if err := registry.Start(ctx); err != nil {
+	// Block until either River errors out on its own or we get SIGTERM.
+	select {
+	case err := <-startErrCh:
 		return fmt.Errorf("river worker error: %w", err)
+	case <-ctx.Done():
+		logger.Info("shutdown signal received, draining in-flight jobs")
+	}
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := registry.Client.Stop(stopCtx); err != nil {
+		// Log but don't fail — we still want to return cleanly so
+		// the deferred pool.Close runs and the process exits 0
+		// rather than 1 (a 1 exit on a clean SIGTERM is a noisy
+		// signal in alerting).
+		logger.Warn("river graceful stop did not complete in budget",
+			"error", err, "timeout_seconds", 30)
 	}
 
 	logger.Info("worker stopped gracefully")

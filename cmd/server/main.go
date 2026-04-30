@@ -18,12 +18,18 @@ import (
 	"github.com/futurebuildai/buildos/internal/api/middleware"
 	"github.com/futurebuildai/buildos/internal/brain"
 	"github.com/futurebuildai/buildos/internal/config"
+	"github.com/futurebuildai/buildos/internal/obs"
 	"github.com/futurebuildai/buildos/internal/service"
 	"github.com/futurebuildai/buildos/internal/store"
 )
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	// Wrap the JSON handler with obs.CorrelatingHandler so every
+	// context-scoped log line auto-stamps request_id (matching the
+	// X-Request-ID we propagate to Brain). Logs without a ctx (e.g.
+	// process boot) get no extra fields.
+	jsonH := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
+	logger := slog.New(obs.NewCorrelatingHandler(jsonH))
 	slog.SetDefault(logger)
 
 	if err := run(logger); err != nil {

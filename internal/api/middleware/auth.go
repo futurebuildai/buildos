@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 
@@ -220,6 +221,13 @@ func Auth(jwks *JWKSProvider, issuerURL, authMode string, logger *slog.Logger) f
 			// service-method signature.
 			ctx := ContextWithClaims(r.Context(), claims)
 			ctx = brain.ContextWithToken(ctx, rawToken)
+			// Propagate chi's request ID into the brain ctx so
+			// outbound calls stamp X-Request-ID for end-to-end
+			// correlation. Empty (e.g. RequestID middleware not
+			// mounted) just disables the header — no harm.
+			if reqID := chimw.GetReqID(r.Context()); reqID != "" {
+				ctx = brain.ContextWithRequestID(ctx, reqID)
+			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

@@ -164,6 +164,13 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any) (
 			req.Header.Set("Content-Type", "application/json")
 		}
 		req.Header.Set("Accept", "application/json")
+		// Propagate the caller's request ID for end-to-end correlation
+		// across BuildOS → Brain hops. Empty string is fine — the
+		// header is omitted entirely (Brain logs will fall back to its
+		// own request ID).
+		if reqID := requestIDFromContext(ctx); reqID != "" {
+			req.Header.Set("X-Request-ID", reqID)
+		}
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {

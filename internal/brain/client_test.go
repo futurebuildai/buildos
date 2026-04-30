@@ -271,6 +271,43 @@ func TestBilling_GetDailyUsage_NoRange_NoQuery(t *testing.T) {
 	}
 }
 
+func TestDoRequest_PropagatesRequestIDHeader(t *testing.T) {
+	var seenHeader string
+	c, stop := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		seenHeader = r.Header.Get("X-Request-ID")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":{"ok":true}}`))
+	})
+	defer stop()
+
+	ctx := ctxWithToken(t)
+	ctx = ContextWithRequestID(ctx, "req-test-123")
+
+	if _, err := c.doRequest(ctx, "GET", "/api/test", nil); err != nil {
+		t.Fatalf("doRequest: %v", err)
+	}
+	if seenHeader != "req-test-123" {
+		t.Errorf("X-Request-ID = %q, want req-test-123", seenHeader)
+	}
+}
+
+func TestDoRequest_OmitsRequestIDHeaderWhenAbsent(t *testing.T) {
+	var seenHeader string
+	c, stop := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		seenHeader = r.Header.Get("X-Request-ID")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":{"ok":true}}`))
+	})
+	defer stop()
+
+	if _, err := c.doRequest(ctxWithToken(t), "GET", "/api/test", nil); err != nil {
+		t.Fatalf("doRequest: %v", err)
+	}
+	if seenHeader != "" {
+		t.Errorf("X-Request-ID should be omitted; got %q", seenHeader)
+	}
+}
+
 func TestPing_OKReturnsNil(t *testing.T) {
 	c, stop := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/health" {
