@@ -34,6 +34,14 @@ type Config struct {
 	// and require Brain to populate org_id on every event.
 	DefaultOrgID *uuid.UUID
 
+	// Outbound A2A — JWS-signed POST to Brain's webhook receiver.
+	// Empty A2ASigningKeyPath disables outbound dispatch; the worker
+	// falls back to a no-op (queued events drain but discard with a
+	// warning log). All three fields must be set together.
+	BrainOutboundURL  string // e.g. "https://brain.example/api/v1/a2a/webhook"; "" defaults to BrainIssuerURL+"/api/v1/a2a/webhook"
+	A2ASigningKeyPath string // path to PKCS#1 or PKCS#8 PEM RSA private key
+	A2AKeyID          string // JWS `kid` header value; defaults to "buildos-1"
+
 	// Physics Engine
 	Physics PhysicsConfig
 }
@@ -76,6 +84,10 @@ func Load() (*Config, error) {
 
 		DevAuthMode:  getEnvStr("DEV_AUTH_MODE", ""),
 		DefaultOrgID: parseOptionalUUID(os.Getenv("DEFAULT_ORG_ID")),
+
+		BrainOutboundURL:  os.Getenv("BRAIN_OUTBOUND_URL"),
+		A2ASigningKeyPath: os.Getenv("A2A_SIGNING_KEY_PATH"),
+		A2AKeyID:          getEnvStr("A2A_KEY_ID", "buildos-1"),
 
 		Physics: PhysicsConfig{
 			StandardHouseSizeSF:    getEnvFloat("PHYSICS_STANDARD_HOUSE_SF", 2000.0),

@@ -95,7 +95,7 @@ func run(logger *slog.Logger) error {
 	scheduleService := service.NewScheduleService(pool, scheduleStore, riverClient)
 	a2aStore := store.NewA2AStore()
 	feedCardsStore := store.NewFeedCardsStore()
-	feedService := service.NewFeedService(pool, feedCardsStore, logger)
+	feedService := service.NewFeedService(pool, feedCardsStore, logger, riverClient)
 	procurementStore := store.NewProcurementStore()
 	procurementService := service.NewProcurementService(pool, procurementStore)
 	fleetStore := store.NewFleetStore()

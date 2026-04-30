@@ -4,10 +4,14 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+	"time"
 
+	"github.com/futurebuildai/buildos/internal/a2asigner"
 	"github.com/futurebuildai/buildos/internal/config"
 	"github.com/futurebuildai/buildos/internal/service"
 	"github.com/futurebuildai/buildos/internal/store"
@@ -60,10 +64,38 @@ func run(logger *slog.Logger) error {
 	procurementStore := store.NewProcurementStore()
 	procurementService := service.NewProcurementService(pool, procurementStore)
 
+	// Outbound A2A: optional. When A2A_SIGNING_KEY_PATH is unset the
+	// worker registry falls back to a no-op handler that logs and
+	// discards. Customer-fork deployments must provision a signing
+	// key (see internal/a2asigner package docs) and add the matching
+	// public key to their JWKS for Brain to verify signatures.
+	var a2aOutbound worker.A2AWebhookDeliverer
+	if cfg.A2ASigningKeyPath != "" {
+		signer, err := a2asigner.NewSignerFromFile(cfg.A2ASigningKeyPath, cfg.A2AKeyID)
+		if err != nil {
+			return fmt.Errorf("loading a2a signing key: %w", err)
+		}
+		targetURL := cfg.BrainOutboundURL
+		if targetURL == "" {
+			// Fallback: same host as the issuer, /api/v1/a2a/webhook
+			// path. The IssuerURL is the OIDC issuer, which lives on
+			// the same Brain deployment.
+			targetURL = strings.TrimRight(cfg.BrainIssuerURL, "/") + "/api/v1/a2a/webhook"
+		}
+		outboundStore := store.NewA2AOutboundStore()
+		a2aOutbound = service.NewA2AOutboundService(pool, outboundStore, signer, targetURL,
+			&http.Client{Timeout: 30 * time.Second}, logger)
+		logger.Info("a2a outbound dispatcher wired",
+			"target_url", targetURL, "key_id", cfg.A2AKeyID)
+	} else {
+		logger.Warn("a2a outbound dispatcher NOT wired — A2A_SIGNING_KEY_PATH unset; outbound events will be discarded")
+	}
+
 	registry, err := worker.NewRegistry(pool, logger, worker.Dependencies{
 		BudgetRunner:          budgetService,
 		NotificationDeliverer: notifService,
 		ProcurementChecker:    procurementService,
+		A2AWebhookDeliverer:   a2aOutbound,
 	})
 	if err != nil {
 		return fmt.Errorf("creating worker registry: %w", err)

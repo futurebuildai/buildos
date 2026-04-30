@@ -82,13 +82,44 @@ type DelayCascadeArgs struct {
 
 func (DelayCascadeArgs) Kind() string { return "delay_cascade" }
 
+// A2AWebhookDispatchArgs is the River job payload for an outbound A2A
+// webhook to The Brain. The full envelope (event_type, payload,
+// trace_id, idempotency_key, timestamp, iss, org_id) is reconstructed
+// in the worker; we serialize only the fields needed to do that here.
+//
+// Payload is a raw JSON document — the same shape Brain receives in
+// the WebhookEvent.Payload field. End-to-end JSON typing matches the
+// JSONB DLQ column.
 type A2AWebhookDispatchArgs struct {
-	EventType string `json:"event_type"`
-	Payload   string `json:"payload"`
-	TraceID   string `json:"trace_id"`
+	OrgID          uuid.UUID       `json:"org_id"`
+	EventType      string          `json:"event_type"`
+	Payload        json.RawMessage `json:"payload"`
+	TraceID        string          `json:"trace_id,omitempty"`
+	IdempotencyKey uuid.UUID       `json:"idempotency_key"`
 }
 
 func (A2AWebhookDispatchArgs) Kind() string { return "a2a_webhook_dispatch" }
+
+// InsertOpts caps River retries at MaxA2AOutboundAttempts. After the
+// final attempt fails the worker records to the DLQ and returns the
+// error so River discards the job.
+func (A2AWebhookDispatchArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{MaxAttempts: 6}
+}
+
+// MaxA2AOutboundAttempts is the cap on River retries for the
+// a2a_webhook_dispatch job. Mirrors the field notification queue's
+// budget and backoff so ops have one mental model for both queues.
+const MaxA2AOutboundAttempts = 6
+
+// A2AWebhookDeliverer is the dependency surface
+// A2AWebhookDispatchWorker needs from the service layer. Defined
+// here (consumer side) for the same reason BudgetRunner /
+// NotificationDeliverer are — keeps worker free of an internal/service
+// import.
+type A2AWebhookDeliverer interface {
+	DeliverA2AWebhook(ctx context.Context, attempt int, args A2AWebhookDispatchArgs) error
+}
 
 type SubLiaisonScanArgs struct{}
 
@@ -267,13 +298,45 @@ func (w *DelayCascadeWorker) Work(ctx context.Context, job *river.Job[DelayCasca
 	return nil
 }
 
+// A2AWebhookDispatchWorker drains queued outbound A2A events and
+// delegates the JWS signing + HTTP POST + DLQ-on-final-failure to a
+// service-layer Deliverer. Custom backoff in NextRetry.
 type A2AWebhookDispatchWorker struct {
 	river.WorkerDefaults[A2AWebhookDispatchArgs]
+	Deliverer A2AWebhookDeliverer
+}
+
+// NewA2AWebhookDispatchWorker panics if deliverer is nil — wiring
+// errors should fail at startup, not at the first scheduled tick.
+func NewA2AWebhookDispatchWorker(d A2AWebhookDeliverer) *A2AWebhookDispatchWorker {
+	if d == nil {
+		panic("worker: A2AWebhookDispatchWorker requires non-nil A2AWebhookDeliverer")
+	}
+	return &A2AWebhookDispatchWorker{Deliverer: d}
 }
 
 func (w *A2AWebhookDispatchWorker) Work(ctx context.Context, job *river.Job[A2AWebhookDispatchArgs]) error {
-	slog.InfoContext(ctx, "a2a_webhook_dispatch: not yet implemented", "event_type", job.Args.EventType)
-	return nil
+	return w.Deliverer.DeliverA2AWebhook(ctx, job.Attempt, job.Args)
+}
+
+// NextRetry mirrors the field notification queue's backoff schedule:
+// aggressive at first (30s), then back off to ~hourly. Total wall
+// clock from first failure to discard: 30s + 60s + 2m + 5m + 30m + 1h
+// ≈ 1h38m.
+func (w *A2AWebhookDispatchWorker) NextRetry(job *river.Job[A2AWebhookDispatchArgs]) time.Time {
+	delays := []time.Duration{
+		30 * time.Second,
+		60 * time.Second,
+		2 * time.Minute,
+		5 * time.Minute,
+		30 * time.Minute,
+		60 * time.Minute,
+	}
+	idx := job.Attempt
+	if idx >= len(delays) {
+		idx = len(delays) - 1
+	}
+	return time.Now().Add(delays[idx])
 }
 
 type SubLiaisonScanWorker struct {

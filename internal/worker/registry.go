@@ -27,6 +27,7 @@ type Dependencies struct {
 	BudgetRunner          BudgetRunner          // CorporateRollupWorker
 	NotificationDeliverer NotificationDeliverer // FieldNotificationRetryWorker
 	ProcurementChecker    ProcurementChecker    // ProcurementCheckWorker
+	A2AWebhookDeliverer   A2AWebhookDeliverer   // A2AWebhookDispatchWorker (optional)
 }
 
 // NewRegistry creates a River worker registry with all job workers registered.
@@ -45,7 +46,14 @@ func NewRegistry(pool *pgxpool.Pool, logger *slog.Logger, deps Dependencies) (*R
 	river.AddWorker(workers, &MaintenanceRemindersWorker{})
 	river.AddWorker(workers, NewFieldNotificationRetryWorker(deps.NotificationDeliverer))
 	river.AddWorker(workers, &DelayCascadeWorker{})
-	river.AddWorker(workers, &A2AWebhookDispatchWorker{})
+	if deps.A2AWebhookDeliverer != nil {
+		river.AddWorker(workers, NewA2AWebhookDispatchWorker(deps.A2AWebhookDeliverer))
+	} else {
+		// No-op fallback for fork deployments that haven't provisioned
+		// a signing key yet — jobs queue but the worker just logs
+		// rather than panicking on a nil deliverer.
+		river.AddWorker(workers, &noopA2AWorker{})
+	}
 	river.AddWorker(workers, &SubLiaisonScanWorker{})
 	river.AddWorker(workers, &PipelineAnalyticsWorker{})
 	river.AddWorker(workers, &PermitIssuedTransitionWorker{})
@@ -118,6 +126,21 @@ func NewRegistry(pool *pgxpool.Pool, logger *slog.Logger, deps Dependencies) (*R
 		pool:    pool,
 		logger:  logger,
 	}, nil
+}
+
+// noopA2AWorker is the fallback for deployments without an outbound
+// A2A signing key wired. River still drains the queue, but the worker
+// logs and discards rather than failing — fork operators see queue
+// depth ticking up in metrics if they forgot to provision a key.
+type noopA2AWorker struct {
+	river.WorkerDefaults[A2AWebhookDispatchArgs]
+}
+
+func (w *noopA2AWorker) Work(ctx context.Context, job *river.Job[A2AWebhookDispatchArgs]) error {
+	slog.WarnContext(ctx, "a2a_webhook_dispatch: no signing key wired; discarding",
+		"event_type", job.Args.EventType,
+		"org_id", job.Args.OrgID)
+	return nil
 }
 
 // Start begins processing jobs. Blocks until ctx is cancelled.

@@ -20,7 +20,9 @@ import (
 // effective.
 
 func newFeedSvcForValidationTests() *FeedService {
-	return NewFeedService(nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	// nil riverClient is fine for validation-only tests — the
+	// outbound enqueue branch is gated on a non-nil client.
+	return NewFeedService(nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 }
 
 func TestFeedService_ListFeed_RejectsMissingOrg(t *testing.T) {
