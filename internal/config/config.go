@@ -5,6 +5,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Config holds all application configuration loaded from environment variables.
@@ -25,6 +27,12 @@ type Config struct {
 	// DevAuthMode: "" = production (validate JWTs only), "header" = inject claims from X-Dev-Auth.
 	// Never set to a non-empty value in production. Future hardening: build-tag gate the header path.
 	DevAuthMode string
+
+	// DefaultOrgID is the fallback tenant for A2A webhooks that arrive
+	// without an explicit org_id in the envelope. Set in single-tenant
+	// fork deployments. Co-op multi-tenant variants leave this empty
+	// and require Brain to populate org_id on every event.
+	DefaultOrgID *uuid.UUID
 
 	// Physics Engine
 	Physics PhysicsConfig
@@ -66,7 +74,8 @@ func Load() (*Config, error) {
 		BrainJWKSURL:   os.Getenv("BRAIN_JWKS_URL"),
 		BrainIssuerURL: os.Getenv("BRAIN_ISSUER_URL"),
 
-		DevAuthMode: getEnvStr("DEV_AUTH_MODE", ""),
+		DevAuthMode:  getEnvStr("DEV_AUTH_MODE", ""),
+		DefaultOrgID: parseOptionalUUID(os.Getenv("DEFAULT_ORG_ID")),
 
 		Physics: PhysicsConfig{
 			StandardHouseSizeSF:    getEnvFloat("PHYSICS_STANDARD_HOUSE_SF", 2000.0),
@@ -116,4 +125,19 @@ func getEnvDuration(key string, fallback time.Duration) time.Duration {
 		}
 	}
 	return fallback
+}
+
+// parseOptionalUUID returns nil for an empty string. Malformed UUIDs
+// also return nil — config loads silently rather than failing startup;
+// the resulting nil triggers an explicit ErrInvalidInput at the first
+// A2A webhook arrival, which is loud enough.
+func parseOptionalUUID(s string) *uuid.UUID {
+	if s == "" {
+		return nil
+	}
+	id, err := uuid.Parse(s)
+	if err != nil {
+		return nil
+	}
+	return &id
 }

@@ -94,6 +94,10 @@ func run(logger *slog.Logger) error {
 	pipelineService := service.NewPipelineService(pool, pipelineStore, riverClient)
 	scheduleStore := store.NewScheduleStore()
 	scheduleService := service.NewScheduleService(pool, scheduleStore, riverClient)
+	a2aStore := store.NewA2AStore()
+	feedCardsStore := store.NewFeedCardsStore()
+	a2aService := service.NewA2AService(pool, a2aStore, feedCardsStore, cfg.DefaultOrgID)
+	a2aVerifier := api.NewJWKSVerifier(jwks) // verifies Brain's JWS using the same JWKS used for JWT validation
 
 	// Build the router with all route groups
 	router := api.NewRouter(api.RouterConfig{
@@ -105,6 +109,8 @@ func run(logger *slog.Logger) error {
 		BudgetService:   budgetService,
 		PipelineService: pipelineService,
 		ScheduleService: scheduleService,
+		A2AService:      a2aService,
+		A2AVerifier:     a2aVerifier,
 	})
 
 	srv := &http.Server{

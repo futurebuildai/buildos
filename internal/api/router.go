@@ -21,6 +21,8 @@ type RouterConfig struct {
 	BudgetService   BudgetServicer
 	PipelineService PipelineServicer
 	ScheduleService ScheduleServicer
+	A2AService      A2AServicer
+	A2AVerifier     JWSVerifier
 }
 
 // NewRouter creates the Chi router with all route groups and middleware.
@@ -46,7 +48,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	field := &FieldHandler{}
 	fleet := &FleetHandler{}
 	hr := &HRHandler{}
-	a2a := NewA2AHandler(cfg.JWKS, cfg.Logger)
+	a2a := NewA2AHandler(cfg.A2AVerifier, cfg.A2AService, cfg.Logger)
 
 	// Auth middleware
 	authMiddleware := mw.Auth(cfg.JWKS, cfg.IssuerURL, cfg.DevAuthMode, cfg.Logger)
