@@ -21,7 +21,7 @@ type A2AHandler struct {
 	logger *slog.Logger
 }
 
-// NewA2AHandler creates a handler for A2A webhook events from FB-Brain.
+// NewA2AHandler creates a handler for A2A webhook events from The Brain.
 func NewA2AHandler(jwks *mw.JWKSProvider, logger *slog.Logger) *A2AHandler {
 	return &A2AHandler{
 		jwks:   jwks,
@@ -29,7 +29,7 @@ func NewA2AHandler(jwks *mw.JWKSProvider, logger *slog.Logger) *A2AHandler {
 	}
 }
 
-// a2aWebhookPayload represents the incoming webhook body from FB-Brain.
+// a2aWebhookPayload represents the incoming webhook body from The Brain.
 type a2aWebhookPayload struct {
 	EventType      string          `json:"event_type"`
 	Payload        json.RawMessage `json:"payload"`
@@ -39,7 +39,7 @@ type a2aWebhookPayload struct {
 	Issuer         string          `json:"iss"`
 }
 
-// ReceiveWebhook processes A2A webhook events from FB-Brain.
+// ReceiveWebhook processes A2A webhook events from The Brain.
 // POST /api/v1/a2a/webhook
 //
 // Auth: JWS detached signature via X-JWS-Signature header.
@@ -94,7 +94,7 @@ func (h *A2AHandler) ReceiveWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 // verifyJWSSignature verifies the detached JWS compact signature against the
-// request body using FB-Brain's public key from JWKS.
+// request body using The Brain's public key from JWKS.
 //
 // JWS Detached Compact Serialization: header..signature (empty payload segment).
 // The actual payload is the raw HTTP body, re-attached for verification.

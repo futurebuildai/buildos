@@ -16,7 +16,7 @@ import (
 	"github.com/go-jose/go-jose/v4/jwt"
 )
 
-// Claims represents the JWT claims issued by FB-Brain OIDC Provider.
+// Claims represents the JWT claims issued by The Brain OIDC Provider.
 type Claims struct {
 	Sub      string `json:"sub"`
 	OrgID    string `json:"org_id"`
@@ -43,7 +43,7 @@ func MustClaimsFromContext(ctx context.Context) Claims {
 	return c
 }
 
-// JWKSProvider fetches and caches the JSON Web Key Set from FB-Brain.
+// JWKSProvider fetches and caches the JSON Web Key Set from The Brain.
 type JWKSProvider struct {
 	jwksURL    string
 	httpClient *http.Client
@@ -125,7 +125,7 @@ func (p *JWKSProvider) refresh(ctx context.Context) (*jose.JSONWebKeySet, error)
 	return p.keySet, nil
 }
 
-// Auth creates middleware that validates JWT Bearer tokens from FB-Brain.
+// Auth creates middleware that validates JWT Bearer tokens from The Brain.
 func Auth(jwks *JWKSProvider, issuerURL string, devBypass bool, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -1,6 +1,6 @@
 # Sprint Plan
 
-**System:** FutureBuild OS (System of Execution)
+**System:** BuildOS (System of Execution)
 **Pipeline Stage:** 08 - Implementation Plan
 **Date:** 2026-04-02
 **Status:** COMPLETE
@@ -13,25 +13,25 @@
 ## Cross-System Dependency Map
 
 ```
-FB-Brain Sprint 0 ──► FB-OS Sprint 0
+The Brain Sprint 0 ──► BuildOS Sprint 0
   (OIDC issuer)        (JWT middleware — BLOCKED until Brain JWKS is live)
 
-FB-Brain Sprint 3 ──► FB-OS Sprint 5
+The Brain Sprint 3 ──► BuildOS Sprint 5
   (A2A Client)          (A2A webhook receiver — BLOCKED until Brain emits signed webhooks)
 
-FB-OS Sprint 0 ──► FB-OS Sprint 1
+BuildOS Sprint 0 ──► BuildOS Sprint 1
   (Core schema + River)  (Physics engine needs project_tasks table)
 
-FB-OS Sprint 1 ──► FB-OS Sprint 2
+BuildOS Sprint 1 ──► BuildOS Sprint 2
   (Schedule engine)      (Financial module references schedule data)
 
-FB-OS Sprint 2 ──► FB-OS Sprint 3
+BuildOS Sprint 2 ──► BuildOS Sprint 3
   (Financial tables)     (Pre-construction estimates use Composite Currency Pattern)
 
-FB-OS Sprints 0–6 ──► FB-OS Sprint 7
+BuildOS Sprints 0–6 ──► BuildOS Sprint 7
   (All backend)          (Lit Web Frontend — BLOCKED until all API endpoints exist)
 
-FB-OS Sprints 0–5 ──► FB-OS Sprint 6
+BuildOS Sprints 0–5 ──► BuildOS Sprint 6
   (Backend + A2A)        (Flutter Field Portal needs sync + field endpoints)
 ```
 
@@ -39,11 +39,11 @@ FB-OS Sprints 0–5 ──► FB-OS Sprint 6
 
 ## Sprint 0: Walking Skeleton (Weeks 1–2)
 
-**Goal:** Authenticated API request to create a project succeeds. River queue processes jobs. JWT validated against FB-Brain.
+**Goal:** Authenticated API request to create a project succeeds. River queue processes jobs. JWT validated against The Brain.
 
 ### Dependencies
 
-- **BLOCKED BY FB-Brain Sprint 0:** JWT middleware requires Brain's `/jwks` endpoint to be live
+- **BLOCKED BY The Brain Sprint 0:** JWT middleware requires Brain's `/jwks` endpoint to be live
 - **Mitigation:** Use static JWKS fixture for Week 1; switch to live Brain JWKS in Week 2
 
 ### Deliverables
@@ -55,7 +55,7 @@ FB-OS Sprints 0–5 ──► FB-OS Sprint 6
 | 3 | River queue setup (migration, river_job tables) | `migrations/002_river_setup.sql` | P0 |
 | 4 | River periodic jobs: initial 6 cron entries | `migrations/002_river_setup.sql` | P0 |
 | 5 | Chi router with middleware stack | `internal/api/router.go` | P0 |
-| 6 | JWT validation middleware (JWKS from FB-Brain, 1hr cache) | `internal/api/middleware/auth.go` | P0 |
+| 6 | JWT validation middleware (JWKS from The Brain, 1hr cache) | `internal/api/middleware/auth.go` | P0 |
 | 7 | RBAC middleware (owner, admin, superintendent, field_worker) | `internal/api/middleware/rbac.go` | P0 |
 | 8 | OpenTelemetry + Prometheus middleware | `internal/api/middleware/telemetry.go` | P1 |
 | 9 | Project CRUD: `GET/POST/PUT /api/v1/projects` | `internal/api/projects.go` | P0 |
@@ -69,7 +69,7 @@ FB-OS Sprints 0–5 ──► FB-OS Sprint 6
 
 ### Exit Criteria
 
-- `POST /api/v1/projects` with valid FB-Brain JWT returns 201
+- `POST /api/v1/projects` with valid The Brain JWT returns 201
 - `POST /api/v1/projects` with invalid/expired JWT returns 401
 - RBAC: `field_worker` role cannot create projects (403)
 - River worker starts and processes a no-op test job
@@ -236,11 +236,11 @@ FB-OS Sprints 0–5 ──► FB-OS Sprint 6
 
 ## Sprint 5: A2A Webhook Receiver + Notifications (Weeks 11–12)
 
-**Goal:** FB-OS receives and processes JWS-signed webhooks from FB-Brain.
+**Goal:** BuildOS receives and processes JWS-signed webhooks from The Brain.
 
 ### Dependencies
 
-- **BLOCKED BY FB-Brain Sprint 3:** Brain must be emitting valid JWS-signed webhooks
+- **BLOCKED BY The Brain Sprint 3:** Brain must be emitting valid JWS-signed webhooks
 - **Mitigation:** Test with locally signed mock webhooks until Brain Sprint 3 deploys
 
 ### Deliverables
@@ -327,7 +327,7 @@ FB-OS Sprints 0–5 ──► FB-OS Sprint 6
 | 5 | SyncService: pull sync (GET /field/sync?since=) | `mobile/lib/services/sync_service.dart` | P0 |
 | 6 | SyncService: push outbox drain (FIFO, idempotency keys) | `mobile/lib/services/sync_service.dart` | P0 |
 | 7 | SyncService: retry with backoff (1s, 2s, 4s, 8s, max 5min) | `mobile/lib/services/sync_service.dart` | P0 |
-| 8 | AuthService: JWT token management (FB-Brain OIDC) | `mobile/lib/services/auth_service.dart` | P0 |
+| 8 | AuthService: JWT token management (The Brain OIDC) | `mobile/lib/services/auth_service.dart` | P0 |
 | 9 | PushService: FCM integration | `mobile/lib/services/push_service.dart` | P1 |
 | 10 | TaskListScreen: assigned tasks with completion percentage | `mobile/lib/screens/task_list_screen.dart` | P0 |
 | 11 | DailyLogScreen: weather, summary, safety, photos | `mobile/lib/screens/daily_log_screen.dart` | P0 |

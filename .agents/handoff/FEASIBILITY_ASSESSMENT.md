@@ -88,7 +88,7 @@
 - pkg/a2a/ package already exists
 - TypeA2AWebhookDispatch task type defined
 - A2AServicer interface with LogExecution, GetExecutionLogs, GetActiveAgents, PauseAgent, ResumeAgent
-- FB-Brain already communicates via webhooks
+- The Brain already communicates via webhooks
 
 **Technical Challenges:**
 1. A2A v0.3 is pre-1.0 -- breaking changes possible
@@ -96,7 +96,7 @@
 3. Agent Card discovery requires new endpoint (/a2a/agent-card)
 4. Must maintain backward compatibility with existing cron triggers
 
-**Prototype Validation:** Publish Agent Card for ProcurementAgent. Test FB-Brain invoking "analyze_procurement" skill via A2A task endpoint.
+**Prototype Validation:** Publish Agent Card for ProcurementAgent. Test The Brain invoking "analyze_procurement" skill via A2A task endpoint.
 
 **Offline Field Sync (L8 Requirement):**
 - Brain→OS A2A webhooks are server-to-server and always online — no delivery gap
@@ -159,7 +159,7 @@
 | Redis / Asynq | Production | Migrate to River (PostgreSQL-native) | 2-3 sprints |
 | Lit 3.0 frontend | Production | Lit 4.0 | Minor upgrade |
 | Flutter mobile | Planned | Offline-first field app | New development |
-| Clerk auth | Production | Remove, delegate to FB-Brain JWT | 1-2 sprints |
+| Clerk auth | Production | Remove, delegate to The Brain JWT | 1-2 sprints |
 | Docker / Railway | Production | Continue | None |
 | Tomorrow.io API | Not integrated | SWIM v2 source | New integration |
 | Samsara API | Not integrated | Fleet telematics | New integration |

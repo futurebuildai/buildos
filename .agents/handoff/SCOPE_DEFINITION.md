@@ -15,10 +15,10 @@ The walking skeleton proves the architecture end-to-end with minimal functionali
 | Backend | River queue migration (1 task type: daily_briefing). New /api/v1/org/financials endpoint returning mock CorporateBudget data. |
 | Frontend | fb-org-shell with fb-org-nav. One view: fb-financials-view with fb-budget-summary card showing hardcoded data. GableLBM tokens applied. |
 | Mobile | Flutter scaffold with Drift local database. One screen: task list with offline read. |
-| Auth | JWT validation from FB-Brain (remove Clerk dependency). |
+| Auth | JWT validation from The Brain (remove Clerk dependency). |
 | CI/CD | GitHub Actions pipeline building all three targets. Includes BIGINT cents SQL migration linter (hard fail), CPM benchmark gate (`make audit`), and contract tests. |
 
-**Exit Criteria:** User can log in via FB-Brain JWT, see a financial summary card in the Industrial Dark dashboard, and open the Flutter app to see a task list.
+**Exit Criteria:** User can log in via The Brain JWT, see a financial summary card in the Industrial Dark dashboard, and open the Flutter app to see a task list.
 
 ---
 
@@ -205,7 +205,7 @@ When permit status = "approved" AND permit_issued_date is set:
 - Invoice extraction accuracy improvements
 
 ### Phase 4: Advanced AI (Week 41-52)
-- M10: A2A Agent Cards (FB-Brain integration)
+- M10: A2A Agent Cards (The Brain integration)
 - Tribunal Level 2: auto-order with 24h owner approval window
 - Multi-project resource leveling
 - SWIM v2 historical calibration
@@ -237,7 +237,7 @@ When permit status = "approved" AND permit_issued_date is set:
 
 | Dependency | Blocker For | Owner | Status |
 |-----------|-------------|-------|--------|
-| FB-Brain JWT issuer endpoint | Walking skeleton auth | FB-Brain team | NEEDED |
+| The Brain JWT issuer endpoint | Walking skeleton auth | The Brain team | NEEDED |
 | Tomorrow.io API key | M3: SWIM v2 | DevOps | NEEDED |
 | River library evaluation | Walking skeleton queue | Backend team | NEEDED |
 | Firebase project setup | M4: Flutter push | DevOps | NEEDED |

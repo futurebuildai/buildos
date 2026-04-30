@@ -32,7 +32,7 @@ These metrics validate that the architecture works end-to-end. They are pass/fai
 
 | Metric | Pass Criteria | Measurement |
 |--------|--------------|-------------|
-| JWT Auth Flow | User authenticates via FB-Brain JWT, receives valid session in FB-OS | Manual test: login flow completes without Clerk dependency |
+| JWT Auth Flow | User authenticates via The Brain JWT, receives valid session in BuildOS | Manual test: login flow completes without Clerk dependency |
 | River Queue Health | daily_briefing task enqueues, executes, and completes without error | River job dashboard: 0 failed jobs over 24-hour window |
 | Dashboard Render | fb-budget-summary card renders with mock CorporateBudget data in GableLBM Industrial Dark theme | Visual inspection: Deep Space background, Gable Green accents, glassmorphism card, JetBrains Mono numbers |
 | Flutter Offline Read | Task list displays cached data when device is in airplane mode | Manual test: load tasks with connectivity, disconnect, verify list still displays |
@@ -134,7 +134,7 @@ These are **computation-only** targets for the deterministic physics engine, mea
 
 | Feature | Key Metric | Target |
 |---------|-----------|--------|
-| M10: A2A Agent Cards | FB-Brain successful skill invocations | >95% success rate |
+| M10: A2A Agent Cards | The Brain successful skill invocations | >95% success rate |
 | Tribunal Level 2 | Auto-order approval rate (owner confirms within 24h) | >90% |
 | Tribunal Level 2 | Auto-order error rate (orders that needed reversal) | <2% |
 | SWIM v2 Calibration | Prediction accuracy improvement with historical data | >85% (up from 75% target) |

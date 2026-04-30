@@ -18,7 +18,7 @@ type Config struct {
 	// Server
 	Port string
 
-	// Auth (FB-Brain OIDC)
+	// Auth (The Brain OIDC)
 	BrainJWKSURL   string
 	BrainIssuerURL string
 

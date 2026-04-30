@@ -1,17 +1,17 @@
 # API Contract Specification
 
-**System:** FutureBuild OS (System of Execution)
+**System:** BuildOS (System of Execution)
 **Pipeline Stage:** 07 - Architecture Spec
 **Date:** 2026-04-02
 **Status:** COMPLETE
 **Base URL:** `/api/v1`
-**Auth:** All endpoints (except /health) require Bearer JWT issued by FB-Brain OIDC Provider
+**Auth:** All endpoints (except /health) require Bearer JWT issued by The Brain OIDC Provider
 
 ---
 
 ## 1. Authentication & Authorization
 
-### 1.1 JWT Claims (from FB-Brain)
+### 1.1 JWT Claims (from The Brain)
 
 | Claim | Type | Description |
 |-------|------|-------------|
@@ -19,7 +19,7 @@
 | `org_id` | string | Organization ID |
 | `role` | string | `owner`, `admin`, `superintendent`, `field_worker` |
 | `plan_tier` | string | `free`, `pro`, `enterprise` |
-| `iss` | string | FB-Brain issuer URL |
+| `iss` | string | The Brain issuer URL |
 | `aud` | string | `fb-os` |
 | `exp` | int | Expiry timestamp |
 | `iat` | int | Issued-at timestamp |
@@ -523,7 +523,7 @@ ALL monetary fields follow the Composite Currency Pattern:
 ## 12. A2A Webhook Receiver
 
 ### POST /api/v1/a2a/webhook
-- **Auth:** JWS detached signature (X-JWS-Signature header, verified with FB-Brain public key)
+- **Auth:** JWS detached signature (X-JWS-Signature header, verified with The Brain public key)
 - **No JWT required** — this is a system-to-system endpoint
 - **Headers:**
   - `X-JWS-Signature`: RS256 JWS detached compact serialization

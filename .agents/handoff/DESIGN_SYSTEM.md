@@ -1,7 +1,7 @@
 # Design System — GableLBM Industrial Dark
 
 **Document ID:** AG-05-DS
-**System:** FutureBuild OS (System of Execution)
+**System:** BuildOS (System of Execution)
 **Created:** 2026-04-02
 **Pipeline Stage:** 05 - Design System
 **Status:** COMPLETE
@@ -535,7 +535,7 @@ export class FBBudgetSummary extends FBElement {
 
 ## 14. Dark Mode Policy
 
-FutureBuild OS is **dark-only**. There is no light mode. The Industrial Dark aesthetic is a core brand identity element, not a user preference.
+BuildOS is **dark-only**. There is no light mode. The Industrial Dark aesthetic is a core brand identity element, not a user preference.
 
 - No `prefers-color-scheme: light` media query
 - No theme toggle UI

@@ -16,14 +16,14 @@ The Construction Project Management Software market grew from $2.59B (2024) to $
 
 ### Tier 1: Enterprise Construction PM
 
-| Platform | Target | Pricing | Key Strength | Key Weakness | FB-OS Advantage |
+| Platform | Target | Pricing | Key Strength | Key Weakness | BuildOS Advantage |
 |----------|--------|---------|-------------|-------------|----------------|
 | **Procore** | Commercial GCs, 50+ employees | Opaque, custom quotes ($500-2000+/mo) | Comprehensive feature set, ecosystem integrations | Too complex for residential, 3-6 month onboarding, black box pricing | Transparent CPM scheduling, residential focus, AI-native |
 | **Oracle Primavera P6** | Enterprise infrastructure | $2,000+/user/year | Industry-standard CPM, resource leveling | Extremely complex, not cloud-native, no AI | Modern stack, autonomous agents, accessible UX |
 
 ### Tier 2: Residential Construction PM
 
-| Platform | Target | Pricing | Key Strength | Key Weakness | FB-OS Advantage |
+| Platform | Target | Pricing | Key Strength | Key Weakness | BuildOS Advantage |
 |----------|--------|---------|-------------|-------------|----------------|
 | **Buildertrend** | Residential builders, 5-50 employees | $499-1,099/mo | Client portal, selection sheets, scheduling | Limited automation, data portability issues, pricing hikes | Deterministic scheduling, autonomous procurement, SWIM weather |
 | **CoConstruct** (Buildertrend subsidiary) | Custom home builders, remodelers | Folded into Buildertrend pricing | 100K+ user base | No meaningful updates since acquisition, users pushed to BT | Active development, AI-powered features |
@@ -31,7 +31,7 @@ The Construction Project Management Software market grew from $2.59B (2024) to $
 
 ### Tier 3: Trade Contractor / Niche
 
-| Platform | Target | Pricing | Key Strength | Key Weakness | FB-OS Advantage |
+| Platform | Target | Pricing | Key Strength | Key Weakness | BuildOS Advantage |
 |----------|--------|---------|-------------|-------------|----------------|
 | **Knowify** | Trade contractors, remodelers | $149-399/mo | QuickBooks integration, AIA billing, multi-phase jobs | Not for GCs/builders, limited scheduling | Full project lifecycle, organization-level dashboard |
 | **Planera** | Small-mid contractors | $49-199/mo | AI-powered scheduling, simple UX | New entrant, unproven at scale | Battle-tested physics engine, production deployment |
@@ -39,7 +39,7 @@ The Construction Project Management Software market grew from $2.59B (2024) to $
 
 ### Tier 4: Emerging AI-Native
 
-| Platform | Target | Pricing | Key Strength | Key Weakness | FB-OS Advantage |
+| Platform | Target | Pricing | Key Strength | Key Weakness | BuildOS Advantage |
 |----------|--------|---------|-------------|-------------|----------------|
 | **inBuild** | Residential builders | Early stage | AI-first approach | Unproven, limited track record | Production codebase, deterministic engine |
 | **ALICE Technologies** | Commercial GCs | Enterprise | Generative scheduling, simulation | Commercial-only, expensive | Residential focus, simpler model |
@@ -52,11 +52,11 @@ The Construction Project Management Software market grew from $2.59B (2024) to $
                     AI-Native
                        ^
                        |
-                  FB-OS (2030)
+                  BuildOS (2030)
                        |
      Planera   --------+-------- ALICE
                        |
-Simple <---- FB-OS ----+---- Procore ----> Complex
+Simple <---- BuildOS ----+---- Procore ----> Complex
   UX       (current)   |                     UX
                        |
      Knowify  ---------+-------- Primavera P6
@@ -68,7 +68,7 @@ Simple <---- FB-OS ----+---- Procore ----> Complex
 
 ## Feature Comparison (Residential Focus)
 
-| Feature | FB-OS | Procore | Buildertrend | Knowify | Planera |
+| Feature | BuildOS | Procore | Buildertrend | Knowify | Planera |
 |---------|-------|---------|-------------|---------|---------|
 | CPM Forward/Backward Pass | FULL (FS/SS/FF/SF) | Basic | Simple Gantt | None | AI-assisted |
 | Deterministic Scheduling | YES (integer math) | No | No | No | No |
@@ -106,7 +106,7 @@ Simple <---- FB-OS ----+---- Procore ----> Complex
 
 ## Strategic Opportunity
 
-FutureBuild OS occupies a unique position: the only platform with a deterministic, auditable CPM engine designed for residential construction, combined with autonomous agents and AI-native architecture. The competitive moat is:
+BuildOS occupies a unique position: the only platform with a deterministic, auditable CPM engine designed for residential construction, combined with autonomous agents and AI-native architecture. The competitive moat is:
 
 1. **Physics Engine** -- No competitor has an open, deterministic CPM solver with integer-math guarantees
 2. **Autonomous Agents** -- DailyFocus/Procurement/SubLiaison with Tribunal governance is architecturally ahead of any competitor

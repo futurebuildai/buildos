@@ -52,7 +52,7 @@
 
 | Step | Action | System | Touchpoint |
 |------|--------|--------|-----------|
-| 1 | Tom logs in (JWT from FB-Brain), lands on Organization dashboard | Centralized JWT delegation, dark Industrial theme | Web dashboard |
+| 1 | Tom logs in (JWT from The Brain), lands on Organization dashboard | Centralized JWT delegation, dark Industrial theme | Web dashboard |
 | 2 | Top row: 10 active projects, $4.2M total estimated, $2.8M committed, $1.9M actual | CorporateFinancialsServicer.RollupCorporateBudget() | Glassmorphism summary cards |
 | 3 | AR Aging widget: $320K current, $45K 30-day, $12K 60-day, $8K 90+ | CalculateARAging() -> ARAgingSnapshot | Stacked bar chart (JetBrains Mono) |
 | 4 | Tom clicks "Maple Estate" row -> drills into project financials | GetBudgetBreakdown by WBS phase | Project detail panel |

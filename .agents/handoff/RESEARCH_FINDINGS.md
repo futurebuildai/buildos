@@ -131,7 +131,7 @@ Sources: [Asynq vs Machinery vs Work](https://medium.com/@geisonfgfg/task-queues
 
 Key trend: convergence toward graph-based orchestration. All major frameworks now adopt graph/workflow execution models.
 
-**Recommendation:** Keep agents in Go (not Python) to maintain the "NO Python" constraint. Adopt A2A protocol for external agent communication (FB-Brain integration). Internal agents remain Go services with the existing builder pattern. The Tribunal ConsensusEngine already implements the multi-model pattern -- evolve it into the decision authority for autonomous actions.
+**Recommendation:** Keep agents in Go (not Python) to maintain the "NO Python" constraint. Adopt A2A protocol for external agent communication (The Brain integration). Internal agents remain Go services with the existing builder pattern. The Tribunal ConsensusEngine already implements the multi-model pattern -- evolve it into the decision authority for autonomous actions.
 
 Sources: [A2A Protocol IBM](https://www.ibm.com/think/topics/agent2agent-protocol), [Google A2A Announcement](https://developers.googleblog.com/en/a2a-a-new-era-of-agent-interoperability/), [A2A v0.3 Upgrade](https://cloud.google.com/blog/products/ai-machine-learning/agent2agent-protocol-is-getting-an-upgrade), [AI Agent Framework Comparison 2026](https://o-mega.ai/articles/langgraph-vs-crewai-vs-autogen-top-10-agent-frameworks-2026)
 

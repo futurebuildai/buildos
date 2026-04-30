@@ -1,7 +1,7 @@
 # Pipeline State
 
 **Date:** 2026-04-02
-**System:** FutureBuild OS -- 2030-Ready AI-Native Revamp
+**System:** BuildOS -- 2030-Ready AI-Native Revamp
 **Orchestrator:** Antigravity Pipeline (Stages 00-04)
 **Status:** PAUSED AT APPROVAL GATE 1
 
@@ -28,7 +28,7 @@
 
 **What is being approved:**
 
-1. **Walking Skeleton scope** (Week 1-4): River queue migration, JWT auth from FB-Brain, fb-org-shell with GableLBM tokens, Flutter scaffold with Drift, GitHub Actions CI/CD
+1. **Walking Skeleton scope** (Week 1-4): River queue migration, JWT auth from The Brain, fb-org-shell with GableLBM tokens, Flutter scaffold with Drift, GitHub Actions CI/CD
 2. **MVP feature set** (Week 5-20): 10 features (M1-M10) with P0/P1/P2 prioritization
 3. **Build vs Buy decisions**: 25+ decisions including BUILD for CPM, dashboard, agents, Tribunal; BUY for Tomorrow.io, River, Samsara, payroll integration
 4. **Post-MVP phasing**: 4 phases through Week 53+ covering operations, billing, advanced AI, and scale
@@ -51,7 +51,7 @@
 
 | Dependency | Blocker For | Owner | Status | Action Needed |
 |-----------|-------------|-------|--------|---------------|
-| FB-Brain JWT issuer endpoint | Walking skeleton auth | FB-Brain team | NEEDED | Coordinate with FB-Brain team to expose /auth/token endpoint |
+| The Brain JWT issuer endpoint | Walking skeleton auth | The Brain team | NEEDED | Coordinate with The Brain team to expose /auth/token endpoint |
 | Tomorrow.io API key | M3: SWIM v2 | DevOps | NEEDED | Sign up for free tier, store key in environment config |
 | River library evaluation | Walking skeleton queue | Backend team | NEEDED | Benchmark River vs Asynq: job throughput, failure modes, observability |
 | Firebase project setup | M4: Flutter push | DevOps | NEEDED | Create Firebase project, configure FCM, add google-services.json |
@@ -147,7 +147,7 @@ The following reference-vault files were read and analyzed during Stages 00-01:
 - `reference-vault/futurebuild-os/specs/FRONTEND_SCOPE.md`
 
 **Cross-System (2 files):**
-- `reference-vault/FB-Brain/CLAUDE.md`
+- `reference-vault/The Brain/CLAUDE.md`
 - `.agents/TECH_STACK.md`
 
 **Total: 26 vault files consumed, ~4,000+ lines of legacy code and specification analyzed.**

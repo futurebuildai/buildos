@@ -1,6 +1,6 @@
 # Architecture Specification
 
-**System:** FutureBuild OS (System of Execution)
+**System:** BuildOS (System of Execution)
 **Pipeline Stage:** 07 - Architecture Spec
 **Date:** 2026-04-02
 **Status:** COMPLETE
@@ -9,11 +9,11 @@
 
 ## 1. System Overview
 
-FutureBuild OS is a Go backend + Lit frontend + Flutter mobile system that serves as the execution plane for residential construction management. It covers the full project lifecycle from lead capture through construction completion — owning the pre-construction pipeline (CRM, estimating, permits), deterministic scheduling (CPM physics engine), financial records (Composite Currency Pattern: USD + CAD), autonomous AI agents, and field operations.
+BuildOS is a Go backend + Lit frontend + Flutter mobile system that serves as the execution plane for residential construction management. It covers the full project lifecycle from lead capture through construction completion — owning the pre-construction pipeline (CRM, estimating, permits), deterministic scheduling (CPM physics engine), financial records (Composite Currency Pattern: USD + CAD), autonomous AI agents, and field operations.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        FutureBuild OS                           │
+│                        BuildOS                           │
 │                                                                 │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────┐   │
 │  │ Lit Web  │  │ Flutter  │  │ REST API │  │ River Worker │   │
@@ -47,7 +47,7 @@ FutureBuild OS is a Go backend + Lit frontend + Flutter mobile system that serve
           │ JWT Validation (JWKS)              │ A2A Webhooks (JWS)
           ▼                                    │
     ┌─────────────┐                     ┌──────────────┐
-    │  FB-Brain   │────────────────────▶│  FB-Brain    │
+    │  The Brain   │────────────────────▶│  The Brain    │
     │ OIDC Issuer │  (Identity Source)  │ A2A Emitter  │
     └─────────────┘                     └──────────────┘
 ```
@@ -67,7 +67,7 @@ futurebuild-os/
 │   ├── api/             # HTTP handlers (thin layer — delegates to services)
 │   │   ├── router.go    # Chi router setup with middleware stack
 │   │   ├── middleware/   # JWT validation, RBAC, request logging, CORS
-│   │   │   ├── auth.go       # JWT validation via FB-Brain JWKS
+│   │   │   ├── auth.go       # JWT validation via The Brain JWKS
 │   │   │   ├── rbac.go       # Role-based access control
 │   │   │   └── telemetry.go  # OpenTelemetry span + Prometheus middleware
 │   │   ├── financials.go     # /api/v1/org/{orgID}/financials/* handlers
@@ -205,10 +205,10 @@ CREATE TABLE organizations (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Users (identity from FB-Brain OIDC)
+-- Users (identity from The Brain OIDC)
 CREATE TABLE users (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    oidc_subject    TEXT NOT NULL UNIQUE,  -- FB-Brain OIDC sub claim
+    oidc_subject    TEXT NOT NULL UNIQUE,  -- The Brain OIDC sub claim
     org_id          UUID NOT NULL REFERENCES organizations(id),
     email           TEXT NOT NULL,
     display_name    TEXT NOT NULL,
@@ -608,7 +608,7 @@ All River jobs replace legacy Asynq task types. Each job is a Go struct implemen
 | `maintenance_reminders` | 08:00 UTC Monday | TypeMaintenanceReminders | Checks fleet maintenance schedules |
 | `field_notification_retry` | Event-driven | TypeFieldNotificationRetry | Retries failed push notifications (backoff: 30s→1hr, 6 retries) |
 | `delay_cascade` | Event-driven | TypeDelayCascade | Recalculates CPM when task delays are reported |
-| `a2a_webhook_dispatch` | Event-driven | TypeA2AWebhookDispatch | Dispatches A2A webhooks to FB-Brain |
+| `a2a_webhook_dispatch` | Event-driven | TypeA2AWebhookDispatch | Dispatches A2A webhooks to The Brain |
 | `sub_liaison_scan` | 12:00 UTC daily | (new) | SubLiaisonAgent scans tasks starting within 48-72h |
 | `pipeline_analytics` | 06:00 UTC daily | (new) | Recalculates weighted pipeline revenue per currency_code |
 | `permit_issued_transition` | Event-driven | (new) | Kanban→CPM atomic transition on permit issuance |
@@ -695,7 +695,7 @@ func (s *PipelineService) TransitionToConstruction(ctx context.Context, prospect
 All routes (except `/health`) require JWT validation:
 
 ```go
-// JWT claims from FB-Brain OIDC
+// JWT claims from The Brain OIDC
 type Claims struct {
     Sub      string `json:"sub"`       // OIDC subject (user ID in Brain)
     OrgID    string `json:"org_id"`    // Organization ID
@@ -1035,12 +1035,12 @@ jobs:
 
 ## 10. Cross-System Integration
 
-### 10.1 JWT Validation (FB-Brain -> FB-OS)
+### 10.1 JWT Validation (The Brain -> BuildOS)
 
 ```go
 // JWKS-based JWT validation middleware
 type JWKSValidator struct {
-    jwksURL     string              // FB-Brain's /.well-known/jwks.json
+    jwksURL     string              // The Brain's /.well-known/jwks.json
     cachedKeys  *jwk.Set            // Cached JWKS key set
     refreshedAt time.Time
     mu          sync.RWMutex
