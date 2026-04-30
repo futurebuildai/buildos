@@ -1,4 +1,4 @@
-.PHONY: build build-server build-worker build-migrate build-dev-idp dev-idp test lint lint-migrations migrate migrate-down db-up db-down audit bench-physics clean
+.PHONY: build build-server build-worker build-migrate build-dev-idp dev-idp test test-integration lint lint-migrations migrate migrate-down db-up db-down audit bench-physics clean
 
 # Default DATABASE_URL for local dev (docker-compose db on port 5433)
 DATABASE_URL ?= postgres://fb_user:fb_pass@localhost:5433/futurebuild_os?sslmode=disable
@@ -24,9 +24,14 @@ build-dev-idp:
 dev-idp: build-dev-idp
 	./bin/dev-idp
 
-## Test
+## Test (unit only — no Docker required)
 test:
 	go test ./... -count=1
+
+## Integration tests — spawns ephemeral Postgres containers via Testcontainers.
+## Requires Docker. Tests gated behind the `integration` build tag.
+test-integration:
+	go test -tags=integration -count=1 ./...
 
 ## Lint
 lint:

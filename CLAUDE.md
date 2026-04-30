@@ -17,7 +17,8 @@ Status: Sprint 1. CPM engine, schedule service, auth middleware, worker registry
 ```bash
 make build              # builds bin/server and bin/worker
 make build-migrate      # builds bin/migrate (separate target)
-make test               # go test ./... -count=1
+make test               # unit tests only (no Docker)
+make test-integration   # integration tests via Testcontainers (Docker required)
 make lint               # golangci-lint run ./...
 make lint-migrations    # bash scripts/lint-migrations.sh — see "Composite Currency" below
 make db-up              # docker compose up -d db (Postgres 16, port 5433)
@@ -30,8 +31,11 @@ make audit              # lint-migrations + test + bench-physics — full pre-me
 
 Run a single Go test: `go test ./internal/physics/... -run TestCPMDeterminism -count=1`
 Run a single benchmark: `go test -bench=BenchmarkCPM80Tasks -benchtime=10x ./internal/physics/...`
+Run a single integration test: `go test -tags=integration -count=1 -run TestFinancialsStore_CreateInvoice_RoundTrip ./internal/store/...`
 
 Local Postgres listens on **port 5433** (not 5432) to avoid conflicts. Default DSN is hardcoded into the `Makefile`.
+
+Integration tests live behind the `//go:build integration` build tag. They spawn ephemeral Postgres 16 containers via Testcontainers, apply all `migrations/*.up.sql`, and tear down at test exit. The shared fixtures live in [internal/testdb](internal/testdb/) — call `testdb.NewPool(t)` from any test file with the integration tag and you get a freshly migrated pool with auto-cleanup.
 
 ## Architecture
 
