@@ -8,9 +8,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/futurebuild/futurebuild-os/internal/config"
-	"github.com/futurebuild/futurebuild-os/internal/store"
-	"github.com/futurebuild/futurebuild-os/internal/worker"
+	"github.com/futurebuildai/buildos/internal/config"
+	"github.com/futurebuildai/buildos/internal/store"
+	"github.com/futurebuildai/buildos/internal/worker"
 )
 
 func main() {

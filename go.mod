@@ -1,4 +1,4 @@
-module github.com/futurebuild/futurebuild-os
+module github.com/futurebuildai/buildos
 
 go 1.26.1
 

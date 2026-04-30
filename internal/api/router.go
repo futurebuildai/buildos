@@ -8,7 +8,7 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	mw "github.com/futurebuild/futurebuild-os/internal/api/middleware"
+	mw "github.com/futurebuildai/buildos/internal/api/middleware"
 )
 
 // RouterConfig holds all dependencies needed to build the API router.

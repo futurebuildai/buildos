@@ -11,7 +11,7 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 
-	mw "github.com/futurebuild/futurebuild-os/internal/api/middleware"
+	mw "github.com/futurebuildai/buildos/internal/api/middleware"
 )
 
 // A2AHandler handles the POST /api/v1/a2a/webhook endpoint.

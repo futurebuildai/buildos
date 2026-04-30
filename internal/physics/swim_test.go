@@ -3,8 +3,8 @@ package physics
 import (
 	"testing"
 
-	"github.com/futurebuild/futurebuild-os/internal/models"
-	"github.com/futurebuild/futurebuild-os/internal/models/types"
+	"github.com/futurebuildai/buildos/internal/models"
+	"github.com/futurebuildai/buildos/internal/models/types"
 )
 
 func TestApplyWeatherAdjustment(t *testing.T) {

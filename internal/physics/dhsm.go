@@ -4,9 +4,9 @@ import (
 	"math"
 	"time"
 
-	"github.com/futurebuild/futurebuild-os/internal/config"
-	"github.com/futurebuild/futurebuild-os/internal/models"
-	"github.com/futurebuild/futurebuild-os/internal/models/types"
+	"github.com/futurebuildai/buildos/internal/config"
+	"github.com/futurebuildai/buildos/internal/models"
+	"github.com/futurebuildai/buildos/internal/models/types"
 )
 
 // WorkDayPrecision is the granularity for task duration quantization (30 minutes).

@@ -10,10 +10,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/futurebuild/futurebuild-os/internal/api"
-	"github.com/futurebuild/futurebuild-os/internal/api/middleware"
-	"github.com/futurebuild/futurebuild-os/internal/config"
-	"github.com/futurebuild/futurebuild-os/internal/store"
+	"github.com/futurebuildai/buildos/internal/api"
+	"github.com/futurebuildai/buildos/internal/api/middleware"
+	"github.com/futurebuildai/buildos/internal/config"
+	"github.com/futurebuildai/buildos/internal/store"
 )
 
 func main() {

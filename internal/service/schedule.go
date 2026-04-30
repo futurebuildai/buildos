@@ -11,9 +11,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
-	"github.com/futurebuild/futurebuild-os/internal/physics"
-	"github.com/futurebuild/futurebuild-os/internal/store"
-	"github.com/futurebuild/futurebuild-os/internal/worker"
+	"github.com/futurebuildai/buildos/internal/physics"
+	"github.com/futurebuildai/buildos/internal/store"
+	"github.com/futurebuildai/buildos/internal/worker"
 )
 
 // ScheduleService orchestrates CPM scheduling with transactional guarantees.
