@@ -162,3 +162,20 @@ func SeedProject(t *testing.T, pool *pgxpool.Pool, projectID, orgID uuid.UUID, n
 		t.Fatalf("seed project: %v", err)
 	}
 }
+
+// SeedUser inserts a minimal user row. oidc_subject and email are
+// derived from id so calls don't collide on UNIQUE constraints when
+// many tests share a pool. Useful when a test needs a valid user_id
+// FK target (e.g. field_notification_dlq).
+func SeedUser(t *testing.T, pool *pgxpool.Pool, userID, orgID uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+	_, err := pool.Exec(ctx, `
+		INSERT INTO users (id, oidc_subject, org_id, email, display_name)
+		VALUES ($1, $2, $3, $4, $5)`,
+		userID, userID.String(), orgID,
+		userID.String()+"@test.local", "Test User")
+	if err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+}

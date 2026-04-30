@@ -50,8 +50,16 @@ func run(logger *slog.Logger) error {
 	financialsStore := store.NewFinancialsStore()
 	budgetService := service.NewBudgetService(pool, financialsStore)
 
+	// Notification delivery: the LoggingSender just logs and succeeds
+	// — fine until Sprint 5 PR 3 swaps in real Twilio/FCM senders.
+	// Even with the no-op sender wired, the DLQ infra + River retry
+	// machinery is exercised at startup.
+	notifStore := store.NewNotificationsStore()
+	notifService := service.NewNotificationDeliveryService(pool, service.NewLoggingSender(logger), notifStore, logger)
+
 	registry, err := worker.NewRegistry(pool, logger, worker.Dependencies{
-		BudgetRunner: budgetService,
+		BudgetRunner:          budgetService,
+		NotificationDeliverer: notifService,
 	})
 	if err != nil {
 		return fmt.Errorf("creating worker registry: %w", err)

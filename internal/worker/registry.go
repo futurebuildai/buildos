@@ -24,7 +24,8 @@ type Registry struct {
 // without dependencies stay zero-init; new workers gain fields here as
 // they require service-layer access.
 type Dependencies struct {
-	BudgetRunner BudgetRunner // CorporateRollupWorker
+	BudgetRunner          BudgetRunner          // CorporateRollupWorker
+	NotificationDeliverer NotificationDeliverer // FieldNotificationRetryWorker
 }
 
 // NewRegistry creates a River worker registry with all job workers registered.
@@ -41,7 +42,7 @@ func NewRegistry(pool *pgxpool.Pool, logger *slog.Logger, deps Dependencies) (*R
 	river.AddWorker(workers, NewCorporateRollupWorker(deps.BudgetRunner))
 	river.AddWorker(workers, &CertificationAlertsWorker{})
 	river.AddWorker(workers, &MaintenanceRemindersWorker{})
-	river.AddWorker(workers, &FieldNotificationRetryWorker{})
+	river.AddWorker(workers, NewFieldNotificationRetryWorker(deps.NotificationDeliverer))
 	river.AddWorker(workers, &DelayCascadeWorker{})
 	river.AddWorker(workers, &A2AWebhookDispatchWorker{})
 	river.AddWorker(workers, &SubLiaisonScanWorker{})

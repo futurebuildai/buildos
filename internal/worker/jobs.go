@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -46,13 +47,34 @@ type MaintenanceRemindersArgs struct{}
 
 func (MaintenanceRemindersArgs) Kind() string { return "maintenance_reminders" }
 
+// FieldNotificationRetryArgs is the River job payload for a single
+// notification delivery attempt. Payload is a raw JSON document whose
+// shape depends on NotificationType (sms: {"to","body"}, push: FCM/APNs
+// shape, email: SES/Resend shape). End-to-end JSON typing keeps the
+// data flow consistent with the JSONB DLQ column.
 type FieldNotificationRetryArgs struct {
-	UserID           uuid.UUID `json:"user_id"`
-	NotificationType string    `json:"notification_type"`
-	Payload          string    `json:"payload"`
+	UserID           uuid.UUID       `json:"user_id"`
+	NotificationType string          `json:"notification_type"`
+	Payload          json.RawMessage `json:"payload"`
 }
 
 func (FieldNotificationRetryArgs) Kind() string { return "field_notification_retry" }
+
+// InsertOpts caps River retries at MaxNotificationAttempts. After the
+// final attempt fails the worker records to the DLQ and returns the
+// error so River discards the job.
+func (FieldNotificationRetryArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{MaxAttempts: 6}
+}
+
+// NotificationDeliverer is the dependency surface
+// FieldNotificationRetryWorker needs from the service layer. Defined
+// here (consumer side) for the same reason BudgetRunner is — keeps
+// worker free of an internal/service import (service already imports
+// worker for River args, and a back-edge would create a cycle).
+type NotificationDeliverer interface {
+	DeliverNotification(ctx context.Context, attempt int, args FieldNotificationRetryArgs) error
+}
 
 type DelayCascadeArgs struct {
 	ProjectID uuid.UUID `json:"project_id"`
@@ -162,13 +184,47 @@ func (w *MaintenanceRemindersWorker) Work(ctx context.Context, job *river.Job[Ma
 	return nil
 }
 
+// FieldNotificationRetryWorker delivers a notification (SMS / push /
+// email) and lets River retry on failure with the custom backoff
+// schedule defined in NextRetry. The worker is thin: it delegates to a
+// NotificationDeliverer (the service layer) which holds the sender +
+// the DLQ writer.
 type FieldNotificationRetryWorker struct {
 	river.WorkerDefaults[FieldNotificationRetryArgs]
+	Deliverer NotificationDeliverer
+}
+
+// NewFieldNotificationRetryWorker panics if deliverer is nil — wiring
+// errors should fail at startup, not at the first scheduled tick.
+func NewFieldNotificationRetryWorker(d NotificationDeliverer) *FieldNotificationRetryWorker {
+	if d == nil {
+		panic("worker: FieldNotificationRetryWorker requires non-nil NotificationDeliverer")
+	}
+	return &FieldNotificationRetryWorker{Deliverer: d}
 }
 
 func (w *FieldNotificationRetryWorker) Work(ctx context.Context, job *river.Job[FieldNotificationRetryArgs]) error {
-	slog.InfoContext(ctx, "field_notification_retry: not yet implemented", "user_id", job.Args.UserID)
-	return nil
+	return w.Deliverer.DeliverNotification(ctx, job.Attempt, job.Args)
+}
+
+// NextRetry overrides River's default exponential policy with a
+// schedule tuned for transient transport failures: aggressive at first
+// (30s), then back off to ~hourly. Total wall clock from first failure
+// to discard: 30s + 60s + 2m + 5m + 30m + 1h ≈ 1h38m.
+func (w *FieldNotificationRetryWorker) NextRetry(job *river.Job[FieldNotificationRetryArgs]) time.Time {
+	delays := []time.Duration{
+		30 * time.Second,
+		60 * time.Second,
+		2 * time.Minute,
+		5 * time.Minute,
+		30 * time.Minute,
+		60 * time.Minute,
+	}
+	idx := job.Attempt
+	if idx >= len(delays) {
+		idx = len(delays) - 1
+	}
+	return time.Now().Add(delays[idx])
 }
 
 type DelayCascadeWorker struct {
