@@ -61,15 +61,18 @@ func run(logger *slog.Logger) error {
 	// Stores + services
 	financialsStore := store.NewFinancialsStore()
 	budgetService := service.NewBudgetService(pool, financialsStore)
+	pipelineStore := store.NewPipelineStore()
+	pipelineService := service.NewPipelineService(pool, pipelineStore)
 
 	// Build the router with all route groups
 	router := api.NewRouter(api.RouterConfig{
-		Pool:          pool,
-		JWKS:          jwks,
-		IssuerURL:     cfg.BrainIssuerURL,
-		DevAuthMode:   cfg.DevAuthMode,
-		Logger:        logger,
-		BudgetService: budgetService,
+		Pool:            pool,
+		JWKS:            jwks,
+		IssuerURL:       cfg.BrainIssuerURL,
+		DevAuthMode:     cfg.DevAuthMode,
+		Logger:          logger,
+		BudgetService:   budgetService,
+		PipelineService: pipelineService,
 	})
 
 	srv := &http.Server{

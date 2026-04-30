@@ -10,7 +10,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	mw "github.com/futurebuildai/buildos/internal/api/middleware"
 	"github.com/futurebuildai/buildos/internal/models"
 	"github.com/futurebuildai/buildos/internal/service"
 )
@@ -43,7 +42,7 @@ func NewFinancialsHandler(svc BudgetServicer) *FinancialsHandler {
 // Summary returns corporate budget rollups + AR aging for an org.
 // GET /api/v1/org/{orgID}/financials/summary[?currency=USD]
 func (h *FinancialsHandler) Summary(w http.ResponseWriter, r *http.Request) {
-	orgID, ok := h.requireOrgIDFromURL(w, r)
+	orgID, ok := requireOrgIDFromURL(w, r)
 	if !ok {
 		return
 	}
@@ -59,7 +58,7 @@ func (h *FinancialsHandler) Summary(w http.ResponseWriter, r *http.Request) {
 // ARAging returns latest AR aging snapshot per currency for an org.
 // GET /api/v1/org/{orgID}/financials/ar-aging[?currency=USD]
 func (h *FinancialsHandler) ARAging(w http.ResponseWriter, r *http.Request) {
-	orgID, ok := h.requireOrgIDFromURL(w, r)
+	orgID, ok := requireOrgIDFromURL(w, r)
 	if !ok {
 		return
 	}
@@ -75,7 +74,7 @@ func (h *FinancialsHandler) ARAging(w http.ResponseWriter, r *http.Request) {
 // ProjectFinancials returns per-project financial rollups for an org.
 // GET /api/v1/org/{orgID}/financials/projects[?currency=USD]
 func (h *FinancialsHandler) ProjectFinancials(w http.ResponseWriter, r *http.Request) {
-	orgID, ok := h.requireOrgIDFromURL(w, r)
+	orgID, ok := requireOrgIDFromURL(w, r)
 	if !ok {
 		return
 	}
@@ -97,7 +96,7 @@ func (h *FinancialsHandler) ListBudgets(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	callerOrg, ok := h.callerOrgID(w, r)
+	callerOrg, ok := callerOrgIDFromClaims(w, r)
 	if !ok {
 		return
 	}
@@ -127,7 +126,7 @@ func (h *FinancialsHandler) CreateInvoice(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	callerOrg, ok := h.callerOrgID(w, r)
+	callerOrg, ok := callerOrgIDFromClaims(w, r)
 	if !ok {
 		return
 	}
@@ -176,7 +175,7 @@ func (h *FinancialsHandler) UpdateInvoice(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	callerOrg, ok := h.callerOrgID(w, r)
+	callerOrg, ok := callerOrgIDFromClaims(w, r)
 	if !ok {
 		return
 	}
@@ -208,39 +207,11 @@ func (h *FinancialsHandler) UpdateInvoice(w http.ResponseWriter, r *http.Request
 
 // ---------- helpers ----------
 
-// requireOrgIDFromURL extracts {orgID} from the URL and verifies it
-// matches the authenticated caller's org_id claim. On mismatch or
-// parse failure, writes the response and returns false.
-func (h *FinancialsHandler) requireOrgIDFromURL(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
-	urlOrg, ok := parseUUIDFromURL(w, r, "orgID")
-	if !ok {
-		return uuid.Nil, false
-	}
-	callerOrg, ok := h.callerOrgID(w, r)
-	if !ok {
-		return uuid.Nil, false
-	}
-	if urlOrg != callerOrg {
-		writeErrorResponse(w, r, http.StatusForbidden, "FORBIDDEN", "org_id mismatch")
-		return uuid.Nil, false
-	}
-	return urlOrg, true
-}
-
-// callerOrgID returns the caller's org_id from JWT claims, parsed as UUID.
-// Writes 401 on parse failure (claim is malformed).
-func (h *FinancialsHandler) callerOrgID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
-	claims := mw.MustClaimsFromContext(r.Context())
-	parsed, err := uuid.Parse(claims.OrgID)
-	if err != nil {
-		writeErrorResponse(w, r, http.StatusUnauthorized, "UNAUTHORIZED", "invalid org_id claim")
-		return uuid.Nil, false
-	}
-	return parsed, true
-}
-
 // writeServiceError maps a BudgetService sentinel error to an HTTP response
 // per the API_CONTRACT.md error code conventions.
+// (requireOrgIDFromURL, callerOrgIDFromClaims, parseUUIDFromURL,
+// parseOptionalDate are free functions in the api package — see below
+// and pipeline.go. They're shared across handlers.)
 func (h *FinancialsHandler) writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, service.ErrNotFound):

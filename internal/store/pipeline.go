@@ -159,6 +159,182 @@ func (s *PipelineStore) GetProspect(ctx context.Context, tx pgx.Tx, prospectID, 
 	return p, nil
 }
 
+// CreateProspectParams is the input for inserting a prospect. Stage is
+// always LEAD on creation; advance() drives subsequent transitions.
+type CreateProspectParams struct {
+	OrgID       uuid.UUID
+	Name        string
+	ClientName  string
+	ClientEmail *string
+	ClientPhone *string
+	Address     *string
+	GSF         *int
+	Source      *string
+	Notes       *string
+}
+
+// CreateProspect inserts a new prospect at stage LEAD and returns it.
+func (s *PipelineStore) CreateProspect(ctx context.Context, tx pgx.Tx, p CreateProspectParams) (models.Prospect, error) {
+	var prospect models.Prospect
+	var stage string
+	err := tx.QueryRow(ctx, `
+		INSERT INTO pre_construction_prospects (
+			org_id, name, client_name, client_email, client_phone,
+			address, gsf, pipeline_stage, probability_pct, source, notes
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, 'LEAD', 10, $8, $9)
+		RETURNING id, org_id, name, client_name, client_email, client_phone,
+		          address, gsf, pipeline_stage, probability_pct, source, notes,
+		          lost_reason, project_id, created_at, updated_at`,
+		p.OrgID, p.Name, p.ClientName, p.ClientEmail, p.ClientPhone,
+		p.Address, p.GSF, p.Source, p.Notes,
+	).Scan(
+		&prospect.ID, &prospect.OrgID, &prospect.Name, &prospect.ClientName,
+		&prospect.ClientEmail, &prospect.ClientPhone,
+		&prospect.Address, &prospect.GSF, &stage, &prospect.ProbabilityPct,
+		&prospect.Source, &prospect.Notes,
+		&prospect.LostReason, &prospect.ProjectID,
+		&prospect.CreatedAt, &prospect.UpdatedAt,
+	)
+	if err != nil {
+		return models.Prospect{}, fmt.Errorf("insert prospect: %w", err)
+	}
+	prospect.PipelineStage = models.PipelineStage(stage)
+	return prospect, nil
+}
+
+// UpdateProspectParams is the input for partial-updating a prospect.
+// Only non-nil fields are written; pipeline_stage is NOT updatable here
+// (use AdvanceStage / MarkLost). Returns ErrNotFound if the prospect
+// doesn't exist or belongs to another org.
+type UpdateProspectParams struct {
+	ProspectID  uuid.UUID
+	OrgID       uuid.UUID
+	Name        *string
+	ClientName  *string
+	ClientEmail *string
+	ClientPhone *string
+	Address     *string
+	GSF         *int
+	Source      *string
+	Notes       *string
+}
+
+// UpdateProspect modifies prospect details. The pipeline_stage column
+// stays untouched here; transitions go through AdvanceStage / MarkLost.
+func (s *PipelineStore) UpdateProspect(ctx context.Context, tx pgx.Tx, p UpdateProspectParams) (models.Prospect, error) {
+	var prospect models.Prospect
+	var stage string
+	err := tx.QueryRow(ctx, `
+		UPDATE pre_construction_prospects
+		SET name         = COALESCE($3, name),
+		    client_name  = COALESCE($4, client_name),
+		    client_email = COALESCE($5, client_email),
+		    client_phone = COALESCE($6, client_phone),
+		    address      = COALESCE($7, address),
+		    gsf          = COALESCE($8, gsf),
+		    source       = COALESCE($9, source),
+		    notes        = COALESCE($10, notes),
+		    updated_at   = now()
+		WHERE id = $1 AND org_id = $2
+		RETURNING id, org_id, name, client_name, client_email, client_phone,
+		          address, gsf, pipeline_stage, probability_pct, source, notes,
+		          lost_reason, project_id, created_at, updated_at`,
+		p.ProspectID, p.OrgID,
+		p.Name, p.ClientName, p.ClientEmail, p.ClientPhone,
+		p.Address, p.GSF, p.Source, p.Notes,
+	).Scan(
+		&prospect.ID, &prospect.OrgID, &prospect.Name, &prospect.ClientName,
+		&prospect.ClientEmail, &prospect.ClientPhone,
+		&prospect.Address, &prospect.GSF, &stage, &prospect.ProbabilityPct,
+		&prospect.Source, &prospect.Notes,
+		&prospect.LostReason, &prospect.ProjectID,
+		&prospect.CreatedAt, &prospect.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return models.Prospect{}, ErrNotFound
+		}
+		return models.Prospect{}, fmt.Errorf("update prospect: %w", err)
+	}
+	prospect.PipelineStage = models.PipelineStage(stage)
+	return prospect, nil
+}
+
+// AdvanceStage transitions a prospect's pipeline_stage and updates
+// probability_pct accordingly. Caller MUST validate the transition is
+// legal (use models.CanTransition) before calling. The store accepts
+// whatever the caller passes — it is a thin SQL wrapper, not a state
+// machine guard.
+//
+// PERMIT_ISSUED is a special target: this method only updates the
+// stage; it does NOT create the construction Project or hydrate the WBS.
+// The full atomic transition lives in PipelineService (Sprint 3 PR 3).
+func (s *PipelineStore) AdvanceStage(ctx context.Context, tx pgx.Tx, prospectID, orgID uuid.UUID, target models.PipelineStage) (models.Prospect, error) {
+	var prospect models.Prospect
+	var stage string
+	err := tx.QueryRow(ctx, `
+		UPDATE pre_construction_prospects
+		SET pipeline_stage  = $3,
+		    probability_pct = $4,
+		    updated_at      = now()
+		WHERE id = $1 AND org_id = $2
+		RETURNING id, org_id, name, client_name, client_email, client_phone,
+		          address, gsf, pipeline_stage, probability_pct, source, notes,
+		          lost_reason, project_id, created_at, updated_at`,
+		prospectID, orgID, string(target), target.Probability(),
+	).Scan(
+		&prospect.ID, &prospect.OrgID, &prospect.Name, &prospect.ClientName,
+		&prospect.ClientEmail, &prospect.ClientPhone,
+		&prospect.Address, &prospect.GSF, &stage, &prospect.ProbabilityPct,
+		&prospect.Source, &prospect.Notes,
+		&prospect.LostReason, &prospect.ProjectID,
+		&prospect.CreatedAt, &prospect.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return models.Prospect{}, ErrNotFound
+		}
+		return models.Prospect{}, fmt.Errorf("advance prospect stage: %w", err)
+	}
+	prospect.PipelineStage = models.PipelineStage(stage)
+	return prospect, nil
+}
+
+// MarkLost transitions a prospect to LOST with a reason. Idempotent for
+// a prospect already in LOST (rewrites the reason). Caller should
+// reject this call when the source is a terminal stage (use CanTransition).
+func (s *PipelineStore) MarkLost(ctx context.Context, tx pgx.Tx, prospectID, orgID uuid.UUID, reason string) (models.Prospect, error) {
+	var prospect models.Prospect
+	var stage string
+	err := tx.QueryRow(ctx, `
+		UPDATE pre_construction_prospects
+		SET pipeline_stage  = 'LOST',
+		    probability_pct = 0,
+		    lost_reason     = $3,
+		    updated_at      = now()
+		WHERE id = $1 AND org_id = $2
+		RETURNING id, org_id, name, client_name, client_email, client_phone,
+		          address, gsf, pipeline_stage, probability_pct, source, notes,
+		          lost_reason, project_id, created_at, updated_at`,
+		prospectID, orgID, reason,
+	).Scan(
+		&prospect.ID, &prospect.OrgID, &prospect.Name, &prospect.ClientName,
+		&prospect.ClientEmail, &prospect.ClientPhone,
+		&prospect.Address, &prospect.GSF, &stage, &prospect.ProbabilityPct,
+		&prospect.Source, &prospect.Notes,
+		&prospect.LostReason, &prospect.ProjectID,
+		&prospect.CreatedAt, &prospect.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return models.Prospect{}, ErrNotFound
+		}
+		return models.Prospect{}, fmt.Errorf("mark prospect lost: %w", err)
+	}
+	prospect.PipelineStage = models.PipelineStage(stage)
+	return prospect, nil
+}
+
 // ---------- Estimates ----------
 
 // ListEstimatesForProspect returns every estimate for a prospect, newest
