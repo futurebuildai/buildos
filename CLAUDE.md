@@ -77,12 +77,13 @@ The A2A webhook receiver uses JWS signature verification (not JWT) — different
 
 ### Alternative auth for non-production
 
-`DEV_AUTH_BYPASS=true` currently injects a single hardcoded synthetic owner. The planned layered design (not yet implemented):
+Two mechanisms cover dev, CI, staging, and sales demos:
 
-- **Local dev / CI tests** — header-driven claim injection (`X-Dev-Auth: alice@acme,owner`) so any role/org can be exercised per request.
-- **Staging / sales demos** — an embedded mini-IdP (`cmd/dev-idp`, build-tag-gated) that issues real RS256 JWTs against an in-process JWKS, with a `/demo/login` endpoint exposing pre-seeded personas.
+**`DEV_AUTH_MODE=header`** (dev / CI) — middleware reads claims directly from an `X-Dev-Auth: <sub>,<org_id>,<role>[,<plan_tier>]` request header instead of validating a JWT. Any role/org/persona can be exercised per request without infra. Implementation: [auth.go](internal/api/middleware/auth.go) `claimsFromDevHeader`. Leave the env unset (or `""`) in production.
 
-Production builds always set the auth mode to validate Brain-issued tokens only; the bypass paths must be unreachable.
+**`cmd/dev-idp`** (staging / sales demos) — a mock OIDC issuer that mints real RS256 JWTs against an in-process JWKS. BuildOS treats it as a stand-in for The Brain; no middleware change. Endpoints: `GET /jwks`, `POST /token`, `POST /demo/login` (pre-seeded personas: alice/owner, bob/admin, carol/superintendent, dave/field_worker), `GET /personas`. Run with `make dev-idp` (binds `:8083`); point BuildOS at it via `BRAIN_JWKS_URL=http://localhost:8083/jwks` and `BRAIN_ISSUER_URL=http://localhost:8083`. Keypair regenerates on every restart, so JWKS cache (5 min) will lag briefly after a dev-idp restart.
+
+Production-hardening TODO: build-tag gate the header path so `DEV_AUTH_MODE=header` cannot be reactivated by env flip on a prod binary. Until then, [cmd/server/main.go](cmd/server/main.go) logs a loud warning at startup if the env is set.
 
 ### Wire-protocol values still on legacy names
 

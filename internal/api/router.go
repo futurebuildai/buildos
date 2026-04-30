@@ -13,11 +13,11 @@ import (
 
 // RouterConfig holds all dependencies needed to build the API router.
 type RouterConfig struct {
-	Pool         *pgxpool.Pool
-	JWKS         *mw.JWKSProvider
-	IssuerURL    string
-	DevBypass    bool
-	Logger       *slog.Logger
+	Pool        *pgxpool.Pool
+	JWKS        *mw.JWKSProvider
+	IssuerURL   string
+	DevAuthMode string
+	Logger      *slog.Logger
 }
 
 // NewRouter creates the Chi router with all route groups and middleware.
@@ -46,7 +46,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	a2a := NewA2AHandler(cfg.JWKS, cfg.Logger)
 
 	// Auth middleware
-	authMiddleware := mw.Auth(cfg.JWKS, cfg.IssuerURL, cfg.DevBypass, cfg.Logger)
+	authMiddleware := mw.Auth(cfg.JWKS, cfg.IssuerURL, cfg.DevAuthMode, cfg.Logger)
 
 	// ============================================================
 	// A2A Webhook — NO JWT auth (uses JWS signature instead)

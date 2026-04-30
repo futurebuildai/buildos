@@ -1,4 +1,4 @@
-.PHONY: build build-server build-worker test lint lint-migrations migrate migrate-down db-up db-down audit bench-physics clean
+.PHONY: build build-server build-worker build-migrate build-dev-idp dev-idp test lint lint-migrations migrate migrate-down db-up db-down audit bench-physics clean
 
 # Default DATABASE_URL for local dev (docker-compose db on port 5433)
 DATABASE_URL ?= postgres://fb_user:fb_pass@localhost:5433/futurebuild_os?sslmode=disable
@@ -14,6 +14,15 @@ build-worker:
 
 build-migrate:
 	go build -o bin/migrate ./cmd/migrate
+
+# Mock OIDC issuer for staging and sales demos. NOT for production.
+build-dev-idp:
+	go build -o bin/dev-idp ./cmd/dev-idp
+
+# Run the dev-idp on :8083. Point BuildOS at it with:
+#   BRAIN_JWKS_URL=http://localhost:8083/jwks BRAIN_ISSUER_URL=http://localhost:8083
+dev-idp: build-dev-idp
+	./bin/dev-idp
 
 ## Test
 test:

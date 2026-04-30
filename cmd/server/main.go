@@ -51,13 +51,19 @@ func run(logger *slog.Logger) error {
 	// JWKS provider for JWT validation and JWS verification
 	jwks := middleware.NewJWKSProvider(cfg.BrainJWKSURL, logger)
 
+	if cfg.DevAuthMode != "" {
+		logger.Warn("DEV_AUTH_MODE is set — JWT validation may be bypassed",
+			"mode", cfg.DevAuthMode,
+			"production_safe", false)
+	}
+
 	// Build the router with all route groups
 	router := api.NewRouter(api.RouterConfig{
-		Pool:      pool,
-		JWKS:      jwks,
-		IssuerURL: cfg.BrainIssuerURL,
-		DevBypass: cfg.DevAuthBypass,
-		Logger:    logger,
+		Pool:        pool,
+		JWKS:        jwks,
+		IssuerURL:   cfg.BrainIssuerURL,
+		DevAuthMode: cfg.DevAuthMode,
+		Logger:      logger,
 	})
 
 	srv := &http.Server{

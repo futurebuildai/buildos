@@ -22,8 +22,9 @@ type Config struct {
 	BrainJWKSURL   string
 	BrainIssuerURL string
 
-	// Dev
-	DevAuthBypass bool
+	// DevAuthMode: "" = production (validate JWTs only), "header" = inject claims from X-Dev-Auth.
+	// Never set to a non-empty value in production. Future hardening: build-tag gate the header path.
+	DevAuthMode string
 
 	// Physics Engine
 	Physics PhysicsConfig
@@ -65,7 +66,7 @@ func Load() (*Config, error) {
 		BrainJWKSURL:   os.Getenv("BRAIN_JWKS_URL"),
 		BrainIssuerURL: os.Getenv("BRAIN_ISSUER_URL"),
 
-		DevAuthBypass: getEnvBool("DEV_AUTH_BYPASS", false),
+		DevAuthMode: getEnvStr("DEV_AUTH_MODE", ""),
 
 		Physics: PhysicsConfig{
 			StandardHouseSizeSF:    getEnvFloat("PHYSICS_STANDARD_HOUSE_SF", 2000.0),

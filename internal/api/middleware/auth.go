@@ -126,16 +126,21 @@ func (p *JWKSProvider) refresh(ctx context.Context) (*jose.JSONWebKeySet, error)
 }
 
 // Auth creates middleware that validates JWT Bearer tokens from The Brain.
-func Auth(jwks *JWKSProvider, issuerURL string, devBypass bool, logger *slog.Logger) func(http.Handler) http.Handler {
+//
+// authMode controls the path:
+//   - ""        production: validate JWT against jwks/issuerURL
+//   - "header"  dev/CI: read claims from X-Dev-Auth: <sub>,<org_id>,<role>[,<plan_tier>]
+//
+// For staging or sales demos, leave authMode empty and point BRAIN_JWKS_URL/
+// BRAIN_ISSUER_URL at the cmd/dev-idp mini-IdP — no middleware change needed.
+func Auth(jwks *JWKSProvider, issuerURL, authMode string, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Dev bypass: inject synthetic claims without JWT validation
-			if devBypass {
-				claims := Claims{
-					Sub:      "dev-user-00000000-0000-0000-0000-000000000000",
-					OrgID:    "dev-org-00000000-0000-0000-0000-000000000000",
-					Role:     "owner",
-					PlanTier: "enterprise",
+			if authMode == "header" {
+				claims, err := claimsFromDevHeader(r.Header.Get("X-Dev-Auth"))
+				if err != nil {
+					writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "X-Dev-Auth invalid: "+err.Error())
+					return
 				}
 				ctx := context.WithValue(r.Context(), claimsContextKey{}, claims)
 				next.ServeHTTP(w, r.WithContext(ctx))
@@ -205,6 +210,32 @@ func Auth(jwks *JWKSProvider, issuerURL string, devBypass bool, logger *slog.Log
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// claimsFromDevHeader parses an X-Dev-Auth header value of the form
+// "<sub>,<org_id>,<role>[,<plan_tier>]" into Claims. Whitespace around
+// each field is trimmed. plan_tier defaults to "enterprise" if omitted.
+func claimsFromDevHeader(h string) (Claims, error) {
+	if h == "" {
+		return Claims{}, errors.New("missing X-Dev-Auth header")
+	}
+	parts := strings.Split(h, ",")
+	if len(parts) < 3 || len(parts) > 4 {
+		return Claims{}, errors.New("expected sub,org_id,role[,plan_tier]")
+	}
+	sub := strings.TrimSpace(parts[0])
+	orgID := strings.TrimSpace(parts[1])
+	role := strings.TrimSpace(parts[2])
+	planTier := "enterprise"
+	if len(parts) == 4 {
+		if t := strings.TrimSpace(parts[3]); t != "" {
+			planTier = t
+		}
+	}
+	if sub == "" || orgID == "" || role == "" {
+		return Claims{}, errors.New("sub, org_id, and role are required")
+	}
+	return Claims{Sub: sub, OrgID: orgID, Role: role, PlanTier: planTier}, nil
 }
 
 // verifyToken attempts to verify the token against any key in the JWKS.
