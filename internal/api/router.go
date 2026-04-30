@@ -37,8 +37,9 @@ type RouterConfig struct {
 	FieldService       FieldServicer
 	A2AService         A2AServicer
 	A2AVerifier        JWSVerifier
-	BrainPinger        BrainPinger   // optional — when nil, /ready skips the Brain check
-	BillingClient      BillingClient // optional — when nil, /billing/* routes return 501
+	BrainPinger        BrainPinger    // optional — when nil, /ready skips the Brain check
+	BillingClient      BillingClient  // optional — when nil, /billing/* routes don't mount
+	AgentsService      AgentsServicer // optional — when nil, /agents/* routes don't mount
 }
 
 // NewRouter creates the Chi router with all route groups and middleware.
@@ -77,6 +78,10 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	var billing *BillingHandler
 	if cfg.BillingClient != nil {
 		billing = NewBillingHandler(cfg.BillingClient)
+	}
+	var agents *AgentsHandler
+	if cfg.AgentsService != nil {
+		agents = NewAgentsHandler(cfg.AgentsService)
 	}
 
 	// Auth middleware
@@ -209,6 +214,18 @@ func NewRouter(cfg RouterConfig) http.Handler {
 				r.Use(mw.RequireRole(mw.RoleOwner, mw.RoleAdmin))
 				r.Get("/usage", billing.Usage)
 				r.Get("/usage/daily", billing.DailyUsage)
+			})
+		}
+
+		// --------------------------------------------------------
+		// 3.6 AI Agents — Maestro-backed endpoints. Pro tier and up.
+		//      Each agent is a separate route so we can gate them
+		//      individually if pricing tiers diverge.
+		// --------------------------------------------------------
+		if agents != nil {
+			r.Route("/api/v1/agents", func(r chi.Router) {
+				r.Use(mw.RequirePlanTier(mw.PlanTierPro))
+				r.Post("/daily-briefing", agents.DailyBriefing)
 			})
 		}
 

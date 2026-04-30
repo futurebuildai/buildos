@@ -62,7 +62,11 @@ func NewClient(cfg Config) (*Client, error) {
 		return nil, errors.New("brain: BaseURL is required")
 	}
 	if cfg.HTTPClient == nil {
-		cfg.HTTPClient = &http.Client{Timeout: 10 * time.Second}
+		// 60s ceiling: covers Maestro LLM round-trips (typically
+		// 5-30s) without making /ready Pings linger when Brain is
+		// down. Per-call ctx deadlines (e.g. 2s on /ready) still
+		// override this floor in the more-restrictive direction.
+		cfg.HTTPClient = &http.Client{Timeout: 60 * time.Second}
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
