@@ -45,11 +45,12 @@ type WebhookEnvelope struct {
 // Webhook event types — must match the constants in
 // futurebuild-brain/internal/a2a/types.go.
 const (
-	EventReviewMaterialQuote  = "review_material_quote"
-	EventReviewLaborBid       = "review_labor_bid"
-	EventUpdateSchedule       = "update_schedule"
-	EventDeliveryConfirmation = "delivery_confirmation"
-	EventCreateFeedCard       = "create_feed_card"
+	EventReviewMaterialQuote   = "review_material_quote"
+	EventReviewLaborBid        = "review_labor_bid"
+	EventUpdateSchedule        = "update_schedule"
+	EventDeliveryConfirmation  = "delivery_confirmation"
+	EventCreateFeedCard        = "create_feed_card"
+	EventLocalblueLeadCaptured = "localblue.lead_captured"
 )
 
 // ProcessResult is the outcome of A2AService.ProcessWebhook. Both an
@@ -63,25 +64,30 @@ type ProcessResult struct {
 }
 
 // A2AService dispatches verified webhook events from The Brain into
-// BuildOS domain actions. Today every event lands in feed_cards; future
-// PRs add specialized handlers (e.g., update_schedule will trigger a
-// CPM recalc job).
+// BuildOS domain actions. Today most events land as feed_cards; the
+// localblue.lead_captured event additionally inserts a prospect row.
+// Future PRs add specialized handlers (e.g., update_schedule will
+// trigger a CPM recalc job in addition to the feed card).
 type A2AService struct {
-	pool         *pgxpool.Pool
-	a2aStore     *store.A2AStore
-	feedStore    *store.FeedCardsStore
-	defaultOrgID *uuid.UUID
+	pool          *pgxpool.Pool
+	a2aStore      *store.A2AStore
+	feedStore     *store.FeedCardsStore
+	pipelineStore *store.PipelineStore
+	defaultOrgID  *uuid.UUID
 }
 
 // NewA2AService constructs the service. defaultOrgID is the fallback
 // org_id used when an envelope arrives without one (single-tenant fork
 // mode). Pass nil to require Brain-supplied org_id on every event.
-func NewA2AService(pool *pgxpool.Pool, a2aStore *store.A2AStore, feedStore *store.FeedCardsStore, defaultOrgID *uuid.UUID) *A2AService {
+// pipelineStore is required for the localblue.lead_captured handler;
+// pass nil if that event won't be received (other handlers don't need it).
+func NewA2AService(pool *pgxpool.Pool, a2aStore *store.A2AStore, feedStore *store.FeedCardsStore, pipelineStore *store.PipelineStore, defaultOrgID *uuid.UUID) *A2AService {
 	return &A2AService{
-		pool:         pool,
-		a2aStore:     a2aStore,
-		feedStore:    feedStore,
-		defaultOrgID: defaultOrgID,
+		pool:          pool,
+		a2aStore:      a2aStore,
+		feedStore:     feedStore,
+		pipelineStore: pipelineStore,
+		defaultOrgID:  defaultOrgID,
 	}
 }
 
@@ -132,8 +138,9 @@ func (s *A2AService) ProcessWebhook(ctx context.Context, env WebhookEnvelope) (P
 }
 
 // dispatch routes the envelope to a typed handler based on event_type.
-// Each handler parses its payload, builds a feed card, and inserts.
-// Unknown event types return ErrUnknownEvent so the caller can 400.
+// Each handler parses its payload, builds a feed card (and other domain
+// rows when applicable), and inserts. Unknown event types return
+// ErrUnknownEvent so the caller can 400.
 func (s *A2AService) dispatch(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, env WebhookEnvelope) (uuid.UUID, error) {
 	switch env.EventType {
 	case EventReviewMaterialQuote:
@@ -146,6 +153,8 @@ func (s *A2AService) dispatch(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, e
 		return s.handleDeliveryConfirmation(ctx, tx, orgID, env.Payload)
 	case EventCreateFeedCard:
 		return s.handleCreateFeedCard(ctx, tx, orgID, env.Payload)
+	case EventLocalblueLeadCaptured:
+		return s.handleLocalblueLeadCaptured(ctx, tx, orgID, env.Payload)
 	default:
 		return uuid.Nil, fmt.Errorf("%w: %q", ErrUnknownEvent, env.EventType)
 	}
@@ -342,6 +351,99 @@ func (s *A2AService) handleCreateFeedCard(ctx context.Context, tx pgx.Tx, orgID 
 	return card.ID, nil
 }
 
+// ---------- LocalBlue lead handler ----------
+
+// localblueLeadCapturedPayload mirrors Brain's LocalblueLeadCapturedPayload
+// (see futurebuild-brain/internal/a2a/types.go). The contractor org id
+// lives on the payload because LocalBlue knows which contractor's site
+// captured the lead via the embedded chatbot's site_id binding.
+type localblueLeadCapturedPayload struct {
+	LeadID          uuid.UUID `json:"lead_id"`
+	ContractorOrgID uuid.UUID `json:"contractor_org_id"`
+	LeadName        string    `json:"lead_name"`
+	ContactName     string    `json:"contact_name"`
+	ContactEmail    string    `json:"contact_email,omitempty"`
+	ContactPhone    string    `json:"contact_phone,omitempty"`
+	Address         string    `json:"address,omitempty"`
+	EstimatedGSF    *int      `json:"estimated_gsf,omitempty"`
+	Source          string    `json:"source,omitempty"`
+	CapturedAt      time.Time `json:"captured_at"`
+}
+
+func (s *A2AService) handleLocalblueLeadCaptured(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, payload []byte) (uuid.UUID, error) {
+	if s.pipelineStore == nil {
+		return uuid.Nil, fmt.Errorf("%w: A2AService constructed without pipelineStore; localblue.lead_captured handler unavailable", ErrInvalidInput)
+	}
+	var p localblueLeadCapturedPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return uuid.Nil, fmt.Errorf("%w: localblue.lead_captured payload: %v", ErrInvalidInput, err)
+	}
+	if p.LeadName == "" || p.ContactName == "" {
+		return uuid.Nil, fmt.Errorf("%w: localblue.lead_captured requires lead_name + contact_name", ErrInvalidInput)
+	}
+
+	// Insert the prospect at stage='LEAD'. Source is annotated as
+	// "localblue:<orig source>" so the contractor's pipeline analytics
+	// can attribute leads to the platform.
+	source := localblueSourceTag(p.Source)
+	prospect, err := s.pipelineStore.CreateProspect(ctx, tx, store.CreateProspectParams{
+		OrgID:       orgID,
+		Name:        p.LeadName,
+		ClientName:  p.ContactName,
+		ClientEmail: stringPtrOrNil(p.ContactEmail),
+		ClientPhone: stringPtrOrNil(p.ContactPhone),
+		Address:     stringPtrOrNil(p.Address),
+		GSF:         p.EstimatedGSF,
+		Source:      &source,
+	})
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("create prospect from localblue lead: %w", err)
+	}
+	_ = prospect // prospect.ID is in the dedup log via the raw payload + trace_id
+
+	// Surface the new lead to the owner immediately. Urgent priority —
+	// fast follow-up on inbound leads is the contractor's competitive edge.
+	role := "owner"
+	body := fmt.Sprintf("Lead: %s · Contact: %s", p.LeadName, p.ContactName)
+	if p.ContactEmail != "" {
+		body += " · " + p.ContactEmail
+	}
+	if p.ContactPhone != "" {
+		body += " · " + p.ContactPhone
+	}
+	card, err := s.feedStore.CreateFeedCard(ctx, tx, store.CreateFeedCardParams{
+		OrgID:      orgID,
+		CardType:   "pipeline.lead_captured",
+		Title:      "New lead from LocalBlue",
+		Body:       body,
+		Priority:   models.FeedPriorityUrgent,
+		TargetRole: &role,
+	})
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("emit lead feed card: %w", err)
+	}
+	return card.ID, nil
+}
+
+// stringPtrOrNil promotes a string to a pointer, mapping "" → nil so
+// nullable columns receive SQL NULL rather than an empty string.
+func stringPtrOrNil(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// localblueSourceTag annotates the prospect's source field with a
+// "localblue:" prefix so the contractor's pipeline analytics can
+// distinguish LocalBlue-sourced leads from referrals/walk-ins.
+func localblueSourceTag(orig string) string {
+	if orig == "" {
+		return "localblue"
+	}
+	return "localblue:" + orig
+}
+
 // ---------- helpers ----------
 
 func (s *A2AService) validateEnvelope(env WebhookEnvelope) error {
@@ -361,10 +463,33 @@ func (s *A2AService) resolveOrgID(env WebhookEnvelope) (uuid.UUID, error) {
 	if env.OrgID != uuid.Nil {
 		return env.OrgID, nil
 	}
+	// Per-event extractors — some events carry orgID inside the payload
+	// (LocalBlue knows the contractor org via its chatbot's site_id
+	// binding; the lead-capture envelope intentionally has no OrgID).
+	if env.EventType == EventLocalblueLeadCaptured {
+		if id, ok := orgIDFromLocalblueLead(env.Payload); ok {
+			return id, nil
+		}
+		return uuid.Nil, fmt.Errorf("%w: localblue.lead_captured payload missing contractor_org_id", ErrInvalidInput)
+	}
 	if s.defaultOrgID != nil {
 		return *s.defaultOrgID, nil
 	}
 	return uuid.Nil, fmt.Errorf("%w: envelope has no org_id and no DEFAULT_ORG_ID configured", ErrInvalidInput)
+}
+
+// orgIDFromLocalblueLead does a tiny pre-parse of the payload to pull
+// just the contractor_org_id out for tenant routing. The full payload
+// is re-parsed inside the handler — that's two parses but the json is
+// small and this keeps the org-resolution decision in one place.
+func orgIDFromLocalblueLead(payload []byte) (uuid.UUID, bool) {
+	var p struct {
+		ContractorOrgID uuid.UUID `json:"contractor_org_id"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return uuid.Nil, false
+	}
+	return p.ContractorOrgID, p.ContractorOrgID != uuid.Nil
 }
 
 // formatMoney is a quick display helper for feed-card body text. NOT a

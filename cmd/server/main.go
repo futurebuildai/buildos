@@ -96,7 +96,7 @@ func run(logger *slog.Logger) error {
 	scheduleService := service.NewScheduleService(pool, scheduleStore, riverClient)
 	a2aStore := store.NewA2AStore()
 	feedCardsStore := store.NewFeedCardsStore()
-	a2aService := service.NewA2AService(pool, a2aStore, feedCardsStore, cfg.DefaultOrgID)
+	a2aService := service.NewA2AService(pool, a2aStore, feedCardsStore, pipelineStore, cfg.DefaultOrgID)
 	a2aVerifier := api.NewJWKSVerifier(jwks) // verifies Brain's JWS using the same JWKS used for JWT validation
 
 	// Build the router with all route groups
