@@ -45,7 +45,7 @@ func (s *ScheduleService) RecalculateSchedule(ctx context.Context, projectID, ca
 	var computeTime time.Duration
 
 	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		if err := s.scheduleStore.VerifyProjectInOrg(ctx, tx, projectID, callerOrgID); err != nil {
+		if err := store.VerifyProjectInOrg(ctx, tx, projectID, callerOrgID); err != nil {
 			return err
 		}
 		// 1. Load tasks and dependencies from DB
@@ -164,7 +164,7 @@ type GanttView struct {
 func (s *ScheduleService) GetGantt(ctx context.Context, projectID, callerOrgID uuid.UUID) (GanttView, error) {
 	var view GanttView
 	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		if err := s.scheduleStore.VerifyProjectInOrg(ctx, tx, projectID, callerOrgID); err != nil {
+		if err := store.VerifyProjectInOrg(ctx, tx, projectID, callerOrgID); err != nil {
 			return err
 		}
 		tasks, err := s.scheduleStore.GetProjectTasks(ctx, tx, projectID)
@@ -218,7 +218,7 @@ func (s *ScheduleService) ListProjectTasks(ctx context.Context, in ListProjectTa
 	}
 	var out []models.ProjectTask
 	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		if err := s.scheduleStore.VerifyProjectInOrg(ctx, tx, in.ProjectID, in.OrgID); err != nil {
+		if err := store.VerifyProjectInOrg(ctx, tx, in.ProjectID, in.OrgID); err != nil {
 			return err
 		}
 		var qErr error
@@ -265,7 +265,7 @@ func (s *ScheduleService) UpdateTask(ctx context.Context, in UpdateTaskInput) (m
 
 	var task models.ProjectTask
 	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		if err := s.scheduleStore.VerifyProjectInOrg(ctx, tx, in.ProjectID, in.OrgID); err != nil {
+		if err := store.VerifyProjectInOrg(ctx, tx, in.ProjectID, in.OrgID); err != nil {
 			return err
 		}
 		updated, err := s.scheduleStore.UpdateTask(ctx, tx, store.UpdateTaskParams{

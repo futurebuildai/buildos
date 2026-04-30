@@ -49,7 +49,7 @@ func NewBudgetService(pool *pgxpool.Pool, fs *store.FinancialsStore) *BudgetServ
 func (s *BudgetService) GetProjectBudgets(ctx context.Context, projectID, callerOrgID uuid.UUID) ([]models.ProjectBudget, error) {
 	var out []models.ProjectBudget
 	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		if err := s.store.VerifyProjectInOrg(ctx, tx, projectID, callerOrgID); err != nil {
+		if err := store.VerifyProjectInOrg(ctx, tx, projectID, callerOrgID); err != nil {
 			return err
 		}
 		var qErr error
@@ -164,7 +164,7 @@ func (s *BudgetService) CreateInvoice(ctx context.Context, callerOrgID uuid.UUID
 
 	var inv models.Invoice
 	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		if err := s.store.VerifyProjectInOrg(ctx, tx, in.ProjectID, callerOrgID); err != nil {
+		if err := store.VerifyProjectInOrg(ctx, tx, in.ProjectID, callerOrgID); err != nil {
 			return err
 		}
 		created, err := s.store.CreateInvoice(ctx, tx, store.CreateInvoiceParams{
@@ -208,7 +208,7 @@ func (s *BudgetService) UpdateInvoice(ctx context.Context, callerOrgID uuid.UUID
 
 	var inv models.Invoice
 	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		if err := s.store.VerifyProjectInOrg(ctx, tx, in.ProjectID, callerOrgID); err != nil {
+		if err := store.VerifyProjectInOrg(ctx, tx, in.ProjectID, callerOrgID); err != nil {
 			return err
 		}
 		updated, err := s.store.UpdateInvoice(ctx, tx, store.UpdateInvoiceParams{

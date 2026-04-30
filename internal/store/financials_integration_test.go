@@ -89,9 +89,8 @@ func TestFinancialsStore_CreateInvoice_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestFinancialsStore_VerifyProjectInOrg(t *testing.T) {
+func TestVerifyProjectInOrg(t *testing.T) {
 	pool := testdb.NewPool(t)
-	s := NewFinancialsStore()
 	ctx := context.Background()
 
 	orgA := uuid.New()
@@ -103,7 +102,7 @@ func TestFinancialsStore_VerifyProjectInOrg(t *testing.T) {
 
 	// Same org → ok.
 	err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		return s.VerifyProjectInOrg(ctx, tx, projectInA, orgA)
+		return VerifyProjectInOrg(ctx, tx, projectInA, orgA)
 	})
 	if err != nil {
 		t.Errorf("same-org verify failed: %v", err)
@@ -111,7 +110,7 @@ func TestFinancialsStore_VerifyProjectInOrg(t *testing.T) {
 
 	// Cross-org → ErrNotFound.
 	err = pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		return s.VerifyProjectInOrg(ctx, tx, projectInA, orgB)
+		return VerifyProjectInOrg(ctx, tx, projectInA, orgB)
 	})
 	if err == nil {
 		t.Error("cross-org verify should error")

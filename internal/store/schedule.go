@@ -21,26 +21,6 @@ func NewScheduleStore() *ScheduleStore {
 	return &ScheduleStore{}
 }
 
-// VerifyProjectInOrg returns nil if the project belongs to the given org,
-// ErrNotFound otherwise. Service-layer methods that operate on a project's
-// schedule MUST call this before reading or writing — project_tasks
-// doesn't carry org_id directly, so without this guard a leaked
-// projectID could expose another tenant's schedule.
-func (s *ScheduleStore) VerifyProjectInOrg(ctx context.Context, tx pgx.Tx, projectID, orgID uuid.UUID) error {
-	var exists bool
-	err := tx.QueryRow(ctx, `
-		SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1 AND org_id = $2)`,
-		projectID, orgID,
-	).Scan(&exists)
-	if err != nil {
-		return fmt.Errorf("verify project in org: %w", err)
-	}
-	if !exists {
-		return ErrNotFound
-	}
-	return nil
-}
-
 // GetProjectTasks returns all tasks for a project, ordered by WBS code.
 func (s *ScheduleStore) GetProjectTasks(ctx context.Context, tx pgx.Tx, projectID uuid.UUID) ([]models.ProjectTask, error) {
 	rows, err := tx.Query(ctx, `

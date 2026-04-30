@@ -22,28 +22,6 @@ type FinancialsStore struct{}
 // NewFinancialsStore creates a new FinancialsStore.
 func NewFinancialsStore() *FinancialsStore { return &FinancialsStore{} }
 
-// ---------- Tenant guard ----------
-
-// VerifyProjectInOrg returns nil if the project belongs to the given org,
-// ErrNotFound otherwise. Service-layer methods that operate on a project
-// MUST call this before reading or writing project-scoped data — the
-// project_budgets and procurement_items tables don't carry org_id, so
-// without this check a leaked projectID could expose other tenants' data.
-func (s *FinancialsStore) VerifyProjectInOrg(ctx context.Context, tx pgx.Tx, projectID, orgID uuid.UUID) error {
-	var exists bool
-	err := tx.QueryRow(ctx, `
-		SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1 AND org_id = $2)`,
-		projectID, orgID,
-	).Scan(&exists)
-	if err != nil {
-		return fmt.Errorf("verify project in org: %w", err)
-	}
-	if !exists {
-		return ErrNotFound
-	}
-	return nil
-}
-
 // ---------- Project budgets ----------
 
 // ListProjectBudgets returns every budget row for a project, ordered by
