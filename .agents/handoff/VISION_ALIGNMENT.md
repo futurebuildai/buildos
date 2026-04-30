@@ -162,6 +162,8 @@ Wire-protocol values (`iss="fb-brain"`, `aud="fb-os"`) **deliberately unchanged*
 
 ## 7. Open questions — alignment gate
 
+> **Status update (2026-04-29):** All 16 questions are answered in [ADR-001-vision-alignment.md](./ADR-001-vision-alignment.md) (PROPOSED, awaiting owner sign-off). The questions remain below for context; cross-reference each to the corresponding decision (D1–D16) in the ADR.
+
 These are questions whose answers shape what we build next. Some are small, some are strategic. Roughly ordered by urgency.
 
 ### Naming / repo
