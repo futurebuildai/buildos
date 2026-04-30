@@ -13,11 +13,12 @@ import (
 
 // RouterConfig holds all dependencies needed to build the API router.
 type RouterConfig struct {
-	Pool        *pgxpool.Pool
-	JWKS        *mw.JWKSProvider
-	IssuerURL   string
-	DevAuthMode string
-	Logger      *slog.Logger
+	Pool          *pgxpool.Pool
+	JWKS          *mw.JWKSProvider
+	IssuerURL     string
+	DevAuthMode   string
+	Logger        *slog.Logger
+	BudgetService BudgetServicer
 }
 
 // NewRouter creates the Chi router with all route groups and middleware.
@@ -36,7 +37,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	// Instantiate handlers
 	projects := &ProjectHandler{}
 	schedule := &ScheduleHandler{}
-	financials := &FinancialsHandler{}
+	financials := NewFinancialsHandler(cfg.BudgetService)
 	pipeline := &PipelineHandler{}
 	procurement := &ProcurementHandler{}
 	feed := &FeedHandler{}

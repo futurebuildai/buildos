@@ -27,6 +27,13 @@ type Claims struct {
 
 type claimsContextKey struct{}
 
+// ContextWithClaims returns a new context carrying the given Claims.
+// Production middleware uses this; tests in other packages use this to
+// install fake claims without exporting the unexported context key.
+func ContextWithClaims(ctx context.Context, claims Claims) context.Context {
+	return context.WithValue(ctx, claimsContextKey{}, claims)
+}
+
 // ClaimsFromContext extracts the authenticated Claims from the request context.
 func ClaimsFromContext(ctx context.Context) (Claims, bool) {
 	c, ok := ctx.Value(claimsContextKey{}).(Claims)
@@ -142,7 +149,7 @@ func Auth(jwks *JWKSProvider, issuerURL, authMode string, logger *slog.Logger) f
 					writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "X-Dev-Auth invalid: "+err.Error())
 					return
 				}
-				ctx := context.WithValue(r.Context(), claimsContextKey{}, claims)
+				ctx := ContextWithClaims(r.Context(), claims)
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
@@ -206,7 +213,7 @@ func Auth(jwks *JWKSProvider, issuerURL, authMode string, logger *slog.Logger) f
 			}
 
 			// Inject claims into context
-			ctx := context.WithValue(r.Context(), claimsContextKey{}, claims)
+			ctx := ContextWithClaims(r.Context(), claims)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

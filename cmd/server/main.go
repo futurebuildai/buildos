@@ -13,6 +13,7 @@ import (
 	"github.com/futurebuildai/buildos/internal/api"
 	"github.com/futurebuildai/buildos/internal/api/middleware"
 	"github.com/futurebuildai/buildos/internal/config"
+	"github.com/futurebuildai/buildos/internal/service"
 	"github.com/futurebuildai/buildos/internal/store"
 )
 
@@ -57,13 +58,18 @@ func run(logger *slog.Logger) error {
 			"production_safe", false)
 	}
 
+	// Stores + services
+	financialsStore := store.NewFinancialsStore()
+	budgetService := service.NewBudgetService(pool, financialsStore)
+
 	// Build the router with all route groups
 	router := api.NewRouter(api.RouterConfig{
-		Pool:        pool,
-		JWKS:        jwks,
-		IssuerURL:   cfg.BrainIssuerURL,
-		DevAuthMode: cfg.DevAuthMode,
-		Logger:      logger,
+		Pool:          pool,
+		JWKS:          jwks,
+		IssuerURL:     cfg.BrainIssuerURL,
+		DevAuthMode:   cfg.DevAuthMode,
+		Logger:        logger,
+		BudgetService: budgetService,
 	})
 
 	srv := &http.Server{

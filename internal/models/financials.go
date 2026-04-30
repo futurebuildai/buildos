@@ -75,6 +75,20 @@ type Invoice struct {
 	CreatedAt     time.Time  `json:"created_at"`
 }
 
+// ProjectFinancial is a derived per-project aggregation: one row per
+// (project, currency_code) summing across all WBS phases. Returned by
+// the GET /api/v1/org/{orgID}/financials/projects endpoint. Not stored
+// directly; computed on demand by the FinancialsStore.
+type ProjectFinancial struct {
+	ProjectID           uuid.UUID `json:"project_id"`
+	ProjectName         string    `json:"project_name"`
+	CurrencyCode        string    `json:"currency_code"`
+	TotalEstimatedCents int64     `json:"total_estimated_cents"`
+	TotalCommittedCents int64     `json:"total_committed_cents"`
+	TotalActualCents    int64     `json:"total_actual_cents"`
+	PhaseCount          int       `json:"phase_count"`
+}
+
 // Invoice statuses. Match the migration's default and CHECK-able values.
 const (
 	InvoiceStatusPending  = "pending"

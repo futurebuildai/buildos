@@ -49,11 +49,15 @@ type Persona struct {
 	PlanTier string `json:"plan_tier"`
 }
 
+// Demo org UUID — every default persona belongs to this org. Seed fixture
+// data should reference this same UUID so demo flows work end-to-end.
+const demoOrgID = "11111111-1111-1111-1111-111111111111"
+
 var defaultPersonas = []Persona{
-	{Username: "alice", Display: "Alice (Owner)", Sub: "alice@buildos.dev", OrgID: "demo-org", Role: "owner", PlanTier: "enterprise"},
-	{Username: "bob", Display: "Bob (Admin)", Sub: "bob@buildos.dev", OrgID: "demo-org", Role: "admin", PlanTier: "enterprise"},
-	{Username: "carol", Display: "Carol (Superintendent)", Sub: "carol@buildos.dev", OrgID: "demo-org", Role: "superintendent", PlanTier: "enterprise"},
-	{Username: "dave", Display: "Dave (Field Worker)", Sub: "dave@buildos.dev", OrgID: "demo-org", Role: "field_worker", PlanTier: "enterprise"},
+	{Username: "alice", Display: "Alice (Owner)", Sub: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", OrgID: demoOrgID, Role: "owner", PlanTier: "enterprise"},
+	{Username: "bob", Display: "Bob (Admin)", Sub: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", OrgID: demoOrgID, Role: "admin", PlanTier: "enterprise"},
+	{Username: "carol", Display: "Carol (Superintendent)", Sub: "cccccccc-cccc-cccc-cccc-cccccccccccc", OrgID: demoOrgID, Role: "superintendent", PlanTier: "enterprise"},
+	{Username: "dave", Display: "Dave (Field Worker)", Sub: "dddddddd-dddd-dddd-dddd-dddddddddddd", OrgID: demoOrgID, Role: "field_worker", PlanTier: "enterprise"},
 }
 
 type config struct {

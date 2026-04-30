@@ -22,6 +22,28 @@ type FinancialsStore struct{}
 // NewFinancialsStore creates a new FinancialsStore.
 func NewFinancialsStore() *FinancialsStore { return &FinancialsStore{} }
 
+// ---------- Tenant guard ----------
+
+// VerifyProjectInOrg returns nil if the project belongs to the given org,
+// ErrNotFound otherwise. Service-layer methods that operate on a project
+// MUST call this before reading or writing project-scoped data — the
+// project_budgets and procurement_items tables don't carry org_id, so
+// without this check a leaked projectID could expose other tenants' data.
+func (s *FinancialsStore) VerifyProjectInOrg(ctx context.Context, tx pgx.Tx, projectID, orgID uuid.UUID) error {
+	var exists bool
+	err := tx.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1 AND org_id = $2)`,
+		projectID, orgID,
+	).Scan(&exists)
+	if err != nil {
+		return fmt.Errorf("verify project in org: %w", err)
+	}
+	if !exists {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // ---------- Project budgets ----------
 
 // ListProjectBudgets returns every budget row for a project, ordered by
@@ -95,6 +117,59 @@ func (s *FinancialsStore) ListCorporateBudgets(ctx context.Context, tx pgx.Tx, o
 			return nil, fmt.Errorf("scan corporate_budgets: %w", err)
 		}
 		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// ---------- Project financials (per-project rollup) ----------
+
+// ListProjectFinancials returns one row per (project, currency_code) for
+// the given org, summing project_budgets across all WBS phases. Projects
+// with zero budget rows are omitted (nothing to summarize). If currency
+// is non-empty, results are filtered to that single currency.
+//
+// The chk_budget_currency_match constraint guarantees that within a single
+// project_budgets row all three monetary pairs share a currency, so we can
+// group by estimated_cost_currency_code as the canonical project currency.
+func (s *FinancialsStore) ListProjectFinancials(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, currency string) ([]models.ProjectFinancial, error) {
+	q := `
+		SELECT
+			p.id,
+			p.name,
+			pb.estimated_cost_currency_code AS currency_code,
+			SUM(pb.estimated_cost_cents)::BIGINT AS total_estimated_cents,
+			SUM(pb.committed_cost_cents)::BIGINT AS total_committed_cents,
+			SUM(pb.actual_cost_cents)::BIGINT  AS total_actual_cents,
+			COUNT(*)                           AS phase_count
+		FROM projects p
+		INNER JOIN project_budgets pb ON pb.project_id = p.id
+		WHERE p.org_id = $1`
+	args := []any{orgID}
+	if currency != "" {
+		q += ` AND pb.estimated_cost_currency_code = $2`
+		args = append(args, currency)
+	}
+	q += `
+		GROUP BY p.id, p.name, pb.estimated_cost_currency_code
+		ORDER BY p.name, pb.estimated_cost_currency_code`
+
+	rows, err := tx.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query project_financials: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]models.ProjectFinancial, 0)
+	for rows.Next() {
+		var pf models.ProjectFinancial
+		if err := rows.Scan(
+			&pf.ProjectID, &pf.ProjectName, &pf.CurrencyCode,
+			&pf.TotalEstimatedCents, &pf.TotalCommittedCents, &pf.TotalActualCents,
+			&pf.PhaseCount,
+		); err != nil {
+			return nil, fmt.Errorf("scan project_financials: %w", err)
+		}
+		out = append(out, pf)
 	}
 	return out, rows.Err()
 }
