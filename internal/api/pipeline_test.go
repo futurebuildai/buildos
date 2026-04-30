@@ -17,27 +17,40 @@ import (
 
 // mockPipelineService implements PipelineServicer for handler tests.
 type mockPipelineService struct {
-	listResult     store.ProspectsPage
-	listErr        error
-	getResult      models.ProspectWithDetails
-	getErr         error
-	createResult   models.Prospect
-	createErr      error
-	updateResult   models.Prospect
-	updateErr      error
-	advanceResult  models.Prospect
-	advanceErr     error
-	loseResult     models.Prospect
-	loseErr        error
+	listResult    store.ProspectsPage
+	listErr       error
+	getResult     models.ProspectWithDetails
+	getErr        error
+	createResult  models.Prospect
+	createErr     error
+	updateResult  models.Prospect
+	updateErr     error
+	advanceResult models.Prospect
+	advanceErr    error
+	loseResult    models.Prospect
+	loseErr       error
+
+	createEstimateResult models.PipelineEstimate
+	createEstimateErr    error
+	updateEstimateResult models.PipelineEstimate
+	updateEstimateErr    error
+	createPermitResult   models.Permit
+	createPermitErr      error
+	updatePermitResult   models.Permit
+	updatePermitErr      error
 
 	// Captured args for assertions.
-	lastListInput     service.ListProspectsInput
-	lastCreateInput   service.CreateProspectInput
-	lastUpdateInput   service.UpdateProspectInput
-	lastAdvanceInput  service.AdvanceProspectInput
-	lastLoseInput     service.LoseProspectInput
-	lastGetProspectID uuid.UUID
-	lastGetCallerOrg  uuid.UUID
+	lastListInput           service.ListProspectsInput
+	lastCreateInput         service.CreateProspectInput
+	lastUpdateInput         service.UpdateProspectInput
+	lastAdvanceInput        service.AdvanceProspectInput
+	lastLoseInput           service.LoseProspectInput
+	lastCreateEstimateInput service.CreateEstimateInput
+	lastUpdateEstimateInput service.UpdateEstimateStatusInput
+	lastCreatePermitInput   service.CreatePermitInput
+	lastUpdatePermitInput   service.UpdatePermitInput
+	lastGetProspectID       uuid.UUID
+	lastGetCallerOrg        uuid.UUID
 }
 
 func (m *mockPipelineService) ListProspects(_ context.Context, in service.ListProspectsInput) (store.ProspectsPage, error) {
@@ -64,6 +77,24 @@ func (m *mockPipelineService) AdvanceProspect(_ context.Context, in service.Adva
 func (m *mockPipelineService) LoseProspect(_ context.Context, in service.LoseProspectInput) (models.Prospect, error) {
 	m.lastLoseInput = in
 	return m.loseResult, m.loseErr
+}
+
+// Estimate / permit hooks added in Sprint 3 PR 2b.
+func (m *mockPipelineService) CreateEstimate(_ context.Context, in service.CreateEstimateInput) (models.PipelineEstimate, error) {
+	m.lastCreateEstimateInput = in
+	return m.createEstimateResult, m.createEstimateErr
+}
+func (m *mockPipelineService) UpdateEstimateStatus(_ context.Context, in service.UpdateEstimateStatusInput) (models.PipelineEstimate, error) {
+	m.lastUpdateEstimateInput = in
+	return m.updateEstimateResult, m.updateEstimateErr
+}
+func (m *mockPipelineService) CreatePermit(_ context.Context, in service.CreatePermitInput) (models.Permit, error) {
+	m.lastCreatePermitInput = in
+	return m.createPermitResult, m.createPermitErr
+}
+func (m *mockPipelineService) UpdatePermit(_ context.Context, in service.UpdatePermitInput) (models.Permit, error) {
+	m.lastUpdatePermitInput = in
+	return m.updatePermitResult, m.updatePermitErr
 }
 
 const (
@@ -284,5 +315,170 @@ func TestUpdateProspect_HappyPath(t *testing.T) {
 	h.UpdateProspect(w, r)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---------- Estimates ----------
+
+const testEstimateID = "66666666-6666-6666-6666-666666666666"
+
+func TestCreateEstimate_HappyPath(t *testing.T) {
+	svc := &mockPipelineService{
+		createEstimateResult: models.PipelineEstimate{
+			Version:             1,
+			TotalEstimatedCents: 2_500_000,
+			CurrencyCode:        "USD",
+			Status:              "draft",
+		},
+	}
+	h := NewPipelineHandler(svc)
+	body := strings.NewReader(`{
+		"line_items":[{"wbs_code":"6.0","description":"Foundation","estimated_cents":2500000}],
+		"margin_pct":15,
+		"currency_code":"USD"
+	}`)
+	r := buildRequest(t, "POST", "/api/v1/org/"+testOrgID+"/pipeline/prospects/"+testProspectID+"/estimates",
+		testOrgID, map[string]string{"orgID": testOrgID, "prospectID": testProspectID}, body)
+	w := httptest.NewRecorder()
+	h.CreateEstimate(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status=%d, body=%s", w.Code, w.Body.String())
+	}
+	if got := svc.lastCreateEstimateInput; got.CurrencyCode != "USD" || got.MarginPct != 15 || len(got.LineItems) != 1 {
+		t.Errorf("input passed to service = %+v", got)
+	}
+}
+
+func TestCreateEstimate_InvalidCurrencyMaps400(t *testing.T) {
+	h := NewPipelineHandler(&mockPipelineService{
+		createEstimateErr: service.ErrInvalidInput,
+	})
+	body := strings.NewReader(`{"line_items":[{"wbs_code":"x","estimated_cents":1}],"margin_pct":15,"currency_code":"EUR"}`)
+	r := buildRequest(t, "POST", "/api/v1/org/"+testOrgID+"/pipeline/prospects/"+testProspectID+"/estimates",
+		testOrgID, map[string]string{"orgID": testOrgID, "prospectID": testProspectID}, body)
+	w := httptest.NewRecorder()
+	h.CreateEstimate(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400", w.Code)
+	}
+}
+
+func TestUpdateEstimate_HappyPath(t *testing.T) {
+	svc := &mockPipelineService{
+		updateEstimateResult: models.PipelineEstimate{Status: "sent"},
+	}
+	h := NewPipelineHandler(svc)
+	body := strings.NewReader(`{"prospect_id":"` + testProspectID + `","status":"sent"}`)
+	r := buildRequest(t, "PUT", "/api/v1/org/"+testOrgID+"/pipeline/estimates/"+testEstimateID,
+		testOrgID, map[string]string{"orgID": testOrgID, "estimateID": testEstimateID}, body)
+	w := httptest.NewRecorder()
+	h.UpdateEstimate(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, body=%s", w.Code, w.Body.String())
+	}
+	if svc.lastUpdateEstimateInput.NewStatus != "sent" {
+		t.Errorf("captured status = %q", svc.lastUpdateEstimateInput.NewStatus)
+	}
+}
+
+func TestUpdateEstimate_MissingProspectIDReturns400(t *testing.T) {
+	h := NewPipelineHandler(&mockPipelineService{})
+	body := strings.NewReader(`{"status":"sent"}`)
+	r := buildRequest(t, "PUT", "/api/v1/org/"+testOrgID+"/pipeline/estimates/"+testEstimateID,
+		testOrgID, map[string]string{"orgID": testOrgID, "estimateID": testEstimateID}, body)
+	w := httptest.NewRecorder()
+	h.UpdateEstimate(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400", w.Code)
+	}
+}
+
+func TestUpdateEstimate_InvalidTransitionReturns409(t *testing.T) {
+	h := NewPipelineHandler(&mockPipelineService{
+		updateEstimateErr: service.ErrInvalidTransition,
+	})
+	body := strings.NewReader(`{"prospect_id":"` + testProspectID + `","status":"draft"}`)
+	r := buildRequest(t, "PUT", "/api/v1/org/"+testOrgID+"/pipeline/estimates/"+testEstimateID,
+		testOrgID, map[string]string{"orgID": testOrgID, "estimateID": testEstimateID}, body)
+	w := httptest.NewRecorder()
+	h.UpdateEstimate(w, r)
+	if w.Code != http.StatusConflict {
+		t.Errorf("status=%d, want 409", w.Code)
+	}
+}
+
+// ---------- Permits ----------
+
+const testPermitID = "77777777-7777-7777-7777-777777777777"
+
+func TestCreatePermit_HappyPath(t *testing.T) {
+	svc := &mockPipelineService{
+		createPermitResult: models.Permit{
+			PermitType:      "building",
+			Jurisdiction:    "Austin TX",
+			FeeCents:        50000,
+			FeeCurrencyCode: "USD",
+			Status:          "not_submitted",
+		},
+	}
+	h := NewPipelineHandler(svc)
+	body := strings.NewReader(`{
+		"permit_type":"building","jurisdiction":"Austin TX",
+		"fee_cents":50000,"fee_currency_code":"USD"
+	}`)
+	r := buildRequest(t, "POST", "/api/v1/org/"+testOrgID+"/pipeline/prospects/"+testProspectID+"/permits",
+		testOrgID, map[string]string{"orgID": testOrgID, "prospectID": testProspectID}, body)
+	w := httptest.NewRecorder()
+	h.CreatePermit(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status=%d, body=%s", w.Code, w.Body.String())
+	}
+	if svc.lastCreatePermitInput.PermitType != "building" {
+		t.Errorf("captured permit_type=%q", svc.lastCreatePermitInput.PermitType)
+	}
+}
+
+func TestCreatePermit_BadDateReturns400(t *testing.T) {
+	h := NewPipelineHandler(&mockPipelineService{})
+	body := strings.NewReader(`{
+		"permit_type":"building","jurisdiction":"Austin TX",
+		"fee_cents":1,"fee_currency_code":"USD",
+		"submitted_date":"not-a-date"
+	}`)
+	r := buildRequest(t, "POST", "/api/v1/org/"+testOrgID+"/pipeline/prospects/"+testProspectID+"/permits",
+		testOrgID, map[string]string{"orgID": testOrgID, "prospectID": testProspectID}, body)
+	w := httptest.NewRecorder()
+	h.CreatePermit(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400", w.Code)
+	}
+}
+
+func TestUpdatePermit_HappyPath(t *testing.T) {
+	svc := &mockPipelineService{
+		updatePermitResult: models.Permit{Status: "submitted"},
+	}
+	h := NewPipelineHandler(svc)
+	body := strings.NewReader(`{"prospect_id":"` + testProspectID + `","status":"submitted","application_number":"BLDG-2026-0042"}`)
+	r := buildRequest(t, "PUT", "/api/v1/org/"+testOrgID+"/pipeline/permits/"+testPermitID,
+		testOrgID, map[string]string{"orgID": testOrgID, "permitID": testPermitID}, body)
+	w := httptest.NewRecorder()
+	h.UpdatePermit(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpdatePermit_TerminalSourceReturns409(t *testing.T) {
+	h := NewPipelineHandler(&mockPipelineService{
+		updatePermitErr: service.ErrInvalidTransition,
+	})
+	body := strings.NewReader(`{"prospect_id":"` + testProspectID + `","status":"submitted"}`)
+	r := buildRequest(t, "PUT", "/api/v1/org/"+testOrgID+"/pipeline/permits/"+testPermitID,
+		testOrgID, map[string]string{"orgID": testOrgID, "permitID": testPermitID}, body)
+	w := httptest.NewRecorder()
+	h.UpdatePermit(w, r)
+	if w.Code != http.StatusConflict {
+		t.Errorf("status=%d, want 409", w.Code)
 	}
 }

@@ -16,8 +16,7 @@ import (
 )
 
 // PipelineServicer is the subset of *service.PipelineService consumed by
-// PipelineHandler. Grows in subsequent PRs as estimate and permit
-// methods land.
+// PipelineHandler.
 type PipelineServicer interface {
 	ListProspects(ctx context.Context, in service.ListProspectsInput) (store.ProspectsPage, error)
 	GetProspectWithDetails(ctx context.Context, prospectID, callerOrgID uuid.UUID) (models.ProspectWithDetails, error)
@@ -25,6 +24,10 @@ type PipelineServicer interface {
 	UpdateProspect(ctx context.Context, in service.UpdateProspectInput) (models.Prospect, error)
 	AdvanceProspect(ctx context.Context, in service.AdvanceProspectInput) (models.Prospect, error)
 	LoseProspect(ctx context.Context, in service.LoseProspectInput) (models.Prospect, error)
+	CreateEstimate(ctx context.Context, in service.CreateEstimateInput) (models.PipelineEstimate, error)
+	UpdateEstimateStatus(ctx context.Context, in service.UpdateEstimateStatusInput) (models.PipelineEstimate, error)
+	CreatePermit(ctx context.Context, in service.CreatePermitInput) (models.Permit, error)
+	UpdatePermit(ctx context.Context, in service.UpdatePermitInput) (models.Permit, error)
 }
 
 // PipelineHandler handles /api/v1/org/{orgID}/pipeline/* endpoints.
@@ -258,31 +261,227 @@ func (h *PipelineHandler) LoseProspect(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, map[string]any{"prospect": prospect})
 }
 
-// ---------- Estimates / permits / analytics — stubbed in PR 2a ----------
+// ---------- Estimates ----------
 
-// CreateEstimate adds a new estimate for a prospect. (Sprint 3 PR 2b)
+type createEstimateRequest struct {
+	LineItems    models.PipelineEstimateLineItems `json:"line_items"`
+	MarginPct    int                              `json:"margin_pct"`
+	CurrencyCode string                           `json:"currency_code"`
+}
+
+// CreateEstimate adds a new estimate version for a prospect.
 // POST /api/v1/org/{orgID}/pipeline/prospects/{prospectID}/estimates
 func (h *PipelineHandler) CreateEstimate(w http.ResponseWriter, r *http.Request) {
-	writeNotImplemented(w, r)
+	if _, ok := requireOrgIDFromURL(w, r); !ok {
+		return
+	}
+	prospectID, ok := parseUUIDFromURL(w, r, "prospectID")
+	if !ok {
+		return
+	}
+	callerOrg, ok := callerOrgIDFromClaims(w, r)
+	if !ok {
+		return
+	}
+	var body createEstimateRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid JSON body")
+		return
+	}
+	estimate, err := h.svc.CreateEstimate(r.Context(), service.CreateEstimateInput{
+		ProspectID:   prospectID,
+		OrgID:        callerOrg,
+		CurrencyCode: body.CurrencyCode,
+		LineItems:    body.LineItems,
+		MarginPct:    body.MarginPct,
+	})
+	if err != nil {
+		writePipelineError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusCreated, map[string]any{"estimate": estimate})
 }
 
-// UpdateEstimate modifies an existing estimate. (Sprint 3 PR 2b)
+// UpdateEstimate modifies an existing estimate's status. Estimates are
+// versioned; line-item edits create a new estimate via CreateEstimate.
 // PUT /api/v1/org/{orgID}/pipeline/estimates/{estimateID}
+//
+// The route is org-scoped without a {prospectID} path segment per
+// API_CONTRACT, so the body MUST carry prospect_id for the service to
+// verify the (estimate, prospect, org) chain.
 func (h *PipelineHandler) UpdateEstimate(w http.ResponseWriter, r *http.Request) {
-	writeNotImplemented(w, r)
+	if _, ok := requireOrgIDFromURL(w, r); !ok {
+		return
+	}
+	estimateID, ok := parseUUIDFromURL(w, r, "estimateID")
+	if !ok {
+		return
+	}
+	callerOrg, ok := callerOrgIDFromClaims(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		ProspectID string  `json:"prospect_id"`
+		Status     *string `json:"status,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid JSON body")
+		return
+	}
+	if body.Status == nil {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "status is required")
+		return
+	}
+	prospectID, err := uuid.Parse(body.ProspectID)
+	if err != nil {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "prospect_id is required and must be a UUID")
+		return
+	}
+	estimate, err := h.svc.UpdateEstimateStatus(r.Context(), service.UpdateEstimateStatusInput{
+		EstimateID: estimateID,
+		ProspectID: prospectID,
+		OrgID:      callerOrg,
+		NewStatus:  *body.Status,
+	})
+	if err != nil {
+		writePipelineError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, map[string]any{"estimate": estimate})
 }
 
-// CreatePermit adds a permit for a prospect. (Sprint 3 PR 2b)
+// ---------- Permits ----------
+
+type createPermitRequest struct {
+	PermitType        string  `json:"permit_type"`
+	Jurisdiction      string  `json:"jurisdiction"`
+	ApplicationNumber *string `json:"application_number,omitempty"`
+	SubmittedDate     *string `json:"submitted_date,omitempty"`
+	ExpectedIssueDate *string `json:"expected_issue_date,omitempty"`
+	FeeCents          int64   `json:"fee_cents"`
+	FeeCurrencyCode   string  `json:"fee_currency_code"`
+	Notes             *string `json:"notes,omitempty"`
+}
+
+// CreatePermit adds a permit for a prospect.
 // POST /api/v1/org/{orgID}/pipeline/prospects/{prospectID}/permits
 func (h *PipelineHandler) CreatePermit(w http.ResponseWriter, r *http.Request) {
-	writeNotImplemented(w, r)
+	if _, ok := requireOrgIDFromURL(w, r); !ok {
+		return
+	}
+	prospectID, ok := parseUUIDFromURL(w, r, "prospectID")
+	if !ok {
+		return
+	}
+	callerOrg, ok := callerOrgIDFromClaims(w, r)
+	if !ok {
+		return
+	}
+	var body createPermitRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid JSON body")
+		return
+	}
+	submittedDate, err := parseOptionalDate(body.SubmittedDate)
+	if err != nil {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "submitted_date must be RFC3339 or YYYY-MM-DD")
+		return
+	}
+	expectedIssue, err := parseOptionalDate(body.ExpectedIssueDate)
+	if err != nil {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "expected_issue_date must be RFC3339 or YYYY-MM-DD")
+		return
+	}
+	permit, err := h.svc.CreatePermit(r.Context(), service.CreatePermitInput{
+		ProspectID:        prospectID,
+		OrgID:             callerOrg,
+		PermitType:        body.PermitType,
+		Jurisdiction:      body.Jurisdiction,
+		ApplicationNumber: body.ApplicationNumber,
+		SubmittedDate:     submittedDate,
+		ExpectedIssueDate: expectedIssue,
+		FeeCents:          body.FeeCents,
+		FeeCurrencyCode:   body.FeeCurrencyCode,
+		Notes:             body.Notes,
+	})
+	if err != nil {
+		writePipelineError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusCreated, map[string]any{"permit": permit})
 }
 
-// UpdatePermit modifies an existing permit. (Sprint 3 PR 2b)
+type updatePermitRequest struct {
+	ProspectID        string  `json:"prospect_id"`
+	ApplicationNumber *string `json:"application_number,omitempty"`
+	SubmittedDate     *string `json:"submitted_date,omitempty"`
+	ExpectedIssueDate *string `json:"expected_issue_date,omitempty"`
+	ActualIssueDate   *string `json:"actual_issue_date,omitempty"`
+	FeeCents          *int64  `json:"fee_cents,omitempty"`
+	Status            *string `json:"status,omitempty"`
+	Notes             *string `json:"notes,omitempty"`
+}
+
+// UpdatePermit modifies an existing permit.
 // PUT /api/v1/org/{orgID}/pipeline/permits/{permitID}
 func (h *PipelineHandler) UpdatePermit(w http.ResponseWriter, r *http.Request) {
-	writeNotImplemented(w, r)
+	if _, ok := requireOrgIDFromURL(w, r); !ok {
+		return
+	}
+	permitID, ok := parseUUIDFromURL(w, r, "permitID")
+	if !ok {
+		return
+	}
+	callerOrg, ok := callerOrgIDFromClaims(w, r)
+	if !ok {
+		return
+	}
+	var body updatePermitRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid JSON body")
+		return
+	}
+	prospectID, err := uuid.Parse(body.ProspectID)
+	if err != nil {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "prospect_id is required and must be a UUID")
+		return
+	}
+	submitted, err := parseOptionalDate(body.SubmittedDate)
+	if err != nil {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "submitted_date must be RFC3339 or YYYY-MM-DD")
+		return
+	}
+	expected, err := parseOptionalDate(body.ExpectedIssueDate)
+	if err != nil {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "expected_issue_date must be RFC3339 or YYYY-MM-DD")
+		return
+	}
+	actual, err := parseOptionalDate(body.ActualIssueDate)
+	if err != nil {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "actual_issue_date must be RFC3339 or YYYY-MM-DD")
+		return
+	}
+	permit, err := h.svc.UpdatePermit(r.Context(), service.UpdatePermitInput{
+		PermitID:          permitID,
+		ProspectID:        prospectID,
+		OrgID:             callerOrg,
+		ApplicationNumber: body.ApplicationNumber,
+		SubmittedDate:     submitted,
+		ExpectedIssueDate: expected,
+		ActualIssueDate:   actual,
+		FeeCents:          body.FeeCents,
+		NewStatus:         body.Status,
+		Notes:             body.Notes,
+	})
+	if err != nil {
+		writePipelineError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, map[string]any{"permit": permit})
 }
+
+// ---------- Analytics — Sprint 3 PR 3 ----------
 
 // Analytics returns weighted pipeline revenue grouped by currency. (Sprint 3 PR 3)
 // GET /api/v1/org/{orgID}/pipeline/analytics

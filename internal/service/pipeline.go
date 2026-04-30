@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/futurebuildai/buildos/internal/currency"
 	"github.com/futurebuildai/buildos/internal/models"
 	"github.com/futurebuildai/buildos/internal/store"
 )
@@ -266,6 +268,240 @@ type LoseProspectInput struct {
 	OrgID      uuid.UUID
 	Reason     string
 }
+
+// ---------- Estimates ----------
+
+// CreateEstimateInput is the service-layer input for creating an
+// estimate. CurrencyCode is validated; total_estimated_cents is computed
+// from line items so callers can't supply a number that disagrees with
+// the persisted line-item sum.
+type CreateEstimateInput struct {
+	ProspectID   uuid.UUID
+	OrgID        uuid.UUID
+	CurrencyCode string
+	LineItems    models.PipelineEstimateLineItems
+	MarginPct    int
+}
+
+// CreateEstimate inserts a new estimate version under the given prospect.
+// Validates currency, requires at least one line item, computes the
+// total. Returns ErrNotFound if the prospect doesn't exist or belongs
+// to another org.
+func (s *PipelineService) CreateEstimate(ctx context.Context, in CreateEstimateInput) (models.PipelineEstimate, error) {
+	if err := currency.Validate(in.CurrencyCode); err != nil {
+		return models.PipelineEstimate{}, fmt.Errorf("%w: currency_code: %v", ErrInvalidInput, err)
+	}
+	if len(in.LineItems) == 0 {
+		return models.PipelineEstimate{}, fmt.Errorf("%w: at least one line_item is required", ErrInvalidInput)
+	}
+	if in.MarginPct < 0 || in.MarginPct > 100 {
+		return models.PipelineEstimate{}, fmt.Errorf("%w: margin_pct must be 0..100", ErrInvalidInput)
+	}
+
+	var total int64
+	for i, item := range in.LineItems {
+		if item.WBSCode == "" {
+			return models.PipelineEstimate{}, fmt.Errorf("%w: line_items[%d].wbs_code is required", ErrInvalidInput, i)
+		}
+		if item.EstimatedCents < 0 {
+			return models.PipelineEstimate{}, fmt.Errorf("%w: line_items[%d].estimated_cents must be >= 0", ErrInvalidInput, i)
+		}
+		total += item.EstimatedCents
+	}
+
+	itemsJSON, err := json.Marshal(in.LineItems)
+	if err != nil {
+		// Should never happen for the line-item type; treat as 500.
+		return models.PipelineEstimate{}, fmt.Errorf("marshal line_items: %w", err)
+	}
+
+	var estimate models.PipelineEstimate
+	err = pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if err := s.store.VerifyProspectInOrg(ctx, tx, in.ProspectID, in.OrgID); err != nil {
+			return err
+		}
+		created, err := s.store.CreateEstimate(ctx, tx, store.CreateEstimateParams{
+			ProspectID:          in.ProspectID,
+			TotalEstimatedCents: total,
+			CurrencyCode:        in.CurrencyCode,
+			LineItemsJSON:       itemsJSON,
+			MarginPct:           in.MarginPct,
+		})
+		if err != nil {
+			return err
+		}
+		estimate = created
+		return nil
+	})
+	if err != nil {
+		return models.PipelineEstimate{}, mapStoreError(err)
+	}
+	return estimate, nil
+}
+
+// UpdateEstimateStatusInput is the service-layer input for changing an
+// estimate's status. Both EstimateID and ProspectID are required so the
+// service can verify the (estimate, prospect, org) chain in a single tx.
+type UpdateEstimateStatusInput struct {
+	EstimateID uuid.UUID
+	ProspectID uuid.UUID
+	OrgID      uuid.UUID
+	NewStatus  string
+}
+
+// UpdateEstimateStatus changes only the status of an estimate. Validates
+// the transition (CanTransitionEstimateStatus). Sent_at is auto-stamped
+// by the store on the first transition to "sent".
+func (s *PipelineService) UpdateEstimateStatus(ctx context.Context, in UpdateEstimateStatusInput) (models.PipelineEstimate, error) {
+	if !models.IsValidEstimateStatus(in.NewStatus) {
+		return models.PipelineEstimate{}, fmt.Errorf("%w: status %q is not one of {draft, sent, revised, accepted}", ErrInvalidInput, in.NewStatus)
+	}
+
+	var estimate models.PipelineEstimate
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if err := s.store.VerifyProspectInOrg(ctx, tx, in.ProspectID, in.OrgID); err != nil {
+			return err
+		}
+		current, err := s.store.GetEstimate(ctx, tx, in.EstimateID, in.ProspectID)
+		if err != nil {
+			return err
+		}
+		if !models.CanTransitionEstimateStatus(current.Status, in.NewStatus) {
+			return fmt.Errorf("%w: estimate %s → %s not permitted", ErrInvalidTransition, current.Status, in.NewStatus)
+		}
+		updated, err := s.store.UpdateEstimateStatus(ctx, tx, in.EstimateID, in.NewStatus)
+		if err != nil {
+			return err
+		}
+		estimate = updated
+		return nil
+	})
+	if err != nil {
+		return models.PipelineEstimate{}, mapStoreError(err)
+	}
+	return estimate, nil
+}
+
+// ---------- Permits ----------
+
+// CreatePermitInput is the service-layer input for adding a permit.
+type CreatePermitInput struct {
+	ProspectID        uuid.UUID
+	OrgID             uuid.UUID
+	PermitType        string
+	Jurisdiction      string
+	ApplicationNumber *string
+	SubmittedDate     *time.Time
+	ExpectedIssueDate *time.Time
+	FeeCents          int64
+	FeeCurrencyCode   string
+	Notes             *string
+}
+
+// CreatePermit inserts a permit at status "not_submitted".
+func (s *PipelineService) CreatePermit(ctx context.Context, in CreatePermitInput) (models.Permit, error) {
+	if in.PermitType == "" {
+		return models.Permit{}, fmt.Errorf("%w: permit_type is required", ErrInvalidInput)
+	}
+	if in.Jurisdiction == "" {
+		return models.Permit{}, fmt.Errorf("%w: jurisdiction is required", ErrInvalidInput)
+	}
+	if err := currency.Validate(in.FeeCurrencyCode); err != nil {
+		return models.Permit{}, fmt.Errorf("%w: fee_currency_code: %v", ErrInvalidInput, err)
+	}
+	if in.FeeCents < 0 {
+		return models.Permit{}, fmt.Errorf("%w: fee_cents must be >= 0", ErrInvalidInput)
+	}
+
+	var permit models.Permit
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if err := s.store.VerifyProspectInOrg(ctx, tx, in.ProspectID, in.OrgID); err != nil {
+			return err
+		}
+		created, err := s.store.CreatePermit(ctx, tx, store.CreatePermitParams{
+			ProspectID:        in.ProspectID,
+			PermitType:        in.PermitType,
+			Jurisdiction:      in.Jurisdiction,
+			ApplicationNumber: in.ApplicationNumber,
+			SubmittedDate:     in.SubmittedDate,
+			ExpectedIssueDate: in.ExpectedIssueDate,
+			FeeCents:          in.FeeCents,
+			FeeCurrencyCode:   in.FeeCurrencyCode,
+			Notes:             in.Notes,
+		})
+		if err != nil {
+			return err
+		}
+		permit = created
+		return nil
+	})
+	if err != nil {
+		return models.Permit{}, mapStoreError(err)
+	}
+	return permit, nil
+}
+
+// UpdatePermitInput is the service-layer input for partial-updating a
+// permit. fee_currency_code is intentionally not editable here — once
+// recorded the currency is immutable.
+type UpdatePermitInput struct {
+	PermitID          uuid.UUID
+	ProspectID        uuid.UUID
+	OrgID             uuid.UUID
+	ApplicationNumber *string
+	SubmittedDate     *time.Time
+	ExpectedIssueDate *time.Time
+	ActualIssueDate   *time.Time
+	FeeCents          *int64
+	NewStatus         *string
+	Notes             *string
+}
+
+// UpdatePermit modifies a permit. Validates the status transition if a
+// new status is provided. fee_cents must be >= 0.
+func (s *PipelineService) UpdatePermit(ctx context.Context, in UpdatePermitInput) (models.Permit, error) {
+	if in.NewStatus != nil && !models.IsValidPermitStatus(*in.NewStatus) {
+		return models.Permit{}, fmt.Errorf("%w: status %q is not one of {not_submitted, submitted, under_review, revisions_requested, approved, denied}", ErrInvalidInput, *in.NewStatus)
+	}
+	if in.FeeCents != nil && *in.FeeCents < 0 {
+		return models.Permit{}, fmt.Errorf("%w: fee_cents must be >= 0", ErrInvalidInput)
+	}
+
+	var permit models.Permit
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if err := s.store.VerifyProspectInOrg(ctx, tx, in.ProspectID, in.OrgID); err != nil {
+			return err
+		}
+		current, err := s.store.GetPermit(ctx, tx, in.PermitID, in.ProspectID)
+		if err != nil {
+			return err
+		}
+		if in.NewStatus != nil && !models.CanTransitionPermitStatus(current.Status, *in.NewStatus) {
+			return fmt.Errorf("%w: permit %s → %s not permitted", ErrInvalidTransition, current.Status, *in.NewStatus)
+		}
+		updated, err := s.store.UpdatePermit(ctx, tx, store.UpdatePermitParams{
+			PermitID:          in.PermitID,
+			ApplicationNumber: in.ApplicationNumber,
+			SubmittedDate:     in.SubmittedDate,
+			ExpectedIssueDate: in.ExpectedIssueDate,
+			ActualIssueDate:   in.ActualIssueDate,
+			FeeCents:          in.FeeCents,
+			Status:            in.NewStatus,
+			Notes:             in.Notes,
+		})
+		if err != nil {
+			return err
+		}
+		permit = updated
+		return nil
+	})
+	if err != nil {
+		return models.Permit{}, mapStoreError(err)
+	}
+	return permit, nil
+}
+
+// ---------- Lose ----------
 
 // LoseProspect transitions a prospect to LOST. Reason is required.
 // Returns ErrTerminalStage if the prospect is already in PERMIT_ISSUED

@@ -179,6 +179,68 @@ func TestIsValidEstimateStatus(t *testing.T) {
 	}
 }
 
+func TestCanTransitionEstimateStatus(t *testing.T) {
+	type tc struct {
+		from string
+		to   string
+		want bool
+	}
+	cases := []tc{
+		// Forward
+		{"draft", "sent", true},
+		{"draft", "accepted", true},
+		{"sent", "revised", true},
+		{"sent", "accepted", true},
+		{"revised", "sent", true},
+		{"revised", "accepted", true},
+		// Self-transition forbidden
+		{"draft", "draft", false},
+		{"sent", "sent", false},
+		// Accepted is terminal
+		{"accepted", "draft", false},
+		{"accepted", "sent", false},
+		// Unknown statuses
+		{"bogus", "sent", false},
+		{"draft", "bogus", false},
+		{"", "draft", false},
+	}
+	for _, c := range cases {
+		if got := CanTransitionEstimateStatus(c.from, c.to); got != c.want {
+			t.Errorf("CanTransitionEstimateStatus(%q,%q) = %v, want %v", c.from, c.to, got, c.want)
+		}
+	}
+}
+
+func TestCanTransitionPermitStatus(t *testing.T) {
+	type tc struct {
+		from string
+		to   string
+		want bool
+	}
+	cases := []tc{
+		// Forward
+		{"not_submitted", "submitted", true},
+		{"submitted", "under_review", true},
+		{"under_review", "approved", true},
+		{"under_review", "denied", true},
+		{"under_review", "revisions_requested", true},
+		{"revisions_requested", "submitted", true},
+		// Self-transition forbidden
+		{"submitted", "submitted", false},
+		// Approved/Denied terminal
+		{"approved", "submitted", false},
+		{"denied", "submitted", false},
+		// Unknown statuses
+		{"bogus", "submitted", false},
+		{"submitted", "bogus", false},
+	}
+	for _, c := range cases {
+		if got := CanTransitionPermitStatus(c.from, c.to); got != c.want {
+			t.Errorf("CanTransitionPermitStatus(%q,%q) = %v, want %v", c.from, c.to, got, c.want)
+		}
+	}
+}
+
 func TestIsValidPermitStatus(t *testing.T) {
 	for _, ok := range []string{
 		"not_submitted", "submitted", "under_review",

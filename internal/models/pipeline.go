@@ -142,6 +142,24 @@ func IsValidEstimateStatus(s string) bool {
 	}
 }
 
+// CanTransitionEstimateStatus reports whether the from→to status change
+// is permitted. Accepted is terminal; no-op self-transitions are
+// rejected; any forward move within the allowed set is otherwise OK
+// (we don't model "draft must precede revised" because real workflows
+// re-edit drafts in revision-requested cycles).
+func CanTransitionEstimateStatus(from, to string) bool {
+	if from == to {
+		return false
+	}
+	if from == EstimateStatusAccepted {
+		return false
+	}
+	if !IsValidEstimateStatus(from) || !IsValidEstimateStatus(to) {
+		return false
+	}
+	return true
+}
+
 // PipelineEstimateLineItem is one row of an estimate. estimated_cents
 // uses the parent estimate's currency_code.
 type PipelineEstimateLineItem struct {
@@ -217,6 +235,24 @@ func IsValidPermitStatus(s string) bool {
 	default:
 		return false
 	}
+}
+
+// CanTransitionPermitStatus reports whether the from→to status change
+// is permitted. Approved and Denied are terminal. Self-transitions
+// rejected. Other transitions are allowed because municipal permit
+// workflows are messy in practice (back-dating, parallel applications,
+// etc.) — the service layer trusts the bookkeeper updating status.
+func CanTransitionPermitStatus(from, to string) bool {
+	if from == to {
+		return false
+	}
+	if from == PermitStatusApproved || from == PermitStatusDenied {
+		return false
+	}
+	if !IsValidPermitStatus(from) || !IsValidPermitStatus(to) {
+		return false
+	}
+	return true
 }
 
 // ProspectWithDetails bundles a prospect with its full set of estimates

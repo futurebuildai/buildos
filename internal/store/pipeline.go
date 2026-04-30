@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -365,6 +366,97 @@ func (s *PipelineStore) ListEstimatesForProspect(ctx context.Context, tx pgx.Tx,
 	return out, rows.Err()
 }
 
+// CreateEstimateParams is the input for inserting an estimate.
+// LineItemsJSON is pre-marshalled JSON; service computes total_estimated_cents
+// from the line items so callers can't disagree with the persisted total.
+type CreateEstimateParams struct {
+	ProspectID          uuid.UUID
+	TotalEstimatedCents int64
+	CurrencyCode        string
+	LineItemsJSON       []byte // marshalled by the service layer
+	MarginPct           int
+}
+
+// CreateEstimate inserts a new estimate version. Version auto-increments
+// from MAX(version) + 1 within the prospect — done in a single statement
+// so concurrent creates can't race to the same version number.
+func (s *PipelineStore) CreateEstimate(ctx context.Context, tx pgx.Tx, p CreateEstimateParams) (models.PipelineEstimate, error) {
+	var e models.PipelineEstimate
+	err := tx.QueryRow(ctx, `
+		INSERT INTO pre_construction_estimates (
+			prospect_id, version, total_estimated_cents, currency_code,
+			line_items, margin_pct
+		)
+		VALUES (
+			$1,
+			COALESCE((SELECT MAX(version) FROM pre_construction_estimates WHERE prospect_id = $1), 0) + 1,
+			$2, $3, $4::JSONB, $5
+		)
+		RETURNING id, prospect_id, version, total_estimated_cents, currency_code,
+		          line_items, margin_pct, status, sent_at, created_at, updated_at`,
+		p.ProspectID, p.TotalEstimatedCents, p.CurrencyCode, p.LineItemsJSON, p.MarginPct,
+	).Scan(
+		&e.ID, &e.ProspectID, &e.Version, &e.TotalEstimatedCents, &e.CurrencyCode,
+		&e.LineItems, &e.MarginPct, &e.Status, &e.SentAt, &e.CreatedAt, &e.UpdatedAt,
+	)
+	if err != nil {
+		return models.PipelineEstimate{}, fmt.Errorf("insert estimate: %w", err)
+	}
+	return e, nil
+}
+
+// GetEstimate returns a single estimate scoped by both estimate id and
+// prospect id (the service layer should already have verified the
+// prospect belongs to the caller's org). Returns ErrNotFound if no row
+// matches the (estimate, prospect) pair.
+func (s *PipelineStore) GetEstimate(ctx context.Context, tx pgx.Tx, estimateID, prospectID uuid.UUID) (models.PipelineEstimate, error) {
+	var e models.PipelineEstimate
+	err := tx.QueryRow(ctx, `
+		SELECT id, prospect_id, version, total_estimated_cents, currency_code,
+		       line_items, margin_pct, status, sent_at, created_at, updated_at
+		FROM pre_construction_estimates
+		WHERE id = $1 AND prospect_id = $2`, estimateID, prospectID,
+	).Scan(
+		&e.ID, &e.ProspectID, &e.Version, &e.TotalEstimatedCents, &e.CurrencyCode,
+		&e.LineItems, &e.MarginPct, &e.Status, &e.SentAt, &e.CreatedAt, &e.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return models.PipelineEstimate{}, ErrNotFound
+		}
+		return models.PipelineEstimate{}, fmt.Errorf("get estimate: %w", err)
+	}
+	return e, nil
+}
+
+// UpdateEstimateStatus changes only the status of an estimate. When the
+// new status is "sent" and sent_at is currently NULL, the column is
+// stamped with now(); other transitions leave sent_at alone (so the
+// "first sent" timestamp is preserved across revise→sent cycles).
+func (s *PipelineStore) UpdateEstimateStatus(ctx context.Context, tx pgx.Tx, estimateID uuid.UUID, status string) (models.PipelineEstimate, error) {
+	var e models.PipelineEstimate
+	err := tx.QueryRow(ctx, `
+		UPDATE pre_construction_estimates
+		SET status     = $2,
+		    sent_at    = CASE WHEN $2 = 'sent' AND sent_at IS NULL THEN now() ELSE sent_at END,
+		    updated_at = now()
+		WHERE id = $1
+		RETURNING id, prospect_id, version, total_estimated_cents, currency_code,
+		          line_items, margin_pct, status, sent_at, created_at, updated_at`,
+		estimateID, status,
+	).Scan(
+		&e.ID, &e.ProspectID, &e.Version, &e.TotalEstimatedCents, &e.CurrencyCode,
+		&e.LineItems, &e.MarginPct, &e.Status, &e.SentAt, &e.CreatedAt, &e.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return models.PipelineEstimate{}, ErrNotFound
+		}
+		return models.PipelineEstimate{}, fmt.Errorf("update estimate status: %w", err)
+	}
+	return e, nil
+}
+
 // ---------- Permits ----------
 
 // ListPermitsForProspect returns every permit tracked for a prospect,
@@ -399,3 +491,123 @@ func (s *PipelineStore) ListPermitsForProspect(ctx context.Context, tx pgx.Tx, p
 	return out, rows.Err()
 }
 
+// CreatePermitParams is the input for inserting a permit. Currency is
+// validated by the service layer before the call.
+type CreatePermitParams struct {
+	ProspectID        uuid.UUID
+	PermitType        string
+	Jurisdiction      string
+	ApplicationNumber *string
+	SubmittedDate     *time.Time
+	ExpectedIssueDate *time.Time
+	FeeCents          int64
+	FeeCurrencyCode   string
+	Notes             *string
+}
+
+// CreatePermit inserts a permit at status "not_submitted". Subsequent
+// status changes go through UpdatePermit.
+func (s *PipelineStore) CreatePermit(ctx context.Context, tx pgx.Tx, p CreatePermitParams) (models.Permit, error) {
+	var permit models.Permit
+	err := tx.QueryRow(ctx, `
+		INSERT INTO pre_construction_permits (
+			prospect_id, permit_type, jurisdiction, application_number,
+			submitted_date, expected_issue_date,
+			fee_cents, fee_currency_code, notes
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		RETURNING id, prospect_id, permit_type, jurisdiction, application_number,
+		          submitted_date, expected_issue_date, actual_issue_date,
+		          fee_cents, fee_currency_code, status, notes, created_at, updated_at`,
+		p.ProspectID, p.PermitType, p.Jurisdiction, p.ApplicationNumber,
+		p.SubmittedDate, p.ExpectedIssueDate,
+		p.FeeCents, p.FeeCurrencyCode, p.Notes,
+	).Scan(
+		&permit.ID, &permit.ProspectID, &permit.PermitType, &permit.Jurisdiction,
+		&permit.ApplicationNumber,
+		&permit.SubmittedDate, &permit.ExpectedIssueDate, &permit.ActualIssueDate,
+		&permit.FeeCents, &permit.FeeCurrencyCode, &permit.Status, &permit.Notes,
+		&permit.CreatedAt, &permit.UpdatedAt,
+	)
+	if err != nil {
+		return models.Permit{}, fmt.Errorf("insert permit: %w", err)
+	}
+	return permit, nil
+}
+
+// GetPermit returns a permit scoped by (id, prospect_id). Caller verifies
+// prospect ownership; this method does not. Returns ErrNotFound if the
+// (permit, prospect) pair doesn't match.
+func (s *PipelineStore) GetPermit(ctx context.Context, tx pgx.Tx, permitID, prospectID uuid.UUID) (models.Permit, error) {
+	var p models.Permit
+	err := tx.QueryRow(ctx, `
+		SELECT id, prospect_id, permit_type, jurisdiction, application_number,
+		       submitted_date, expected_issue_date, actual_issue_date,
+		       fee_cents, fee_currency_code, status, notes, created_at, updated_at
+		FROM pre_construction_permits
+		WHERE id = $1 AND prospect_id = $2`,
+		permitID, prospectID,
+	).Scan(
+		&p.ID, &p.ProspectID, &p.PermitType, &p.Jurisdiction, &p.ApplicationNumber,
+		&p.SubmittedDate, &p.ExpectedIssueDate, &p.ActualIssueDate,
+		&p.FeeCents, &p.FeeCurrencyCode, &p.Status, &p.Notes, &p.CreatedAt, &p.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return models.Permit{}, ErrNotFound
+		}
+		return models.Permit{}, fmt.Errorf("get permit: %w", err)
+	}
+	return p, nil
+}
+
+// UpdatePermitParams is the input for partial-updating a permit. All
+// fields are optional; nil preserves existing values via COALESCE.
+// Status is validated by the service layer.
+type UpdatePermitParams struct {
+	PermitID          uuid.UUID
+	ApplicationNumber *string
+	SubmittedDate     *time.Time
+	ExpectedIssueDate *time.Time
+	ActualIssueDate   *time.Time
+	FeeCents          *int64
+	Status            *string
+	Notes             *string
+}
+
+// UpdatePermit modifies a permit. Returns ErrNotFound if no row matched.
+// fee_currency_code is intentionally not updatable here — once a permit
+// fee is recorded in a currency, changing currency would mean a new
+// permit, not an update.
+func (s *PipelineStore) UpdatePermit(ctx context.Context, tx pgx.Tx, p UpdatePermitParams) (models.Permit, error) {
+	var permit models.Permit
+	err := tx.QueryRow(ctx, `
+		UPDATE pre_construction_permits
+		SET application_number  = COALESCE($2, application_number),
+		    submitted_date      = COALESCE($3, submitted_date),
+		    expected_issue_date = COALESCE($4, expected_issue_date),
+		    actual_issue_date   = COALESCE($5, actual_issue_date),
+		    fee_cents           = COALESCE($6, fee_cents),
+		    status              = COALESCE($7, status),
+		    notes               = COALESCE($8, notes),
+		    updated_at          = now()
+		WHERE id = $1
+		RETURNING id, prospect_id, permit_type, jurisdiction, application_number,
+		          submitted_date, expected_issue_date, actual_issue_date,
+		          fee_cents, fee_currency_code, status, notes, created_at, updated_at`,
+		p.PermitID, p.ApplicationNumber, p.SubmittedDate, p.ExpectedIssueDate,
+		p.ActualIssueDate, p.FeeCents, p.Status, p.Notes,
+	).Scan(
+		&permit.ID, &permit.ProspectID, &permit.PermitType, &permit.Jurisdiction,
+		&permit.ApplicationNumber,
+		&permit.SubmittedDate, &permit.ExpectedIssueDate, &permit.ActualIssueDate,
+		&permit.FeeCents, &permit.FeeCurrencyCode, &permit.Status, &permit.Notes,
+		&permit.CreatedAt, &permit.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return models.Permit{}, ErrNotFound
+		}
+		return models.Permit{}, fmt.Errorf("update permit: %w", err)
+	}
+	return permit, nil
+}
