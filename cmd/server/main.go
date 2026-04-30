@@ -83,9 +83,16 @@ func run(logger *slog.Logger) error {
 	// the caller's Bearer token (auth middleware stashes it). The Ping
 	// method is unauth and powers the /ready readiness probe; service-
 	// layer agents land in Phase B.
+	// Process-level metrics. One Prometheus registry per process.
+	// Metrics are wired into the brain client (per-attempt counters
+	// + duration), the HTTP middleware stack (request count + duration
+	// by route), and exposed via GET /metrics.
+	metrics := obs.NewMetrics()
+
 	brainClient, err := brain.NewClient(brain.Config{
 		BaseURL: cfg.BrainIssuerURL, // Brain's API + OIDC live on the same host
 		Logger:  logger,
+		Metrics: metrics,
 	})
 	if err != nil {
 		return fmt.Errorf("creating brain client: %w", err)
@@ -133,6 +140,7 @@ func run(logger *slog.Logger) error {
 		A2AVerifier:        a2aVerifier,
 		BrainPinger:        brainClient,
 		JWKSReporter:       jwks,
+		Metrics:            metrics,
 		BillingClient:      brainClient.Billing,
 		AgentsService:      agentsService,
 	})

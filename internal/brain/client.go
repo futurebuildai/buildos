@@ -36,6 +36,14 @@ import (
 	"time"
 )
 
+// MetricsObserver is the consumer-side surface the brain client uses
+// to report each completed attempt. Defined here so the brain
+// package stays free of the prometheus dep — and so callers without
+// a metrics setup can pass nil.
+type MetricsObserver interface {
+	ObserveBrain(method, path string, statusCode int, dur time.Duration)
+}
+
 // Client is the top-level Brain client. Sub-clients are exposed as
 // fields so callers write `c.Maestro.Chat(...)`, `c.Billing.GetUsage(...)`.
 type Client struct {
@@ -46,14 +54,16 @@ type Client struct {
 	httpClient *http.Client
 	retry      RetryConfig
 	logger     *slog.Logger
+	metrics    MetricsObserver // optional; nil disables observation
 }
 
 // Config configures NewClient.
 type Config struct {
-	BaseURL    string         // e.g. "http://localhost:8081"
-	HTTPClient *http.Client   // optional; default is a 10s-timeout client
-	Retry      RetryConfig    // optional; default 3 attempts, 100ms base
-	Logger     *slog.Logger   // optional; default slog.Default()
+	BaseURL    string          // e.g. "http://localhost:8081"
+	HTTPClient *http.Client    // optional; default is a 10s-timeout client
+	Retry      RetryConfig     // optional; default 3 attempts, 100ms base
+	Logger     *slog.Logger    // optional; default slog.Default()
+	Metrics    MetricsObserver // optional; when nil, ObserveBrain calls are skipped
 }
 
 // NewClient builds a Brain client. BaseURL is required.
@@ -76,6 +86,7 @@ func NewClient(cfg Config) (*Client, error) {
 		httpClient: cfg.HTTPClient,
 		retry:      cfg.Retry.withDefaults(),
 		logger:     cfg.Logger,
+		metrics:    cfg.Metrics,
 	}
 	c.Maestro = &MaestroClient{c: c}
 	c.Billing = &BillingClient{c: c}
@@ -172,16 +183,21 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any) (
 			req.Header.Set("X-Request-ID", reqID)
 		}
 
+		attemptStart := time.Now()
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("brain: %s %s: %w", method, path, err)
 			c.logger.Warn("brain request transport error",
 				"method", method, "path", path, "attempt", attempt+1, "error", err)
+			c.observe(method, path, 0, time.Since(attemptStart))
 			continue // retry on transport error
 		}
 
 		respBody, readErr := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
+		dur := time.Since(attemptStart)
+		c.observe(method, path, resp.StatusCode, dur)
+
 		if readErr != nil {
 			lastErr = fmt.Errorf("brain: read response: %w", readErr)
 			continue
@@ -223,6 +239,16 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any) (
 		return nil, fmt.Errorf("%w: exhausted retries with no recorded error", ErrTransient)
 	}
 	return nil, fmt.Errorf("%w: %v", ErrTransient, lastErr)
+}
+
+// observe forwards to the wrapped MetricsObserver if one was wired.
+// Cheap (one nil check) so callers can sprinkle this without
+// performance worry.
+func (c *Client) observe(method, path string, statusCode int, dur time.Duration) {
+	if c.metrics == nil {
+		return
+	}
+	c.metrics.ObserveBrain(method, path, statusCode, dur)
 }
 
 // decodeHTTPError turns a raw response body into a typed HTTPError,

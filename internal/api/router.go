@@ -13,6 +13,16 @@ import (
 	mw "github.com/futurebuildai/buildos/internal/api/middleware"
 )
 
+// MetricsRecorder is the consumer-side surface the router needs from
+// internal/obs.Metrics. Two responsibilities: HTTP middleware (request
+// count + duration) and a /metrics handler. Defined here so the
+// router stays free of a Prometheus import — and so tests can pass
+// nil to skip both.
+type MetricsRecorder interface {
+	HTTPMiddleware(next http.Handler) http.Handler
+	Handler() http.Handler
+}
+
 // BrainPinger is the consumer-side interface for the readiness probe's
 // Brain check. Defined here to keep the router free of the
 // internal/brain import — and to let tests substitute a fake.
@@ -51,16 +61,26 @@ type RouterConfig struct {
 	JWKSReporter       JWKSCacheReporter // optional — when nil, /ready skips the JWKS check
 	BillingClient      BillingClient     // optional — when nil, /billing/* routes don't mount
 	AgentsService      AgentsServicer    // optional — when nil, /agents/* routes don't mount
+	Metrics            MetricsRecorder   // optional — when nil, /metrics doesn't mount and HTTP middleware is skipped
 }
 
 // NewRouter creates the Chi router with all route groups and middleware.
 func NewRouter(cfg RouterConfig) http.Handler {
 	r := chi.NewRouter()
 
-	// Global middleware
+	// Global middleware. Order matters:
+	//   - RequestID first so chi assigns one before any logging.
+	//   - RealIP next so downstream sees the right remote.
+	//   - Recoverer wraps before metrics: panics still get counted.
+	//   - Metrics middleware before Logger so a panicked handler's
+	//     5xx still ticks the counter even if Logger swallows it.
+	//   - Logger emits the request line, with request_id already set.
 	r.Use(chimw.RequestID)
 	r.Use(chimw.RealIP)
 	r.Use(chimw.Recoverer)
+	if cfg.Metrics != nil {
+		r.Use(cfg.Metrics.HTTPMiddleware)
+	}
 	r.Use(chimw.Logger)
 
 	// Probes (no auth):
@@ -74,6 +94,13 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	//             Used by load balancers / k8s readiness gates.
 	r.Get("/health", livenessHandler())
 	r.Get("/ready", readinessHandler(cfg.Pool, cfg.BrainPinger, cfg.JWKSReporter, cfg.Logger))
+
+	// Prometheus scrape endpoint. No auth — Prometheus convention.
+	// Lock down via network policy / IP allowlist at the LB if your
+	// scrape source isn't private.
+	if cfg.Metrics != nil {
+		r.Method(http.MethodGet, "/metrics", cfg.Metrics.Handler())
+	}
 
 	// Instantiate handlers
 	projects := &ProjectHandler{}
