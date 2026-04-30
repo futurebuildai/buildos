@@ -1,0 +1,132 @@
+{
+  "cards": [
+    {
+      "id": "card-001",
+      "priority": "critical",
+      "user_id": "user-marc",
+      "project_id": "proj-commercial-fourplex",
+      "card_type": "permit.heritage_review",
+      "title": "Vancouver heritage character review response due Wednesday",
+      "body": "Commercial Drive Fourplex submitted to City of Vancouver heritage 22 days ago. Response window opens this Wednesday. Framing crew is on standby; further delay pushes critical path into the rainy season.",
+      "created_offset_days": -1,
+      "actions": [
+        { "label": "Mark approved", "action_type": "permit.approved", "payload": { "permit_id": "blw-cd-3" } },
+        { "label": "Defer 1 week", "action_type": "permit.defer", "payload": { "weeks": 1 } }
+      ]
+    },
+    {
+      "id": "card-002",
+      "priority": "urgent",
+      "user_id": "user-marc",
+      "project_id": null,
+      "card_type": "lead.toolbox_inbound",
+      "title": "New Toolbox lead — Sarah Chen, fourplex on East Pender",
+      "body": "SHBC Toolbox visitor picked BC Standardized #BCS-FX-04 for lot 2231 East Pender (Vancouver R1-1). Estimated budget $1.65M CAD. Matched to East Van Density Studio on typology + municipality.",
+      "created_offset_days": -2,
+      "actions": [
+        { "label": "Schedule pre-design review", "action_type": "lead.schedule_review", "payload": { "lead_id": "lead-001" } },
+        { "label": "Decline (capacity)", "action_type": "lead.decline", "payload": {} }
+      ]
+    },
+    {
+      "id": "card-003",
+      "priority": "urgent",
+      "user_id": "user-marc",
+      "project_id": "proj-buchanan-sixplex",
+      "card_type": "cohort.coordination",
+      "title": "Buchanan Sixplex (Aldergrove): Hydro underground service slipping — MEP sync requested",
+      "body": "Aldergrove Build Co. flagged a 3-week slip on the Buchanan Sixplex hydro trench. They use Houle Electric — same crew that's slated for the Mount Pleasant Fourplex MEP rough-in in 6 weeks. Cohort sync requested.",
+      "created_offset_days": -1,
+      "actions": [
+        { "label": "Join coordination call", "action_type": "cohort.join_call", "payload": {} }
+      ]
+    },
+    {
+      "id": "card-004",
+      "priority": "urgent",
+      "user_id": "user-marc",
+      "project_id": "proj-commercial-fourplex",
+      "card_type": "procurement.critical",
+      "title": "Framing lumber for Commercial Drive Fourplex flipped to CRITICAL overnight",
+      "body": "ProcurementCheckWorker flipped the lumber package from WARNING to CRITICAL — must-order date passed yesterday. Doman quote $84,000 CAD, 18-day lead + 7-day weather buffer.",
+      "created_offset_days": 0,
+      "actions": [
+        { "label": "Issue PO to Doman", "action_type": "procurement.issue_po", "payload": { "item_id": "pr-cd-01" } }
+      ]
+    },
+    {
+      "id": "card-005",
+      "priority": "normal",
+      "user_id": "user-marc",
+      "project_id": "proj-mt-pleasant-fourplex",
+      "card_type": "schedule.weather",
+      "title": "Mount Pleasant Fourplex schedule recovered 4 days from weather buffer",
+      "body": "SWIM model reabsorbed 4 days of weather buffer after a clear forecast for May 1–14. Critical path now 4 days ahead of baseline.",
+      "created_offset_days": 0,
+      "actions": []
+    },
+    {
+      "id": "card-006",
+      "priority": "normal",
+      "user_id": "user-marc",
+      "project_id": null,
+      "card_type": "certification.expiring",
+      "title": "Maria Hernandez — BC Housing Licensed Builder expires in 47 days",
+      "body": "CertificationAlertsWorker flagged this in the nightly sweep. Renewal lead time is typically 30 days; book the application now to avoid project blocks.",
+      "created_offset_days": 0,
+      "actions": [
+        { "label": "Open BC Housing renewal portal", "action_type": "external.link", "payload": { "url": "https://www.bchousing.org" } }
+      ]
+    },
+    {
+      "id": "card-007",
+      "priority": "critical",
+      "user_id": "user-priya",
+      "project_id": "proj-buchanan-sixplex",
+      "card_type": "permit.utility_blocked",
+      "title": "BC Hydro underground trench in queue for 47 days — schedule slip risk",
+      "body": "BC Hydro West queue at 11 weeks; project critical path was costed at 8 weeks. Currently 6 weeks behind on framing → MEP transition.",
+      "created_offset_days": -3,
+      "actions": [
+        { "label": "Submit expedite request", "action_type": "permit.expedite", "payload": {} }
+      ]
+    },
+    {
+      "id": "card-008",
+      "priority": "urgent",
+      "user_id": "user-laila",
+      "project_id": "proj-brackendale-laneway",
+      "card_type": "procurement.warning",
+      "title": "Brackendale Laneway Class A roofing — must order in 8 days",
+      "body": "Convoy Supply quote on standing-seam Class A roof. WUI compliance required (Squamish bylaw). 28-day lead + 14-day weather buffer factored in.",
+      "created_offset_days": -1,
+      "actions": [
+        { "label": "Issue PO to Convoy", "action_type": "procurement.issue_po", "payload": { "item_id": "pr-bk-02" } }
+      ]
+    },
+    {
+      "id": "card-009",
+      "priority": "urgent",
+      "user_id": "user-devon",
+      "project_id": "proj-nelson-heritage-duplex",
+      "card_type": "permit.heritage_review",
+      "title": "Nelson HCA design review — revised drawings due in 12 days",
+      "body": "Heritage Conservation Area session 2026-04-22 produced 3 design notes (eave detail, porch column proportion, window mullion spacing). Drawings due 2026-05-12.",
+      "created_offset_days": -2,
+      "actions": [
+        { "label": "Acknowledge", "action_type": "permit.acknowledge", "payload": {} }
+      ]
+    },
+    {
+      "id": "card-010",
+      "priority": "normal",
+      "user_id": "user-devon",
+      "project_id": null,
+      "card_type": "lead.toolbox_inbound",
+      "title": "New Toolbox lead — Avery Olsen, triplex in Maple Ridge",
+      "body": "Avery picked BC Standardized #BCS-TX-01 for 835 Yates St (Maple Ridge RS-1). Pre-design review booked for next week.",
+      "created_offset_days": -18,
+      "actions": []
+    }
+  ]
+}

@@ -1,0 +1,84 @@
+{
+  "municipalities": [
+    {
+      "id": "muni-vancouver",
+      "name": "City of Vancouver",
+      "province": "BC",
+      "population": 695000,
+      "ssmuh_zone_examples": ["R1-1", "RT-7", "RM-3A"],
+      "bill_44_status": "Compliant — bylaw amendment passed 2024-08-21",
+      "bill_25_status": "On schedule — June 2026 deadline",
+      "permit_portal_url": "vancouver.ca/home-property-development",
+      "average_permit_days": 142,
+      "quirks": [
+        "Heritage Character Review required for any property in heritage area (HC Areas A-D)",
+        "Tree retention bylaw (2024) — arborist letter required for trees ≥ 30cm DBH",
+        "Ground Floor Adaptable Suite required on multiplex sixplex+ (R1-1)"
+      ]
+    },
+    {
+      "id": "muni-burnaby",
+      "name": "City of Burnaby",
+      "province": "BC",
+      "population": 250000,
+      "ssmuh_zone_examples": ["R1", "R5", "RM1"],
+      "bill_44_status": "Compliant — bylaw amendment passed 2024-06-15",
+      "bill_25_status": "On schedule",
+      "permit_portal_url": "burnaby.ca/services/building",
+      "average_permit_days": 168,
+      "quirks": [
+        "BC Hydro underground service required for all new multi-unit on subdivisions",
+        "Tree protection bylaw — replacement ratio 2:1 for trees over 20cm DBH",
+        "Stormwater retention required for sites > 250 sqm of impervious"
+      ]
+    },
+    {
+      "id": "muni-squamish",
+      "name": "District of Squamish",
+      "province": "BC",
+      "population": 26000,
+      "ssmuh_zone_examples": ["RS-1", "CD-9", "RR-1"],
+      "bill_44_status": "Compliant — Cheekye Fan amendment 2025-02-04",
+      "bill_25_status": "Behind — extension requested",
+      "permit_portal_url": "squamish.ca/our-services/building",
+      "average_permit_days": 96,
+      "quirks": [
+        "Cheekye Fan flood-risk overlay — geotech report required for new foundations on northern parcels",
+        "Wildland-urban interface compliance — Class A roof rating required",
+        "Construction blackout period during peak salmon migration (Aug 15 – Sep 30) within 30m of riparian"
+      ]
+    },
+    {
+      "id": "muni-mapleridge",
+      "name": "City of Maple Ridge",
+      "province": "BC",
+      "population": 95000,
+      "ssmuh_zone_examples": ["RS-1", "RS-1b", "RM-1"],
+      "bill_44_status": "Compliant — bylaw amendment passed 2024-11-02",
+      "bill_25_status": "On schedule",
+      "permit_portal_url": "mapleridge.ca/2068/Building-Permits",
+      "average_permit_days": 122,
+      "quirks": [
+        "Agricultural Land Reserve adjacency check — properties within 100m of ALR require additional buffer review",
+        "Septic-to-sewer connection upgrade required when renovating > 50% of footprint",
+        "Hammond Heritage Area design review for properties west of 224 St"
+      ]
+    },
+    {
+      "id": "muni-nelson",
+      "name": "City of Nelson",
+      "province": "BC",
+      "population": 11000,
+      "ssmuh_zone_examples": ["R1", "R2", "HC-A"],
+      "bill_44_status": "Compliant — bylaw amendment passed 2024-09-10",
+      "bill_25_status": "On schedule",
+      "permit_portal_url": "nelson.ca/258/Building-Permits",
+      "average_permit_days": 78,
+      "quirks": [
+        "Heritage Conservation Area (HCA) — design review required for any visible exterior change",
+        "Snow load 2.4 kPa minimum — affects roof framing schedules",
+        "Steep-slope geotech review required for sites > 20% gradient"
+      ]
+    }
+  ]
+}

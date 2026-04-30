@@ -1,0 +1,70 @@
+{
+  "organizations": [
+    {
+      "id": "org-shbc",
+      "name": "Small Housing BC",
+      "kind": "cohort_operator",
+      "city": "Vancouver",
+      "specialty": "Cohort coordinator",
+      "tagline": "Champions gentle density across BC",
+      "members_count": 4,
+      "active_projects": 11
+    },
+    {
+      "id": "org-aldergrove",
+      "name": "Aldergrove Build Co.",
+      "kind": "builder",
+      "city": "Burnaby",
+      "specialty": "Sixplex new-builds",
+      "principal_user_id": "user-priya",
+      "training_cohort": "SHBC Multiplex 2026.01",
+      "active_projects": 3,
+      "available_for_subtrade": false,
+      "capacity_pct": 92,
+      "established": 2018,
+      "crew_size": 14
+    },
+    {
+      "id": "org-eastvan",
+      "name": "East Van Density Studio",
+      "kind": "builder",
+      "city": "Vancouver",
+      "specialty": "Fourplex / triplex conversions",
+      "principal_user_id": "user-marc",
+      "training_cohort": "SHBC Multiplex 2026.01",
+      "active_projects": 3,
+      "available_for_subtrade": true,
+      "capacity_pct": 78,
+      "established": 2021,
+      "crew_size": 9
+    },
+    {
+      "id": "org-seasky",
+      "name": "Sea-to-Sky Workshop",
+      "kind": "builder",
+      "city": "Squamish",
+      "specialty": "Laneway homes + ADUs",
+      "principal_user_id": "user-laila",
+      "training_cohort": "SHBC Multiplex 2026.01",
+      "active_projects": 2,
+      "available_for_subtrade": true,
+      "capacity_pct": 64,
+      "established": 2019,
+      "crew_size": 7
+    },
+    {
+      "id": "org-cottonwood",
+      "name": "Cottonwood Carpentry",
+      "kind": "builder",
+      "city": "Maple Ridge",
+      "specialty": "Heritage-overlay duplexes",
+      "principal_user_id": "user-devon",
+      "training_cohort": "SHBC Multiplex 2026.01",
+      "active_projects": 3,
+      "available_for_subtrade": false,
+      "capacity_pct": 88,
+      "established": 2015,
+      "crew_size": 11
+    }
+  ]
+}

@@ -1,0 +1,110 @@
+{
+  "users": [
+    {
+      "id": "user-daniel",
+      "org_id": "org-shbc",
+      "first_name": "Daniel",
+      "last_name": "Winer",
+      "title": "Executive Lead",
+      "role": "owner",
+      "email": "daniel@smallhousingbc.org"
+    },
+    {
+      "id": "user-tamara",
+      "org_id": "org-shbc",
+      "first_name": "Tamara",
+      "last_name": "White",
+      "title": "Executive Director",
+      "role": "owner",
+      "email": "tamara@smallhousingbc.org"
+    },
+    {
+      "id": "user-priya",
+      "org_id": "org-aldergrove",
+      "first_name": "Priya",
+      "last_name": "Mehta",
+      "title": "Principal",
+      "role": "owner"
+    },
+    {
+      "id": "user-aldergrove-jess",
+      "org_id": "org-aldergrove",
+      "first_name": "Jess",
+      "last_name": "Kowalski",
+      "title": "Site Superintendent",
+      "role": "superintendent"
+    },
+    {
+      "id": "user-aldergrove-tom",
+      "org_id": "org-aldergrove",
+      "first_name": "Tomás",
+      "last_name": "Rivera",
+      "title": "Lead Carpenter",
+      "role": "field_worker"
+    },
+    {
+      "id": "user-marc",
+      "org_id": "org-eastvan",
+      "first_name": "Marc",
+      "last_name": "Tremblay",
+      "title": "Principal",
+      "role": "owner"
+    },
+    {
+      "id": "user-eastvan-maria",
+      "org_id": "org-eastvan",
+      "first_name": "Maria",
+      "last_name": "Hernandez",
+      "title": "Lead Carpenter",
+      "role": "superintendent"
+    },
+    {
+      "id": "user-eastvan-amir",
+      "org_id": "org-eastvan",
+      "first_name": "Amir",
+      "last_name": "Khan",
+      "title": "Project Coordinator",
+      "role": "admin"
+    },
+    {
+      "id": "user-laila",
+      "org_id": "org-seasky",
+      "first_name": "Laila",
+      "last_name": "Brennan",
+      "title": "Principal",
+      "role": "owner"
+    },
+    {
+      "id": "user-seasky-jamie",
+      "org_id": "org-seasky",
+      "first_name": "Jamie",
+      "last_name": "Forrest",
+      "title": "Site Lead",
+      "role": "superintendent"
+    },
+    {
+      "id": "user-devon",
+      "org_id": "org-cottonwood",
+      "first_name": "Devon",
+      "last_name": "Singh",
+      "title": "Principal",
+      "role": "owner"
+    },
+    {
+      "id": "user-cottonwood-rae",
+      "org_id": "org-cottonwood",
+      "first_name": "Rae",
+      "last_name": "MacIntosh",
+      "title": "Heritage Specialist",
+      "role": "superintendent"
+    },
+    {
+      "id": "user-cottonwood-paul",
+      "org_id": "org-cottonwood",
+      "first_name": "Paul",
+      "last_name": "Bjornsson",
+      "title": "Lead Framer",
+      "role": "field_worker"
+    }
+  ]
+}

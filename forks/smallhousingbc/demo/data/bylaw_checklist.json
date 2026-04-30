@@ -1,0 +1,81 @@
+{
+  "checklists": [
+    {
+      "project_id": "proj-buchanan-sixplex",
+      "muni_id": "muni-burnaby",
+      "items": [
+        { "id": "blw-bb-1", "label": "Setback compliance (Bill 44 minimum 1.2m)", "status": "complete", "completed_on": "2025-08-22" },
+        { "id": "blw-bb-2", "label": "Site coverage ≤ 50%", "status": "complete", "completed_on": "2025-08-22" },
+        { "id": "blw-bb-3", "label": "BC Hydro underground service application", "status": "in_progress", "note": "Submitted 2025-10-12; still in queue at BC Hydro West." },
+        { "id": "blw-bb-4", "label": "Tree replacement ratio 2:1", "status": "complete", "completed_on": "2025-09-04" },
+        { "id": "blw-bb-5", "label": "Stormwater retention plan (>250 sqm impervious)", "status": "complete", "completed_on": "2025-09-19" },
+        { "id": "blw-bb-6", "label": "BC Building Code Part 9 — secondary egress for each suite", "status": "complete", "completed_on": "2025-10-02" },
+        { "id": "blw-bb-7", "label": "Bill 25 housing-target metadata attached", "status": "complete", "completed_on": "2025-09-22" }
+      ]
+    },
+    {
+      "project_id": "proj-commercial-fourplex",
+      "muni_id": "muni-vancouver",
+      "items": [
+        { "id": "blw-cd-1", "label": "Setback compliance (Bill 44 minimum 1.2m)", "status": "complete", "completed_on": "2025-12-01" },
+        { "id": "blw-cd-2", "label": "Site coverage ≤ 50%", "status": "complete", "completed_on": "2025-12-01" },
+        { "id": "blw-cd-3", "label": "Heritage Character Review submission", "status": "in_progress", "note": "Submitted 2026-04-08; city response expected this Wednesday.", "deadline_offset_days": 2 },
+        { "id": "blw-cd-4", "label": "Tree retention bylaw — arborist letter (≥30cm DBH)", "status": "complete", "completed_on": "2025-11-15" },
+        { "id": "blw-cd-5", "label": "BC Building Code Part 9 — secondary egress", "status": "complete", "completed_on": "2025-11-25" },
+        { "id": "blw-cd-6", "label": "Bill 25 housing-target metadata attached", "status": "complete", "completed_on": "2025-11-15" },
+        { "id": "blw-cd-7", "label": "Ground Floor Adaptable Suite (Vancouver R1-1, sixplex+)", "status": "not_applicable", "note": "Fourplex; not required." }
+      ]
+    },
+    {
+      "project_id": "proj-mt-pleasant-fourplex",
+      "muni_id": "muni-vancouver",
+      "items": [
+        { "id": "blw-mp-1", "label": "Setback compliance (Bill 44 minimum 1.2m)", "status": "complete", "completed_on": "2025-07-12" },
+        { "id": "blw-mp-2", "label": "Site coverage ≤ 50%", "status": "complete", "completed_on": "2025-07-12" },
+        { "id": "blw-mp-3", "label": "Heritage Character Review", "status": "complete", "completed_on": "2025-07-25" },
+        { "id": "blw-mp-4", "label": "Tree retention bylaw — arborist letter", "status": "complete", "completed_on": "2025-07-04" },
+        { "id": "blw-mp-5", "label": "BC Building Code Part 9 — secondary egress", "status": "complete", "completed_on": "2025-07-15" },
+        { "id": "blw-mp-6", "label": "Bill 25 housing-target metadata attached", "status": "complete", "completed_on": "2025-07-04" }
+      ]
+    },
+    {
+      "project_id": "proj-brackendale-laneway",
+      "muni_id": "muni-squamish",
+      "items": [
+        { "id": "blw-bk-1", "label": "Setback compliance (Bill 44 minimum 1.2m)", "status": "complete", "completed_on": "2025-09-19" },
+        { "id": "blw-bk-2", "label": "Site coverage ≤ 50%", "status": "complete", "completed_on": "2025-09-19" },
+        { "id": "blw-bk-3", "label": "Cheekye Fan flood-risk overlay — geotech report", "status": "complete", "completed_on": "2025-09-08", "note": "Property is south of fan; geotech confirmed minimal risk." },
+        { "id": "blw-bk-4", "label": "Wildland-urban interface — Class A roof rating", "status": "complete", "completed_on": "2025-10-01" },
+        { "id": "blw-bk-5", "label": "BC Building Code Part 9 — secondary egress", "status": "complete", "completed_on": "2025-09-25" },
+        { "id": "blw-bk-6", "label": "Riparian setback (no construction within 30m)", "status": "complete", "completed_on": "2025-09-19" },
+        { "id": "blw-bk-7", "label": "Bill 25 housing-target metadata attached", "status": "complete", "completed_on": "2025-09-08" }
+      ]
+    },
+    {
+      "project_id": "proj-nelson-heritage-duplex",
+      "muni_id": "muni-nelson",
+      "items": [
+        { "id": "blw-nh-1", "label": "Setback compliance (Bill 44 minimum 1.2m)", "status": "complete", "completed_on": "2026-03-10" },
+        { "id": "blw-nh-2", "label": "Site coverage ≤ 50%", "status": "complete", "completed_on": "2026-03-10" },
+        { "id": "blw-nh-3", "label": "Heritage Conservation Area design review", "status": "in_progress", "note": "Initial review session 2026-04-22; revised drawings due 2026-05-12.", "deadline_offset_days": 12 },
+        { "id": "blw-nh-4", "label": "Snow load 2.4 kPa minimum — roof framing review", "status": "complete", "completed_on": "2026-03-22" },
+        { "id": "blw-nh-5", "label": "Steep-slope geotech (>20% gradient)", "status": "not_applicable", "note": "Site gradient 6%." },
+        { "id": "blw-nh-6", "label": "BC Building Code Part 9 — secondary egress", "status": "in_progress" },
+        { "id": "blw-nh-7", "label": "Bill 25 housing-target metadata attached", "status": "complete", "completed_on": "2026-03-10" }
+      ]
+    },
+    {
+      "project_id": "proj-mapleridge-sixplex",
+      "muni_id": "muni-mapleridge",
+      "items": [
+        { "id": "blw-mr-1", "label": "Setback compliance (Bill 44 minimum 1.2m)", "status": "complete", "completed_on": "2025-07-22" },
+        { "id": "blw-mr-2", "label": "Site coverage ≤ 50%", "status": "complete", "completed_on": "2025-07-22" },
+        { "id": "blw-mr-3", "label": "Agricultural Land Reserve adjacency check", "status": "complete", "completed_on": "2025-07-30", "note": "Property is 240m from ALR boundary; no buffer review required." },
+        { "id": "blw-mr-4", "label": "Septic-to-sewer connection upgrade", "status": "complete", "completed_on": "2025-08-12" },
+        { "id": "blw-mr-5", "label": "BC Building Code Part 9 — secondary egress", "status": "complete", "completed_on": "2025-08-02" },
+        { "id": "blw-mr-6", "label": "Hammond Heritage Area design review", "status": "not_applicable", "note": "Property is east of 224 St." },
+        { "id": "blw-mr-7", "label": "Bill 25 housing-target metadata attached", "status": "complete", "completed_on": "2025-07-22" }
+      ]
+    }
+  ]
+}

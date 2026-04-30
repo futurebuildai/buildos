@@ -1,0 +1,62 @@
+{
+  "schedules": [
+    {
+      "project_id": "proj-commercial-fourplex",
+      "tasks": [
+        { "id": "t-cd-01", "name": "Permit submission", "wbs_code": "01.00", "start_offset_days": -180, "duration_days": 7, "depends_on": [], "is_critical": true, "status": "complete" },
+        { "id": "t-cd-02", "name": "Heritage Character Review", "wbs_code": "01.10", "start_offset_days": -22, "duration_days": 21, "depends_on": ["t-cd-01"], "is_critical": true, "status": "in_progress", "weather_adjusted_days": 0 },
+        { "id": "t-cd-03", "name": "Sitework + excavation", "wbs_code": "02.00", "start_offset_days": 0, "duration_days": 14, "depends_on": ["t-cd-02"], "is_critical": true, "status": "blocked" },
+        { "id": "t-cd-04", "name": "Foundation + slab", "wbs_code": "03.00", "start_offset_days": 14, "duration_days": 21, "depends_on": ["t-cd-03"], "is_critical": true, "status": "not_started" },
+        { "id": "t-cd-05", "name": "Framing", "wbs_code": "06.10", "start_offset_days": 35, "duration_days": 35, "depends_on": ["t-cd-04"], "is_critical": true, "status": "not_started", "weather_adjusted_days": 7 },
+        { "id": "t-cd-06", "name": "Roofing", "wbs_code": "07.50", "start_offset_days": 70, "duration_days": 14, "depends_on": ["t-cd-05"], "is_critical": false, "status": "not_started" },
+        { "id": "t-cd-07", "name": "Window installation", "wbs_code": "08.50", "start_offset_days": 84, "duration_days": 7, "depends_on": ["t-cd-06"], "is_critical": false, "status": "not_started" },
+        { "id": "t-cd-08", "name": "MEP rough-in", "wbs_code": "23.20", "start_offset_days": 91, "duration_days": 28, "depends_on": ["t-cd-07"], "is_critical": true, "status": "not_started" },
+        { "id": "t-cd-09", "name": "Insulation + drywall", "wbs_code": "09.20", "start_offset_days": 119, "duration_days": 21, "depends_on": ["t-cd-08"], "is_critical": false, "status": "not_started" },
+        { "id": "t-cd-10", "name": "Interior finishes", "wbs_code": "09.00", "start_offset_days": 140, "duration_days": 35, "depends_on": ["t-cd-09"], "is_critical": false, "status": "not_started" },
+        { "id": "t-cd-11", "name": "Final inspections", "wbs_code": "01.99", "start_offset_days": 175, "duration_days": 14, "depends_on": ["t-cd-10"], "is_critical": true, "status": "not_started" }
+      ]
+    },
+    {
+      "project_id": "proj-buchanan-sixplex",
+      "tasks": [
+        { "id": "t-bs-01", "name": "Permit + utility approvals", "wbs_code": "01.00", "start_offset_days": -220, "duration_days": 90, "depends_on": [], "is_critical": true, "status": "complete" },
+        { "id": "t-bs-02", "name": "Sitework + excavation", "wbs_code": "02.00", "start_offset_days": -130, "duration_days": 18, "depends_on": ["t-bs-01"], "is_critical": true, "status": "complete" },
+        { "id": "t-bs-03", "name": "Foundation + slab", "wbs_code": "03.00", "start_offset_days": -112, "duration_days": 28, "depends_on": ["t-bs-02"], "is_critical": true, "status": "complete" },
+        { "id": "t-bs-04", "name": "Framing", "wbs_code": "06.10", "start_offset_days": -84, "duration_days": 56, "depends_on": ["t-bs-03"], "is_critical": true, "status": "in_progress", "weather_adjusted_days": 12 },
+        { "id": "t-bs-05", "name": "BC Hydro underground service", "wbs_code": "26.00", "start_offset_days": 0, "duration_days": 28, "depends_on": ["t-bs-04"], "is_critical": true, "status": "blocked", "note": "BC Hydro queue backlog." },
+        { "id": "t-bs-06", "name": "Roofing", "wbs_code": "07.50", "start_offset_days": 28, "duration_days": 21, "depends_on": ["t-bs-04"], "is_critical": false, "status": "not_started" },
+        { "id": "t-bs-07", "name": "MEP rough-in (6 suites)", "wbs_code": "23.20", "start_offset_days": 49, "duration_days": 42, "depends_on": ["t-bs-05", "t-bs-06"], "is_critical": true, "status": "not_started" },
+        { "id": "t-bs-08", "name": "Insulation + drywall", "wbs_code": "09.20", "start_offset_days": 91, "duration_days": 28, "depends_on": ["t-bs-07"], "is_critical": false, "status": "not_started" },
+        { "id": "t-bs-09", "name": "Interior finishes", "wbs_code": "09.00", "start_offset_days": 119, "duration_days": 56, "depends_on": ["t-bs-08"], "is_critical": false, "status": "not_started" },
+        { "id": "t-bs-10", "name": "Final inspections + occupancy", "wbs_code": "01.99", "start_offset_days": 175, "duration_days": 21, "depends_on": ["t-bs-09"], "is_critical": true, "status": "not_started" }
+      ]
+    },
+    {
+      "project_id": "proj-mt-pleasant-fourplex",
+      "tasks": [
+        { "id": "t-mp-01", "name": "Permit + design approvals", "wbs_code": "01.00", "start_offset_days": -300, "duration_days": 60, "depends_on": [], "is_critical": true, "status": "complete" },
+        { "id": "t-mp-02", "name": "Demolition + sitework", "wbs_code": "02.00", "start_offset_days": -240, "duration_days": 21, "depends_on": ["t-mp-01"], "is_critical": true, "status": "complete" },
+        { "id": "t-mp-03", "name": "Foundation + slab", "wbs_code": "03.00", "start_offset_days": -219, "duration_days": 28, "depends_on": ["t-mp-02"], "is_critical": true, "status": "complete" },
+        { "id": "t-mp-04", "name": "Framing", "wbs_code": "06.10", "start_offset_days": -191, "duration_days": 42, "depends_on": ["t-mp-03"], "is_critical": true, "status": "complete" },
+        { "id": "t-mp-05", "name": "Roofing", "wbs_code": "07.50", "start_offset_days": -149, "duration_days": 14, "depends_on": ["t-mp-04"], "is_critical": false, "status": "complete" },
+        { "id": "t-mp-06", "name": "MEP rough-in", "wbs_code": "23.20", "start_offset_days": -100, "duration_days": 35, "depends_on": ["t-mp-04"], "is_critical": true, "status": "in_progress" },
+        { "id": "t-mp-07", "name": "Window installation", "wbs_code": "08.50", "start_offset_days": -65, "duration_days": 7, "depends_on": ["t-mp-05"], "is_critical": false, "status": "not_started" },
+        { "id": "t-mp-08", "name": "Insulation + drywall", "wbs_code": "09.20", "start_offset_days": -30, "duration_days": 28, "depends_on": ["t-mp-06"], "is_critical": false, "status": "not_started" },
+        { "id": "t-mp-09", "name": "Interior finishes", "wbs_code": "09.00", "start_offset_days": 5, "duration_days": 49, "depends_on": ["t-mp-08"], "is_critical": false, "status": "not_started" },
+        { "id": "t-mp-10", "name": "Final inspections", "wbs_code": "01.99", "start_offset_days": 60, "duration_days": 14, "depends_on": ["t-mp-09"], "is_critical": true, "status": "not_started" }
+      ]
+    },
+    {
+      "project_id": "proj-brackendale-laneway",
+      "tasks": [
+        { "id": "t-bk-01", "name": "Permit + Cheekye Fan geotech", "wbs_code": "01.00", "start_offset_days": -200, "duration_days": 45, "depends_on": [], "is_critical": true, "status": "complete" },
+        { "id": "t-bk-02", "name": "Sitework + foundation", "wbs_code": "03.00", "start_offset_days": -150, "duration_days": 28, "depends_on": ["t-bk-01"], "is_critical": true, "status": "complete" },
+        { "id": "t-bk-03", "name": "Framing", "wbs_code": "06.10", "start_offset_days": -90, "duration_days": 35, "depends_on": ["t-bk-02"], "is_critical": true, "status": "in_progress", "weather_adjusted_days": 5 },
+        { "id": "t-bk-04", "name": "Class A roofing (WUI)", "wbs_code": "07.50", "start_offset_days": -10, "duration_days": 14, "depends_on": ["t-bk-03"], "is_critical": false, "status": "not_started" },
+        { "id": "t-bk-05", "name": "MEP + heat pump", "wbs_code": "23.20", "start_offset_days": 4, "duration_days": 14, "depends_on": ["t-bk-04"], "is_critical": true, "status": "not_started" },
+        { "id": "t-bk-06", "name": "Insulation + interior finishes", "wbs_code": "09.00", "start_offset_days": 18, "duration_days": 28, "depends_on": ["t-bk-05"], "is_critical": false, "status": "not_started" },
+        { "id": "t-bk-07", "name": "Final inspections + occupancy", "wbs_code": "01.99", "start_offset_days": 46, "duration_days": 14, "depends_on": ["t-bk-06"], "is_critical": true, "status": "not_started" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Small Housing BC — BuildOS Cohort Console</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app" id="app">
+    <header class="header">
+      <img src="assets/shbc-logo.svg" alt="Small Housing BC" class="header__logo" />
+      <div class="header__cohort">
+        <strong>Multiplex Cohort 2026.01</strong>
+        Vancouver / Burnaby · Sea-to-Sky · Maple Ridge / Nelson
+      </div>
+      <div class="header__user">
+        <span>Viewing as</span>
+        <select id="user-switcher" class="user-switcher" aria-label="Switch user"></select>
+      </div>
+    </header>
+
+    <nav class="nav" id="nav">
+      <h3>Your day</h3>
+      <a href="#/feed" data-route="feed">Daily Focus <span class="badge" id="badge-feed">0</span></a>
+
+      <h3>Your work</h3>
+      <a href="#/projects" data-route="projects">Projects</a>
+      <a href="#/pipeline" data-route="pipeline">Pipeline (leads)</a>
+      <a href="#/directory" data-route="directory">Cohort Directory</a>
+      <a href="#/designs" data-route="designs">Design Library</a>
+
+      <h3>Compliance</h3>
+      <a href="#/compliance" data-route="compliance">Bill 25 Reporting</a>
+    </nav>
+
+    <main class="main" id="main">
+      <div class="card">Loading mock data…</div>
+    </main>
+
+    <footer class="footer">
+      <span>Powered by <strong>FutureBuild OS</strong> · Configured for <strong>Small Housing BC</strong></span>
+      <span class="muted">Mock-data demo · April 2026</span>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

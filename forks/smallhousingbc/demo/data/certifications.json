@@ -1,0 +1,22 @@
+{
+  "certifications": [
+    { "id": "cert-001", "user_id": "user-eastvan-maria", "cert_type": "BC Housing Licensed Builder", "cert_number": "BCH-2024-1188", "issued_date": "2024-03-04", "expiry_offset_days": 47, "status": "active" },
+    { "id": "cert-002", "user_id": "user-eastvan-maria", "cert_type": "OSHA 10 General Construction", "cert_number": "OSHA10-2025-0921", "issued_date": "2025-04-12", "expiry_offset_days": 740, "status": "active" },
+    { "id": "cert-003", "user_id": "user-eastvan-maria", "cert_type": "Asbestos Awareness", "cert_number": "AA-2024-3304", "issued_date": "2024-09-08", "expiry_offset_days": 210, "status": "active" },
+    { "id": "cert-004", "user_id": "user-eastvan-amir", "cert_type": "BC Construction Safety Officer (NCSO)", "cert_number": "NCSO-2023-7711", "issued_date": "2023-08-22", "expiry_offset_days": 120, "status": "active" },
+    { "id": "cert-005", "user_id": "user-marc", "cert_type": "BC Housing Licensed Builder", "cert_number": "BCH-2022-0451", "issued_date": "2022-01-10", "expiry_offset_days": 280, "status": "active" },
+    { "id": "cert-006", "user_id": "user-marc", "cert_type": "SHBC Multiplex Construction Training", "cert_number": "SHBC-MX-2026-018", "issued_date": "2026-01-25", "expiry_offset_days": 1840, "status": "active" },
+    { "id": "cert-007", "user_id": "user-priya", "cert_type": "BC Housing Licensed Builder", "cert_number": "BCH-2018-2204", "issued_date": "2018-06-20", "expiry_offset_days": 90, "status": "active" },
+    { "id": "cert-008", "user_id": "user-priya", "cert_type": "SHBC Multiplex Construction Training", "cert_number": "SHBC-MX-2026-002", "issued_date": "2026-01-25", "expiry_offset_days": 1840, "status": "active" },
+    { "id": "cert-009", "user_id": "user-aldergrove-jess", "cert_type": "BC Construction Safety Officer (NCSO)", "cert_number": "NCSO-2023-4920", "issued_date": "2023-04-12", "expiry_offset_days": -10, "status": "expired", "note": "Renewal in progress." },
+    { "id": "cert-010", "user_id": "user-aldergrove-jess", "cert_type": "Fall Protection (CSA Z259.10)", "cert_number": "FP-2024-1808", "issued_date": "2024-06-30", "expiry_offset_days": 80, "status": "active" },
+    { "id": "cert-011", "user_id": "user-aldergrove-tom", "cert_type": "Red Seal Carpenter", "cert_number": "RSC-1992-7711", "issued_date": "1992-05-15", "expiry_offset_days": 9999, "status": "active" },
+    { "id": "cert-012", "user_id": "user-laila", "cert_type": "BC Housing Licensed Builder", "cert_number": "BCH-2019-3088", "issued_date": "2019-03-22", "expiry_offset_days": 410, "status": "active" },
+    { "id": "cert-013", "user_id": "user-laila", "cert_type": "SHBC Multiplex Construction Training", "cert_number": "SHBC-MX-2026-014", "issued_date": "2026-01-25", "expiry_offset_days": 1840, "status": "active" },
+    { "id": "cert-014", "user_id": "user-seasky-jamie", "cert_type": "Wildfire Suppression Awareness", "cert_number": "WSA-2025-5021", "issued_date": "2025-05-04", "expiry_offset_days": 35, "status": "active" },
+    { "id": "cert-015", "user_id": "user-devon", "cert_type": "BC Housing Licensed Builder", "cert_number": "BCH-2015-0922", "issued_date": "2015-04-30", "expiry_offset_days": 540, "status": "active" },
+    { "id": "cert-016", "user_id": "user-devon", "cert_type": "Heritage Building Specialist (CAHP-affiliated)", "cert_number": "CAHP-A-2021-118", "issued_date": "2021-09-12", "expiry_offset_days": 320, "status": "active" },
+    { "id": "cert-017", "user_id": "user-cottonwood-rae", "cert_type": "Heritage Conservation Practitioner", "cert_number": "HCP-2022-0044", "issued_date": "2022-11-10", "expiry_offset_days": 200, "status": "active" },
+    { "id": "cert-018", "user_id": "user-cottonwood-paul", "cert_type": "Red Seal Framer", "cert_number": "RSF-2010-3344", "issued_date": "2010-08-05", "expiry_offset_days": 9999, "status": "active" }
+  ]
+}

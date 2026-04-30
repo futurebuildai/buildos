@@ -1,0 +1,19 @@
+{
+  "invoices": [
+    { "id": "inv-001", "project_id": "proj-buchanan-sixplex", "vendor": "BC Hydro", "invoice_number": "BCH-2026-3041", "amount_cents": 4240000, "currency_code": "CAD", "status": "approved", "due_offset_days": 14, "wbs_code": "26.00" },
+    { "id": "inv-002", "project_id": "proj-buchanan-sixplex", "vendor": "Doman Building Materials", "invoice_number": "DBM-77412", "amount_cents": 14200000, "currency_code": "CAD", "status": "paid", "paid_offset_days": -22, "wbs_code": "06.10" },
+    { "id": "inv-003", "project_id": "proj-buchanan-sixplex", "vendor": "Westcan Concrete", "invoice_number": "WC-2026-118", "amount_cents": 1450000, "currency_code": "CAD", "status": "submitted", "due_offset_days": 28, "wbs_code": "33.40" },
+    { "id": "inv-004", "project_id": "proj-commercial-fourplex", "vendor": "City of Vancouver — Permit Office", "invoice_number": "VAN-PERM-2025-7821", "amount_cents": 3900000, "currency_code": "CAD", "status": "paid", "paid_offset_days": -160, "wbs_code": "01.00" },
+    { "id": "inv-005", "project_id": "proj-commercial-fourplex", "vendor": "Doman Building Materials", "invoice_number": "DBM-79204", "amount_cents": 8400000, "currency_code": "CAD", "status": "approved", "due_offset_days": 21, "wbs_code": "06.10" },
+    { "id": "inv-006", "project_id": "proj-commercial-fourplex", "vendor": "BC Hydro", "invoice_number": "BCH-2026-3502", "amount_cents": 4240000, "currency_code": "CAD", "status": "submitted", "due_offset_days": 30, "wbs_code": "26.00" },
+    { "id": "inv-007", "project_id": "proj-mt-pleasant-fourplex", "vendor": "Doman Building Materials", "invoice_number": "DBM-71103", "amount_cents": 8800000, "currency_code": "CAD", "status": "paid", "paid_offset_days": -200, "wbs_code": "06.10" },
+    { "id": "inv-008", "project_id": "proj-mt-pleasant-fourplex", "vendor": "Slegg Building Materials", "invoice_number": "SLG-30102", "amount_cents": 3400000, "currency_code": "CAD", "status": "approved", "due_offset_days": 7, "wbs_code": "23.20" },
+    { "id": "inv-009", "project_id": "proj-brackendale-laneway", "vendor": "Doman Building Materials", "invoice_number": "DBM-72018", "amount_cents": 1450000, "currency_code": "CAD", "status": "paid", "paid_offset_days": -50, "wbs_code": "06.10" },
+    { "id": "inv-010", "project_id": "proj-brackendale-laneway", "vendor": "Squamish Geotech Ltd.", "invoice_number": "SQG-204", "amount_cents": 480000, "currency_code": "CAD", "status": "paid", "paid_offset_days": -180, "wbs_code": "01.00" },
+    { "id": "inv-011", "project_id": "proj-mapleridge-sixplex", "vendor": "Doman Building Materials", "invoice_number": "DBM-69311", "amount_cents": 13200000, "currency_code": "CAD", "status": "paid", "paid_offset_days": -210, "wbs_code": "06.10" },
+    { "id": "inv-012", "project_id": "proj-mapleridge-sixplex", "vendor": "Slegg Building Materials", "invoice_number": "SLG-30448", "amount_cents": 5100000, "currency_code": "CAD", "status": "approved", "due_offset_days": 12, "wbs_code": "23.20" },
+    { "id": "inv-013", "project_id": "proj-hammond-triplex", "vendor": "Doman Building Materials", "invoice_number": "DBM-70008", "amount_cents": 6200000, "currency_code": "CAD", "status": "paid", "paid_offset_days": -120, "wbs_code": "06.10" },
+    { "id": "inv-014", "project_id": "proj-garibaldi-adu", "vendor": "Doman Building Materials", "invoice_number": "DBM-72512", "amount_cents": 920000, "currency_code": "CAD", "status": "paid", "paid_offset_days": -90, "wbs_code": "06.10" },
+    { "id": "inv-015", "project_id": "proj-garibaldi-adu", "vendor": "Cascadia Windows & Doors", "invoice_number": "CWD-19024", "amount_cents": 320000, "currency_code": "CAD", "status": "paid", "paid_offset_days": -45, "wbs_code": "08.50" }
+  ]
+}

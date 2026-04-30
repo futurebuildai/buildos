@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 56" width="280" height="56" role="img" aria-label="Small Housing BC">
+  <defs>
+    <style>
+      .mark-primary { fill: #00FFA3; }
+      .mark-accent  { fill: #d6a778; }
+      .word-main { font-family: "Inter", "Söhne", system-ui, -apple-system, sans-serif; font-weight: 600; fill: #ffffff; letter-spacing: -0.01em; }
+      .word-sub  { font-family: "Inter", "Söhne", system-ui, -apple-system, sans-serif; font-weight: 500; fill: #7a8092; letter-spacing: 0.14em; }
+    </style>
+  </defs>
+  <!-- Stacked rooflines: gentle-density mark, neon green for FutureBuild brand alignment -->
+  <g transform="translate(8, 10)">
+    <path class="mark-primary" d="M0 28 L18 8 L36 28 L36 36 L26 36 L26 22 L10 22 L10 36 L0 36 Z"/>
+    <path class="mark-accent"  d="M22 36 L34 24 L46 36 L46 40 L40 40 L40 30 L28 30 L28 40 L22 40 Z"/>
+  </g>
+  <!-- Wordmark -->
+  <text x="68" y="28" class="word-main" font-size="20">Small Housing BC</text>
+  <text x="68" y="44" class="word-sub"  font-size="9">CONFIGURED ON FUTUREBUILD OS</text>
+</svg>

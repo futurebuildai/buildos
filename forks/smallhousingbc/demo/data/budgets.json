@@ -1,0 +1,54 @@
+{
+  "budgets": [
+    {
+      "project_id": "proj-commercial-fourplex",
+      "currency_code": "CAD",
+      "lines": [
+        { "wbs_code": "01.00", "label": "Permits & Fees", "budgeted_cents": 5400000, "committed_cents": 4200000, "actual_cents": 3900000 },
+        { "wbs_code": "02.00", "label": "Sitework & Demolition", "budgeted_cents": 8500000, "committed_cents": 0, "actual_cents": 0 },
+        { "wbs_code": "03.00", "label": "Foundation", "budgeted_cents": 12000000, "committed_cents": 0, "actual_cents": 0 },
+        { "wbs_code": "06.10", "label": "Framing & Lumber", "budgeted_cents": 32000000, "committed_cents": 8400000, "actual_cents": 0 },
+        { "wbs_code": "07.50", "label": "Roofing", "budgeted_cents": 9000000, "committed_cents": 0, "actual_cents": 0 },
+        { "wbs_code": "08.50", "label": "Windows & Doors", "budgeted_cents": 18000000, "committed_cents": 4900000, "actual_cents": 0 },
+        { "wbs_code": "09.00", "label": "Interior Finishes", "budgeted_cents": 27000000, "committed_cents": 6100000, "actual_cents": 0 },
+        { "wbs_code": "09.20", "label": "Insulation & Drywall", "budgeted_cents": 11000000, "committed_cents": 0, "actual_cents": 0 },
+        { "wbs_code": "23.20", "label": "MEP Rough-in", "budgeted_cents": 24000000, "committed_cents": 3200000, "actual_cents": 0 },
+        { "wbs_code": "26.00", "label": "Electrical (incl. BC Hydro)", "budgeted_cents": 14000000, "committed_cents": 4240000, "actual_cents": 0 },
+        { "wbs_code": "33.40", "label": "Stormwater & Site Services", "budgeted_cents": 6000000, "committed_cents": 0, "actual_cents": 0 },
+        { "wbs_code": "99.00", "label": "Contingency (8%)", "budgeted_cents": 13100000, "committed_cents": 0, "actual_cents": 0 }
+      ]
+    },
+    {
+      "project_id": "proj-buchanan-sixplex",
+      "currency_code": "CAD",
+      "lines": [
+        { "wbs_code": "01.00", "label": "Permits & Fees", "budgeted_cents": 9200000, "committed_cents": 9200000, "actual_cents": 8400000 },
+        { "wbs_code": "02.00", "label": "Sitework & Demolition", "budgeted_cents": 14000000, "committed_cents": 14000000, "actual_cents": 13800000 },
+        { "wbs_code": "03.00", "label": "Foundation", "budgeted_cents": 22000000, "committed_cents": 22000000, "actual_cents": 21400000 },
+        { "wbs_code": "06.10", "label": "Framing & Lumber", "budgeted_cents": 56000000, "committed_cents": 14200000, "actual_cents": 8800000 },
+        { "wbs_code": "07.50", "label": "Roofing", "budgeted_cents": 16000000, "committed_cents": 0, "actual_cents": 0 },
+        { "wbs_code": "08.50", "label": "Windows & Doors", "budgeted_cents": 28000000, "committed_cents": 7300000, "actual_cents": 0 },
+        { "wbs_code": "09.00", "label": "Interior Finishes", "budgeted_cents": 48000000, "committed_cents": 0, "actual_cents": 0 },
+        { "wbs_code": "09.20", "label": "Insulation & Drywall", "budgeted_cents": 18000000, "committed_cents": 0, "actual_cents": 0 },
+        { "wbs_code": "23.20", "label": "MEP Rough-in", "budgeted_cents": 42000000, "committed_cents": 5400000, "actual_cents": 0 },
+        { "wbs_code": "26.00", "label": "Electrical & BC Hydro UG", "budgeted_cents": 38000000, "committed_cents": 9800000, "actual_cents": 0 },
+        { "wbs_code": "33.40", "label": "Stormwater Detention", "budgeted_cents": 8000000, "committed_cents": 1450000, "actual_cents": 0 },
+        { "wbs_code": "99.00", "label": "Contingency (8%)", "budgeted_cents": 24800000, "committed_cents": 0, "actual_cents": 0 }
+      ]
+    },
+    {
+      "project_id": "proj-brackendale-laneway",
+      "currency_code": "CAD",
+      "lines": [
+        { "wbs_code": "01.00", "label": "Permits & Geotech", "budgeted_cents": 1800000, "committed_cents": 1800000, "actual_cents": 1700000 },
+        { "wbs_code": "03.00", "label": "Foundation", "budgeted_cents": 4500000, "committed_cents": 4500000, "actual_cents": 4400000 },
+        { "wbs_code": "06.10", "label": "Framing", "budgeted_cents": 8200000, "committed_cents": 1450000, "actual_cents": 800000 },
+        { "wbs_code": "07.50", "label": "Class A Roofing", "budgeted_cents": 3600000, "committed_cents": 720000, "actual_cents": 0 },
+        { "wbs_code": "08.50", "label": "Windows & Doors", "budgeted_cents": 5200000, "committed_cents": 0, "actual_cents": 0 },
+        { "wbs_code": "09.00", "label": "Interior Finishes", "budgeted_cents": 12500000, "committed_cents": 0, "actual_cents": 0 },
+        { "wbs_code": "23.20", "label": "MEP + Heat Pump", "budgeted_cents": 6800000, "committed_cents": 980000, "actual_cents": 0 },
+        { "wbs_code": "99.00", "label": "Contingency (8%)", "budgeted_cents": 5400000, "committed_cents": 0, "actual_cents": 0 }
+      ]
+    }
+  ]
+}
