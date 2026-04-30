@@ -24,6 +24,7 @@ type RouterConfig struct {
 	FeedService        FeedServicer
 	ProcurementService ProcurementServicer
 	FleetService       FleetServicer
+	HRService          HRServicer
 	A2AService         A2AServicer
 	A2AVerifier        JWSVerifier
 }
@@ -50,7 +51,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	feed := NewFeedHandler(cfg.FeedService)
 	field := &FieldHandler{}
 	fleet := NewFleetHandler(cfg.FleetService)
-	hr := &HRHandler{}
+	hr := NewHRHandler(cfg.HRService)
 	a2a := NewA2AHandler(cfg.A2AVerifier, cfg.A2AService, cfg.Logger)
 
 	// Auth middleware

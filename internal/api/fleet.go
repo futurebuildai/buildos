@@ -159,17 +159,67 @@ func parseRequiredDate(s string) (time.Time, error) {
 	return time.Time{}, errors.New("unparseable date")
 }
 
-// HRHandler handles /api/v1/org/{orgID}/employees/* endpoints.
-type HRHandler struct{}
+// HRServicer is the subset of *service.HRService consumed by HRHandler.
+type HRServicer interface {
+	ListEmployees(ctx context.Context, callerOrgID uuid.UUID) ([]models.Employee, error)
+	ListCertifications(ctx context.Context, callerOrgID, employeeID uuid.UUID) ([]models.Certification, error)
+}
 
-// ListEmployees returns all employees for an org.
+// HRHandler handles /api/v1/org/{orgID}/employees/* endpoints.
+type HRHandler struct {
+	svc HRServicer
+}
+
+// NewHRHandler creates a handler bound to the given service.
+func NewHRHandler(svc HRServicer) *HRHandler {
+	return &HRHandler{svc: svc}
+}
+
+// ListEmployees returns all employees for an org. Owner/admin only
+// (RBAC enforced at the route).
+//
 // GET /api/v1/org/{orgID}/employees
 func (h *HRHandler) ListEmployees(w http.ResponseWriter, r *http.Request) {
-	writeNotImplemented(w, r)
+	orgID, ok := requireOrgIDFromURL(w, r)
+	if !ok {
+		return
+	}
+	employees, err := h.svc.ListEmployees(r.Context(), orgID)
+	if err != nil {
+		h.writeServiceError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, map[string]any{"employees": employees})
 }
 
 // ListCertifications returns certifications for an employee.
+//
 // GET /api/v1/org/{orgID}/employees/{employeeID}/certifications
 func (h *HRHandler) ListCertifications(w http.ResponseWriter, r *http.Request) {
-	writeNotImplemented(w, r)
+	orgID, ok := requireOrgIDFromURL(w, r)
+	if !ok {
+		return
+	}
+	employeeID, ok := parseUUIDFromURL(w, r, "employeeID")
+	if !ok {
+		return
+	}
+	certs, err := h.svc.ListCertifications(r.Context(), orgID, employeeID)
+	if err != nil {
+		h.writeServiceError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, map[string]any{"certifications": certs})
+}
+
+// writeServiceError maps HRService sentinels to HTTP responses.
+func (h *HRHandler) writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, service.ErrEmployeeNotFound):
+		writeErrorResponse(w, r, http.StatusNotFound, "NOT_FOUND", "employee not found")
+	case errors.Is(err, service.ErrInvalidInput):
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", err.Error())
+	default:
+		writeErrorResponse(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "internal error")
+	}
 }
