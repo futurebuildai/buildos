@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strconv"
@@ -78,11 +79,45 @@ func (p PhysicsConfig) WithDefaults() PhysicsConfig {
 	return p
 }
 
-// Load reads configuration from environment variables with sensible defaults.
+// Load reads configuration from environment variables with sensible
+// defaults. It's a thin wrapper around LoadWithSource that uses the
+// CONFIG_SOURCE env var to select the secret source — empty / "env"
+// keeps the legacy behavior, "file:/path" or "chain:..." routes
+// secrets through the operator's chosen store.
+//
+// Secret-bearing fields (DATABASE_URL, BRAIN_*, A2A_*, SENTRY_DSN)
+// resolve through the source. Non-sensitive scalars (DB_POOL_MAX,
+// PORT, etc.) stay direct env reads; pushing those through a vault
+// would add latency without security benefit.
 func Load() (*Config, error) {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
+	src, err := LoadSecretSource(context.Background(), os.Getenv("CONFIG_SOURCE"))
+	if err != nil {
+		return nil, fmt.Errorf("config: load secret source: %w", err)
+	}
+	return LoadWithSource(context.Background(), src)
+}
+
+// LoadWithSource constructs Config with the supplied SecretSource.
+// Useful for tests + for operators wiring a pre-constructed source
+// (e.g. one that's already authenticated to Vault). The source is
+// not closed by Load; the caller's responsibility.
+func LoadWithSource(ctx context.Context, src SecretSource) (*Config, error) {
+	dbURL, ok, err := src.LookupSecret(ctx, "DATABASE_URL")
+	if err != nil {
+		return nil, fmt.Errorf("config: lookup DATABASE_URL: %w", err)
+	}
+	if !ok || dbURL == "" {
 		return nil, fmt.Errorf("DATABASE_URL is required")
+	}
+
+	// secret resolves a key through the source, returning "" on miss.
+	// Used for fields where empty == disabled.
+	secret := func(key string) string {
+		v, ok, err := src.LookupSecret(ctx, key)
+		if err != nil || !ok {
+			return ""
+		}
+		return v
 	}
 
 	return &Config{
@@ -93,17 +128,17 @@ func Load() (*Config, error) {
 
 		Port: getEnvStr("PORT", "8080"),
 
-		BrainJWKSURL:   os.Getenv("BRAIN_JWKS_URL"),
-		BrainIssuerURL: os.Getenv("BRAIN_ISSUER_URL"),
+		BrainJWKSURL:   secret("BRAIN_JWKS_URL"),
+		BrainIssuerURL: secret("BRAIN_ISSUER_URL"),
 
 		DevAuthMode:  getEnvStr("DEV_AUTH_MODE", ""),
 		DefaultOrgID: parseOptionalUUID(os.Getenv("DEFAULT_ORG_ID")),
 
-		BrainOutboundURL:  os.Getenv("BRAIN_OUTBOUND_URL"),
-		A2ASigningKeyPath: os.Getenv("A2A_SIGNING_KEY_PATH"),
+		BrainOutboundURL:  secret("BRAIN_OUTBOUND_URL"),
+		A2ASigningKeyPath: secret("A2A_SIGNING_KEY_PATH"),
 		A2AKeyID:          getEnvStr("A2A_KEY_ID", "buildos-1"),
 
-		SentryDSN:         os.Getenv("SENTRY_DSN"),
+		SentryDSN:         secret("SENTRY_DSN"),
 		SentryEnvironment: getEnvStr("SENTRY_ENVIRONMENT", "dev"),
 		SentryRelease:     os.Getenv("SENTRY_RELEASE"),
 		SentryTracesRate:  getEnvFloat("SENTRY_TRACES_SAMPLE_RATE", 0.0),
