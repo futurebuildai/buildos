@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+
 	"github.com/futurebuildai/buildos/internal/brain"
 )
 
@@ -16,6 +18,43 @@ import (
 func newTestLogger(buf *bytes.Buffer) *slog.Logger {
 	inner := slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})
 	return slog.New(NewCorrelatingHandler(inner))
+}
+
+func TestCorrelatingHandler_StampsTraceIDFromActiveSpan(t *testing.T) {
+	// When ctx carries a valid OTel span, the handler should stamp
+	// trace_id + span_id alongside request_id. Form the trio every
+	// observability stack expects for cross-correlation.
+	var buf bytes.Buffer
+	logger := newTestLogger(&buf)
+
+	// Create a real span via a TracerProvider that records spans
+	// in-memory. We don't need an exporter — just a span context
+	// with a valid trace_id/span_id pair.
+	tp := sdktrace.NewTracerProvider()
+	tracer := tp.Tracer("test")
+	ctx, span := tracer.Start(context.Background(), "test.op")
+	defer span.End()
+
+	logger.InfoContext(ctx, "test message")
+
+	var record map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &record); err != nil {
+		t.Fatalf("decode: %v\n%s", err, buf.String())
+	}
+	if record["trace_id"] == nil {
+		t.Errorf("trace_id missing: %v", record)
+	}
+	if record["span_id"] == nil {
+		t.Errorf("span_id missing: %v", record)
+	}
+	// trace_id should be 32 hex chars; span_id should be 16. Defends
+	// against a future change that accidentally truncates either.
+	if traceID, _ := record["trace_id"].(string); len(traceID) != 32 {
+		t.Errorf("trace_id len = %d, want 32 (got %q)", len(traceID), traceID)
+	}
+	if spanID, _ := record["span_id"].(string); len(spanID) != 16 {
+		t.Errorf("span_id len = %d, want 16 (got %q)", len(spanID), spanID)
+	}
 }
 
 func TestCorrelatingHandler_StampsRequestIDFromContext(t *testing.T) {

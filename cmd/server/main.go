@@ -57,6 +57,23 @@ func run(logger *slog.Logger) error {
 	}, logger)
 	defer flushSentry()
 
+	// OpenTelemetry tracing. Empty endpoint = no-op tracer + W3C
+	// propagator only (so inbound trace_ids still flow into logs
+	// even without a collector configured).
+	shutdownOTel, _ := obs.InitTracing(ctx, obs.TracingConfig{
+		Endpoint:    cfg.OTelEndpoint,
+		ServiceName: "buildos-server",
+		Environment: cfg.SentryEnvironment, // share env tag with Sentry
+		Release:     cfg.SentryRelease,
+		SampleRate:  cfg.OTelSampleRate,
+		Insecure:    cfg.OTelInsecure,
+	}, logger)
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = shutdownOTel(shutdownCtx)
+	}()
+
 	pool, err := store.NewPool(ctx, store.PoolConfig{
 		DatabaseURL:    cfg.DatabaseURL,
 		MaxConns:       cfg.DBPoolMax,

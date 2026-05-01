@@ -8,6 +8,8 @@ import (
 	"context"
 	"log/slog"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/futurebuildai/buildos/internal/brain"
 )
 
@@ -36,11 +38,21 @@ func (h *CorrelatingHandler) Enabled(ctx context.Context, lvl slog.Level) bool {
 	return h.inner.Enabled(ctx, lvl)
 }
 
-// Handle adds the request_id (and any future correlation ids) from ctx
-// to the record, then passes it to the inner handler.
+// Handle adds the request_id and (when an OTel span is active in
+// ctx) the trace_id + span_id from ctx to the record, then passes it
+// to the inner handler. The three correlation ids form the standard
+// "find this request in the logs / find the trace / find the span"
+// trio every observability stack expects.
 func (h *CorrelatingHandler) Handle(ctx context.Context, r slog.Record) error {
 	if reqID := requestIDFromContext(ctx); reqID != "" {
 		r.AddAttrs(slog.String("request_id", reqID))
+	}
+	if span := trace.SpanFromContext(ctx); span.SpanContext().IsValid() {
+		sc := span.SpanContext()
+		r.AddAttrs(
+			slog.String("trace_id", sc.TraceID().String()),
+			slog.String("span_id", sc.SpanID().String()),
+		)
 	}
 	return h.inner.Handle(ctx, r)
 }
