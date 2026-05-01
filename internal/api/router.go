@@ -81,6 +81,11 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	if cfg.Metrics != nil {
 		r.Use(cfg.Metrics.HTTPMiddleware)
 	}
+	// Default body-size cap. Mounted before Logger so the access log
+	// already shows a 413 status when a handler rejects oversized
+	// payloads. Routes that need a tighter cap (A2A inbound) or a
+	// looser one (future file uploads) override per-group below.
+	r.Use(mw.MaxBodySize(mw.DefaultMaxBodyBytes))
 	r.Use(chimw.Logger)
 
 	// Probes (no auth):
@@ -126,9 +131,14 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	authMiddleware := mw.Auth(cfg.JWKS, cfg.IssuerURL, cfg.DevAuthMode, cfg.Logger)
 
 	// ============================================================
-	// A2A Webhook — NO JWT auth (uses JWS signature instead)
+	// A2A Webhook — NO JWT auth (uses JWS signature instead).
+	// Tighter body cap than the default: Brain envelopes are <100KB
+	// in practice; 1 MiB is comfortably above any plausible event
+	// while restricting amplification surface for an attacker who
+	// somehow forged a JWS.
 	// ============================================================
-	r.Post("/api/v1/a2a/webhook", a2a.ReceiveWebhook)
+	r.With(mw.MaxBodySize(mw.A2AInboundMaxBodyBytes)).
+		Post("/api/v1/a2a/webhook", a2a.ReceiveWebhook)
 
 	// ============================================================
 	// All authenticated routes

@@ -95,8 +95,17 @@ func NewA2AHandler(verifier JWSVerifier, svc A2AServicer, logger *slog.Logger) *
 // transaction, so duplicate deliveries land cleanly and partial failures
 // roll back without orphaned dedup rows.
 func (h *A2AHandler) ReceiveWebhook(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	// Body size cap is enforced by mw.MaxBodySize on the route. Read
+	// the (already-capped) body in full; an oversized payload surfaces
+	// here as a *http.MaxBytesError and is distinguished from generic
+	// transport failures via mw.IsBodyTooLarge.
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		if mw.IsBodyTooLarge(err) {
+			writeErrorResponse(w, r, http.StatusRequestEntityTooLarge, "PAYLOAD_TOO_LARGE",
+				"webhook body exceeds 1 MiB")
+			return
+		}
 		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "failed to read request body")
 		return
 	}
