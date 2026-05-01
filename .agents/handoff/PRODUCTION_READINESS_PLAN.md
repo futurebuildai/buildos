@@ -159,15 +159,20 @@ Two separate repos. Each is large; treat as independent workstreams.
 
 **Phase D definition of done:** dashboards visible for both services rendering p95 latency + error rate; trace shows OS → Brain hop with end-to-end request_id; `go build -tags=prod` produces a binary where `DEV_AUTH_MODE=header` has no effect.
 
-### Phase E — Multi-tenant hardening
+### Phase E — Multi-tenant hardening — **DEFERRED** (per ADR-002)
+
+**Status:** Removed from BuildOS critical path 2026-05-01 per
+[ADR-002](./ADR-002-single-tenant-fork-model.md). BuildOS is single-tenant
+per customer fork; tenant isolation = deployment isolation. The Brain remains
+multi-tenant and retains its E2/E3 obligations.
 
 | ID | What | Repo | Notes |
 |---|---|---|---|
-| **E1** | Postgres Row-Level Security (RLS) policies on every org-scoped table (organizations, users, projects, project_tasks, project_budgets, invoices, pre_construction_prospects, fleet_assets, etc.). Each per-request tx sets `app.current_org_id` via a session var; policies enforce row visibility. | BuildOS | per ADR D10 — not blocking single-tenant fork mode but required before co-op variant; defense-in-depth even for single-tenant |
+| ~~E1~~ | ~~Postgres RLS on BuildOS tables~~ | ~~BuildOS~~ | **Dropped.** Single-tenant fork → no cross-tenant attack surface. RLS would add ~3-10% query overhead for zero security benefit. If the future co-op variant ever ships, RLS lands on that variant specifically. |
 | **E2** | Hub credential per-org isolation: Brain `hub_store` ensures all OAuth credentials and tokens are encrypted with a per-org-derived key, not a global key. Audit cross-org access rejection. | Brain | medium |
 | **E3** | AI usage metering per-org rate limits: prevent runaway spend by capping daily/monthly token spend per org; soft warning at 80%, hard cutoff at 100% with override. | Brain | medium; ties to D15 from ADR-001 |
 
-**Phase E definition of done:** RLS test suite proves cross-tenant data is invisible even with a leaked org_id; Hub credential vault never returns another tenant's credentials; AI metering caps work in staging.
+**Phase E definition of done (Brain-side only):** Hub credential vault never returns another tenant's credentials; AI metering caps work in staging.
 
 ### Phase F — Deployment + ops
 

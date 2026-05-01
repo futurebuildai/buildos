@@ -15,6 +15,14 @@
 // environments. The persona set is hardcoded and the keypair is
 // regenerated on every restart, which means tokens issued before a
 // restart stop validating after BuildOS's JWKS cache TTL elapses.
+//
+// Build tag: this file (and the rest of cmd/dev-idp) compiles only
+// when `-tags=prod` is NOT set. A production build (`go build
+// -tags=prod ./...`) skips this binary entirely — there is no way
+// to ship dev-idp into a release artifact. See ADR-002 / D8.
+
+//go:build !prod
+
 package main
 
 import (

@@ -1,0 +1,41 @@
+# Anything not needed inside the image. Keeps build context small
+# (faster `docker build`) and prevents secret leakage via accidental
+# inclusion of local-only files.
+
+# VCS
+.git
+.gitignore
+.github
+
+# Build outputs
+bin/
+*.exe
+*.test
+*.out
+
+# IDE / OS
+.vscode
+.idea
+.DS_Store
+*.swp
+
+# Local env
+.env
+.env.*
+!.env.example
+
+# Tests + fixtures (the running image doesn't need them)
+**/*_test.go
+**/testdata
+internal/testdb
+scripts/lint-migrations-fixtures
+
+# Docs / planning artifacts
+.agents
+docs
+*.md
+!README.md
+!CLAUDE.md
+
+# Worktree scaffolding (Claude Code work dir)
+tools/.claude

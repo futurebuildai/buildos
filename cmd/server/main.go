@@ -74,6 +74,14 @@ func run(logger *slog.Logger) error {
 	jwks := middleware.NewJWKSProvider(cfg.BrainJWKSURL, logger)
 
 	if cfg.DevAuthMode != "" {
+		if middleware.IsProdBuild() {
+			// Fail-fast: prod build with dev auth set is almost
+			// certainly a deployment mistake. The dev-auth header
+			// path is compiled out, so every request would 401 —
+			// better to refuse to start than serve traffic that's
+			// uniformly broken.
+			return fmt.Errorf("DEV_AUTH_MODE=%q set in a prod-tagged build; rebuild without -tags=prod or unset DEV_AUTH_MODE", cfg.DevAuthMode)
+		}
 		logger.Warn("DEV_AUTH_MODE is set — JWT validation may be bypassed",
 			"mode", cfg.DevAuthMode,
 			"production_safe", false)
