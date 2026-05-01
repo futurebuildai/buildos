@@ -42,6 +42,14 @@ type Config struct {
 	A2ASigningKeyPath string // path to PKCS#1 or PKCS#8 PEM RSA private key
 	A2AKeyID          string // JWS `kid` header value; defaults to "buildos-1"
 
+	// Sentry — error reporting. Empty SentryDSN disables initialization
+	// entirely; ops can ship without a DSN configured and add it
+	// later without a code change.
+	SentryDSN         string  // e.g. "https://<key>@<org>.ingest.sentry.io/<project>"; "" disables
+	SentryEnvironment string  // "production" / "staging" / "dev"; defaults to "dev"
+	SentryRelease     string  // build SHA or version tag; empty uses Sentry's auto-release
+	SentryTracesRate  float64 // 0.0 disables performance tracing; defaults to 0.0
+
 	// Physics Engine
 	Physics PhysicsConfig
 }
@@ -88,6 +96,11 @@ func Load() (*Config, error) {
 		BrainOutboundURL:  os.Getenv("BRAIN_OUTBOUND_URL"),
 		A2ASigningKeyPath: os.Getenv("A2A_SIGNING_KEY_PATH"),
 		A2AKeyID:          getEnvStr("A2A_KEY_ID", "buildos-1"),
+
+		SentryDSN:         os.Getenv("SENTRY_DSN"),
+		SentryEnvironment: getEnvStr("SENTRY_ENVIRONMENT", "dev"),
+		SentryRelease:     os.Getenv("SENTRY_RELEASE"),
+		SentryTracesRate:  getEnvFloat("SENTRY_TRACES_SAMPLE_RATE", 0.0),
 
 		Physics: PhysicsConfig{
 			StandardHouseSizeSF:    getEnvFloat("PHYSICS_STANDARD_HOUSE_SF", 2000.0),

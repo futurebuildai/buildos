@@ -42,6 +42,16 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
+	// Sentry up first so subsequent init failures land. Empty DSN is
+	// a no-op; the flush is always safe.
+	flushSentry, _ := obs.InitSentry(obs.SentryConfig{
+		DSN:              cfg.SentryDSN,
+		Environment:      cfg.SentryEnvironment,
+		Release:          cfg.SentryRelease,
+		TracesSampleRate: cfg.SentryTracesRate,
+	}, logger)
+	defer flushSentry()
+
 	pool, err := store.NewPool(ctx, store.PoolConfig{
 		DatabaseURL:    cfg.DatabaseURL,
 		MaxConns:       cfg.DBPoolMax,

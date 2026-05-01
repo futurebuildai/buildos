@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	mw "github.com/futurebuildai/buildos/internal/api/middleware"
+	"github.com/futurebuildai/buildos/internal/obs"
 )
 
 // MetricsRecorder is the consumer-side surface the router needs from
@@ -62,6 +63,7 @@ type RouterConfig struct {
 	BillingClient      BillingClient     // optional — when nil, /billing/* routes don't mount
 	AgentsService      AgentsServicer    // optional — when nil, /agents/* routes don't mount
 	Metrics            MetricsRecorder   // optional — when nil, /metrics doesn't mount and HTTP middleware is skipped
+	SentryEnabled      bool              // when true, the Sentry HTTP middleware is mounted to capture panics
 }
 
 // NewRouter creates the Chi router with all route groups and middleware.
@@ -77,6 +79,14 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	//   - Logger emits the request line, with request_id already set.
 	r.Use(chimw.RequestID)
 	r.Use(chimw.RealIP)
+	// Sentry middleware sits BEFORE chi.Recoverer so it sees the
+	// panic before Recoverer's defer swallows it. The SDK's Repanic
+	// option re-throws the panic on its way back up, then Recoverer
+	// catches it and writes the 500. The order — Sentry inside,
+	// Recoverer outside — is what every chi+Sentry recipe uses.
+	if cfg.SentryEnabled {
+		r.Use(obs.SentryHTTPMiddleware())
+	}
 	r.Use(chimw.Recoverer)
 	if cfg.Metrics != nil {
 		r.Use(cfg.Metrics.HTTPMiddleware)

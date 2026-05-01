@@ -3,6 +3,7 @@ module github.com/futurebuildai/buildos
 go 1.26.1
 
 require (
+	github.com/getsentry/sentry-go v0.46.1
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/google/uuid v1.6.0
