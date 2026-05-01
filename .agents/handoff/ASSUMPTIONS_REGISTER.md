@@ -14,7 +14,7 @@
 | A2 | Integer nanosecond math (AddWorkDuration) eliminates IEEE 754 drift | Cross-architecture schedule divergence | Tests prove minute-precision truncation works | VALIDATED by vault review |
 | A3 | SWIM weather model multipliers (1.15, 1.25, 1.10) are empirically accurate for residential construction | Over/under-estimated task durations | Compare against historical project data; evolve to Tomorrow.io predictive | ASSUMED -- needs calibration data |
 | A4 | WBS scope < 10.0 OR 13.x for weather sensitivity is correct | Missing weather adjustments on outdoor tasks | Cross-reference with construction best practices | ASSUMED |
-| A5 | FB-Brain will continue as the upstream OIDC provider and webhook source | Authentication architecture collapse | Confirmed by TECH_STACK.md delegation model | VALIDATED |
+| A5 | The Brain will continue as the upstream OIDC provider and webhook source | Authentication architecture collapse | Confirmed by TECH_STACK.md delegation model | VALIDATED |
 | A6 | PostgreSQL 16+ with pgvector handles both relational and vector workloads at scale | Performance degradation at scale | Benchmark with 50+ concurrent projects | ASSUMED |
 | A7 | Asynq (Redis-backed) remains viable for 16+ cron task types | Job queue reliability at scale | Evaluate River (PostgreSQL-native) as alternative | NEEDS EVALUATION |
 | A8 | Lit 3.0+ is suitable for data-dense Industrial Dark dashboard | Performance issues with complex financial tables | Prototype with 1000+ row data grids | NEEDS PROTOTYPE |
@@ -37,7 +37,7 @@
 | T3 | TypeScript strict mode for all frontend code | Compile-time type safety, Rosetta Stone contract tests |
 | T4 | Docker multi-stage builds for deployment | CI/CD pipeline structure |
 | T5 | Railway for production hosting | Deployment constraints and scaling limits |
-| T6 | Clerk removed, JWT delegation to FB-Brain | Auth migration required |
+| T6 | Clerk removed, JWT delegation to The Brain | Auth migration required |
 | T7 | Redis 7 for Asynq task queue | Infrastructure dependency |
 
 ---

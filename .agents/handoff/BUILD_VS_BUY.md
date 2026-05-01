@@ -27,7 +27,7 @@
 | **Document Search (RAG)** | BUILD (preserve) | pgvector with document_chunks table is already working. Expand embedding coverage. |
 | **Invoice Extraction** | BUILD (preserve) | InvoiceServicer with Gemini Flash extraction is production-deployed. Improve accuracy iteratively. |
 | **Mobile Field App** | BUILD (Flutter) | Offline-first requirement eliminates web-only solutions. Flutter provides cross-platform with native performance. |
-| **Authentication** | BUY (delegate to FB-Brain) | FB-Brain is the OIDC provider per TECH_STACK.md. FB-OS validates JWTs only. |
+| **Authentication** | BUY (delegate to The Brain) | The Brain is the OIDC provider per TECH_STACK.md. BuildOS validates JWTs only. |
 | **Email/SMS** | BUY (SendGrid + Twilio) | Already integrated via NotificationServicer. No reason to change. |
 | **Object Storage** | BUY (DigitalOcean Spaces / MinIO) | S3-compatible, already configured. No change needed. |
 | **A2A Protocol** | ADOPT (open standard) | Google A2A protocol (Linux Foundation). Implement client/server in Go. Do not build proprietary agent communication. |

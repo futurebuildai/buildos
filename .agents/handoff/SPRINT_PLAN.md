@@ -1,37 +1,44 @@
 # Sprint Plan
 
-**System:** FutureBuild OS (System of Execution)
+**System:** BuildOS (System of Execution)
 **Pipeline Stage:** 08 - Implementation Plan
-**Date:** 2026-04-02
-**Status:** COMPLETE
-**Sprint Duration:** 2 weeks
-**Total Sprints:** 8 (S0–S7)
-**Estimated Timeline:** 16 weeks
+**Date:** 2026-04-02 (revised 2026-04-29 per [ADR-001-vision-alignment.md](./ADR-001-vision-alignment.md) D16)
+**Status:** REVISED — see "Revision history" below
+**Sprint Duration:** 2 weeks (Sprint 1.5 spike: 3 days)
+**Total Sprints:** 8 + 1 spike + 1 frontend (S0, S1, S1.5, S2–S7, S8)
+**Estimated Timeline:** ~18.5 weeks
+
+### Revision history
+
+| Date | Change | Rationale |
+|---|---|---|
+| 2026-04-29 | Inserted **Sprint 1.5 (Brain Client Foundation)**, 3-day spike, after Sprint 1 | ADR-001 D5/D6: every Brain call (Maestro, Hub, 3p clients) needs a typed retrying transport. Building this as scaffolding before Sprint 2 prevents N stub-and-rewrite cycles in later sprints. |
+| 2026-04-29 | Swapped contents of **Sprint 4 ↔ Sprint 5**: A2A receiver moves from S5 to S4; AI Agents + Feed move from S4 to S5 | ADR-001 D14: LocalBlue → BuildOS lead auto-flow lands as an A2A webhook into the pre-construction pipeline (built in S3). Receiving infrastructure must follow the pipeline immediately, not two weeks later. Agents (DailyFocus etc.) need both Brain Maestro (S1.5) and feed cards from A2A (new S4) in place, so they fit naturally as S5. |
 
 ---
 
 ## Cross-System Dependency Map
 
 ```
-FB-Brain Sprint 0 ──► FB-OS Sprint 0
+The Brain Sprint 0 ──► BuildOS Sprint 0
   (OIDC issuer)        (JWT middleware — BLOCKED until Brain JWKS is live)
 
-FB-Brain Sprint 3 ──► FB-OS Sprint 5
+The Brain Sprint 3 ──► BuildOS Sprint 4
   (A2A Client)          (A2A webhook receiver — BLOCKED until Brain emits signed webhooks)
 
-FB-OS Sprint 0 ──► FB-OS Sprint 1
+BuildOS Sprint 0 ──► BuildOS Sprint 1
   (Core schema + River)  (Physics engine needs project_tasks table)
 
-FB-OS Sprint 1 ──► FB-OS Sprint 2
+BuildOS Sprint 1 ──► BuildOS Sprint 2
   (Schedule engine)      (Financial module references schedule data)
 
-FB-OS Sprint 2 ──► FB-OS Sprint 3
+BuildOS Sprint 2 ──► BuildOS Sprint 3
   (Financial tables)     (Pre-construction estimates use Composite Currency Pattern)
 
-FB-OS Sprints 0–6 ──► FB-OS Sprint 7
+BuildOS Sprints 0–6 ──► BuildOS Sprint 7
   (All backend)          (Lit Web Frontend — BLOCKED until all API endpoints exist)
 
-FB-OS Sprints 0–5 ──► FB-OS Sprint 6
+BuildOS Sprints 0–5 ──► BuildOS Sprint 6
   (Backend + A2A)        (Flutter Field Portal needs sync + field endpoints)
 ```
 
@@ -39,11 +46,11 @@ FB-OS Sprints 0–5 ──► FB-OS Sprint 6
 
 ## Sprint 0: Walking Skeleton (Weeks 1–2)
 
-**Goal:** Authenticated API request to create a project succeeds. River queue processes jobs. JWT validated against FB-Brain.
+**Goal:** Authenticated API request to create a project succeeds. River queue processes jobs. JWT validated against The Brain.
 
 ### Dependencies
 
-- **BLOCKED BY FB-Brain Sprint 0:** JWT middleware requires Brain's `/jwks` endpoint to be live
+- **BLOCKED BY The Brain Sprint 0:** JWT middleware requires Brain's `/jwks` endpoint to be live
 - **Mitigation:** Use static JWKS fixture for Week 1; switch to live Brain JWKS in Week 2
 
 ### Deliverables
@@ -55,7 +62,7 @@ FB-OS Sprints 0–5 ──► FB-OS Sprint 6
 | 3 | River queue setup (migration, river_job tables) | `migrations/002_river_setup.sql` | P0 |
 | 4 | River periodic jobs: initial 6 cron entries | `migrations/002_river_setup.sql` | P0 |
 | 5 | Chi router with middleware stack | `internal/api/router.go` | P0 |
-| 6 | JWT validation middleware (JWKS from FB-Brain, 1hr cache) | `internal/api/middleware/auth.go` | P0 |
+| 6 | JWT validation middleware (JWKS from The Brain, 1hr cache) | `internal/api/middleware/auth.go` | P0 |
 | 7 | RBAC middleware (owner, admin, superintendent, field_worker) | `internal/api/middleware/rbac.go` | P0 |
 | 8 | OpenTelemetry + Prometheus middleware | `internal/api/middleware/telemetry.go` | P1 |
 | 9 | Project CRUD: `GET/POST/PUT /api/v1/projects` | `internal/api/projects.go` | P0 |
@@ -69,7 +76,7 @@ FB-OS Sprints 0–5 ──► FB-OS Sprint 6
 
 ### Exit Criteria
 
-- `POST /api/v1/projects` with valid FB-Brain JWT returns 201
+- `POST /api/v1/projects` with valid The Brain JWT returns 201
 - `POST /api/v1/projects` with invalid/expired JWT returns 401
 - RBAC: `field_worker` role cannot create projects (403)
 - River worker starts and processes a no-op test job
@@ -114,6 +121,37 @@ FB-OS Sprints 0–5 ──► FB-OS Sprint 6
 - Golden master determinism test passes (identical output for same input)
 - `make audit` passes in CI
 - `delay_cascade` job triggers CPM recalculation when task progress changes critical path
+
+---
+
+## Sprint 1.5: Brain Client Foundation (3-day spike, end of Week 4)
+
+**Goal:** A typed, retrying HTTP client for The Brain that all subsequent sprints reuse. Transport only — no business logic. Inserted per [ADR-001 D5/D6](./ADR-001-vision-alignment.md).
+
+### Dependencies
+
+- **Depends on Sprint 0:** Config wiring (`BRAIN_*` env vars), Auth middleware
+- **No cross-system blocker:** built against `cmd/dev-idp` mock issuer or unit-tested with mock RoundTripper
+
+### Deliverables
+
+| # | Task | Package | Priority |
+|---|------|---------|----------|
+| 1 | `BrainClient` struct: timeouts, retries (3 attempts, exponential backoff), context propagation, structured slog logging | `internal/brain/client.go` | P0 |
+| 2 | Maestro task envelope types: one Go type per `task_type` (`DailyBriefing`, `IntentClassify`, `InvoiceExtract`, `ProcurementRecommend`, `TribunalReview`) | `internal/brain/maestro.go` | P0 |
+| 3 | `BrainClient.Maestro.Run(ctx, task)` typed entry point with task-type dispatch | `internal/brain/maestro.go` | P0 |
+| 4 | Hub client method stubs per upstream (QuickBooks, Gable, LocalBlue, XUI, 1Build, Gmail, Outlook) — interface only, returns `ErrNotImplemented` | `internal/brain/clients.go` | P0 |
+| 5 | Token-source helper for service-to-service auth Brain expects from BuildOS (HMAC-signed bearer or OIDC client_credentials, per Brain spec) | `internal/brain/auth.go` | P0 |
+| 6 | Test scaffolding: `brain.NewMockClient` for downstream test injection; `httptest`-based fixtures | `internal/brain/mock.go` | P0 |
+| 7 | `internal/brain/README.md` linking to ADR-001 D5/D6 + Brain-side `BRAIN_CLIENT_CONTRACT.md` | `internal/brain/README.md` | P1 |
+
+### Exit Criteria
+
+- `BrainClient` retries on 5xx and respects `context.Canceled`; unit test covers a mock RoundTripper that 503s twice then 200s
+- Maestro `daily_briefing` task type compiles end-to-end: request marshal → POST → response unmarshal
+- All Sprint 4–6 Brain calls land through `internal/brain/`, not via ad-hoc `http.Client`
+- Mock client lets downstream sprints write tests without standing up `cmd/dev-idp`
+- Doc rendered and linked from CLAUDE.md
 
 ---
 
@@ -196,22 +234,64 @@ FB-OS Sprints 0–5 ──► FB-OS Sprint 6
 
 ---
 
-## Sprint 4: AI Agents + Feed + Procurement (Weeks 9–10)
+## Sprint 4: A2A Webhook Receiver + LocalBlue Lead Flow + Notifications (Weeks 9–10)
 
-**Goal:** Autonomous agents generate feed cards. Procurement monitoring is active.
+**Goal:** BuildOS receives and processes JWS-signed webhooks from The Brain. LocalBlue leads auto-flow into the pre-construction pipeline. (Pulled from former S5 per [ADR-001 D14](./ADR-001-vision-alignment.md).)
 
 ### Dependencies
 
-- **Depends on Sprint 1:** Agents reference project tasks and schedule data
-- **Depends on Sprint 2:** Procurement items use Composite Currency Pattern
+- **BLOCKED BY The Brain Sprint 3:** Brain must be emitting valid JWS-signed webhooks
+- **Mitigation:** Test with locally signed mock webhooks until Brain Sprint 3 deploys
+- **Depends on Sprint 3:** `pre_construction_prospects` table must exist for the LocalBlue lead handler to land rows
 
 ### Deliverables
 
 | # | Task | Package | Priority |
 |---|------|---------|----------|
-| 1 | PostgreSQL schema: `procurement_items` (with `estimated_cost_currency_code`) | `migrations/006_agents.sql` | P0 |
-| 2 | PostgreSQL schema: `feed_cards`, `communication_logs` | `migrations/006_agents.sql` | P0 |
-| 3 | DailyFocusAgent: morning briefing generation via Claude | `internal/agents/daily_focus.go` | P0 |
+| 1 | A2A webhook receiver: `POST /api/v1/a2a/webhook` | `internal/api/a2a.go` | P0 |
+| 2 | JWS verification using Brain's public key (from `/jwks`) | `internal/api/a2a.go` | P0 |
+| 3 | Idempotency key deduplication (409 on duplicate) | `internal/api/a2a.go` | P0 |
+| 4 | Event handler: `review_material_quote` → create feed card with quote data | `internal/api/a2a.go` | P0 |
+| 5 | Event handler: `review_labor_bid` → create feed card with bid data | `internal/api/a2a.go` | P0 |
+| 6 | Event handler: `update_schedule` → trigger CPM recalculation | `internal/api/a2a.go` | P0 |
+| 7 | Event handler: `delivery_confirmation` → update procurement status | `internal/api/a2a.go` | P0 |
+| 8 | Event handler: `create_feed_card` → insert feed card | `internal/api/a2a.go` | P0 |
+| 9 | Event handler: `localblue.lead_captured` → insert into `pre_construction_prospects` (stage='lead', source='localblue') and emit a feed card | `internal/api/a2a.go` | P0 |
+| 10 | River job: `a2a_webhook_dispatch` (outbound webhooks from OS to Brain) | `internal/worker/a2a_webhook_dispatch.go` | P0 |
+| 11 | PostgreSQL schema: `field_notification_dlq` | `migrations/006_notifications.sql` | P1 |
+| 12 | River job: `field_notification_retry` (backoff: 30s→1hr, 6 retries) | `internal/worker/field_notification_retry.go` | P1 |
+| 13 | Verify: `currency_code` from A2A payloads propagated to feed cards and procurement items | Integration test | P0 |
+
+### Exit Criteria
+
+- `POST /api/v1/a2a/webhook` with valid JWS signature returns 200
+- Invalid JWS signature returns 401
+- Duplicate idempotency key returns 409
+- `review_material_quote` creates feed card with correct `currency_code`
+- `update_schedule` triggers CPM recalculation via `delay_cascade` job
+- `localblue.lead_captured` lands a prospect row visible in the contractor's pipeline view, with a feed card emitted to the appropriate role
+- End-to-end: Brain MaterialsFlow → A2A webhook → OS feed card visible
+
+---
+
+## Sprint 5: AI Agents + Feed + Procurement (Weeks 11–12)
+
+**Goal:** Autonomous agents generate feed cards. Procurement monitoring is active. All AI calls route through `internal/brain/` (Sprint 1.5) to The Brain's Maestro gateway. (Moved from former S4 per [ADR-001 D14/D16](./ADR-001-vision-alignment.md).)
+
+### Dependencies
+
+- **Depends on Sprint 1:** Agents reference project tasks and schedule data
+- **Depends on Sprint 1.5:** All Maestro calls go through `internal/brain/maestro.go`
+- **Depends on Sprint 2:** Procurement items use Composite Currency Pattern
+- **Depends on Sprint 4:** A2A receiver provides upstream events that some agent flows react to (quote approval, etc.)
+
+### Deliverables
+
+| # | Task | Package | Priority |
+|---|------|---------|----------|
+| 1 | PostgreSQL schema: `procurement_items` (with `estimated_cost_currency_code`) | `migrations/007_agents.sql` | P0 |
+| 2 | PostgreSQL schema: `feed_cards`, `communication_logs` | `migrations/007_agents.sql` | P0 |
+| 3 | DailyFocusAgent: morning briefing generation via Maestro `daily_briefing` task type | `internal/agents/daily_focus.go` | P0 |
 | 4 | ProcurementAgent: lead time scanning, WARNING/CRITICAL transitions | `internal/agents/procurement.go` | P0 |
 | 5 | SubLiaisonAgent: SMS confirmation via Twilio | `internal/agents/sub_liaison.go` | P1 |
 | 6 | FutureShade service + Tribunal consensus engine | `internal/futureshade/service.go`, `internal/futureshade/tribunal/` | P1 |
@@ -220,8 +300,8 @@ FB-OS Sprints 0–5 ──► FB-OS Sprint 6
 | 9 | FeedServicer: card creation, targeting (user + role-based) | `internal/service/feed.go` | P0 |
 | 10 | River jobs: `daily_briefing`, `procurement_check`, `sub_liaison_scan` | `internal/worker/` | P0 |
 | 11 | River jobs: `certification_alerts`, `maintenance_reminders` | `internal/worker/` | P1 |
-| 12 | WeatherServicer: Tomorrow.io API client | `internal/service/weather.go` | P1 |
-| 13 | InvoiceServicer: extraction + matching | `internal/service/invoice.go` | P2 |
+| 12 | WeatherServicer: Tomorrow.io API client (proxied through `internal/brain/clients.go` per ADR-001 D6) | `internal/service/weather.go` | P1 |
+| 13 | InvoiceServicer: extraction via Maestro `invoice_extract` task type | `internal/service/invoice.go` | P2 |
 | 14 | NotificationServicer: Twilio SMS, FCM push | `internal/service/notification.go` | P1 |
 
 ### Exit Criteria
@@ -231,43 +311,7 @@ FB-OS Sprints 0–5 ──► FB-OS Sprint 6
 - Feed cards are targeted by user ID or role; filterable by priority
 - Feed action dispatches to appropriate service (e.g., approve quote → update procurement status)
 - Procurement items display `estimated_cost_cents` + `estimated_cost_currency_code`
-
----
-
-## Sprint 5: A2A Webhook Receiver + Notifications (Weeks 11–12)
-
-**Goal:** FB-OS receives and processes JWS-signed webhooks from FB-Brain.
-
-### Dependencies
-
-- **BLOCKED BY FB-Brain Sprint 3:** Brain must be emitting valid JWS-signed webhooks
-- **Mitigation:** Test with locally signed mock webhooks until Brain Sprint 3 deploys
-
-### Deliverables
-
-| # | Task | Package | Priority |
-|---|------|---------|----------|
-| 1 | A2A webhook receiver: `POST /api/v1/a2a/webhook` | `internal/api/a2a.go` | P0 |
-| 2 | JWS verification using Brain's public key (from `/jwks`) | `internal/api/a2a.go` | P0 |
-| 3 | Idempotency key deduplication (409 on duplicate) | `internal/api/a2a.go` | P0 |
-| 4 | Event handlers: `review_material_quote` → create feed card with quote data | `internal/api/a2a.go` | P0 |
-| 5 | Event handlers: `review_labor_bid` → create feed card with bid data | `internal/api/a2a.go` | P0 |
-| 6 | Event handlers: `update_schedule` → trigger CPM recalculation | `internal/api/a2a.go` | P0 |
-| 7 | Event handlers: `delivery_confirmation` → update procurement status | `internal/api/a2a.go` | P0 |
-| 8 | Event handlers: `create_feed_card` → insert feed card | `internal/api/a2a.go` | P0 |
-| 9 | River job: `a2a_webhook_dispatch` (outbound webhooks from OS to Brain) | `internal/worker/a2a_webhook_dispatch.go` | P0 |
-| 10 | PostgreSQL schema: `field_notification_dlq` | `migrations/007_notifications.sql` | P1 |
-| 11 | River job: `field_notification_retry` (backoff: 30s→1hr, 6 retries) | `internal/worker/field_notification_retry.go` | P1 |
-| 12 | Verify: `currency_code` from A2A payloads propagated to feed cards and procurement items | Integration test | P0 |
-
-### Exit Criteria
-
-- `POST /api/v1/a2a/webhook` with valid JWS signature returns 200
-- Invalid JWS signature returns 401
-- Duplicate idempotency key returns 409
-- `review_material_quote` creates feed card with correct `currency_code`
-- `update_schedule` triggers CPM recalculation via `delay_cascade` job
-- End-to-end: Brain MaterialsFlow → A2A webhook → OS feed card visible
+- All AI calls in agent code route through `internal/brain/maestro.go` — no direct Anthropic SDK usage
 
 ---
 
@@ -327,7 +371,7 @@ FB-OS Sprints 0–5 ──► FB-OS Sprint 6
 | 5 | SyncService: pull sync (GET /field/sync?since=) | `mobile/lib/services/sync_service.dart` | P0 |
 | 6 | SyncService: push outbox drain (FIFO, idempotency keys) | `mobile/lib/services/sync_service.dart` | P0 |
 | 7 | SyncService: retry with backoff (1s, 2s, 4s, 8s, max 5min) | `mobile/lib/services/sync_service.dart` | P0 |
-| 8 | AuthService: JWT token management (FB-Brain OIDC) | `mobile/lib/services/auth_service.dart` | P0 |
+| 8 | AuthService: JWT token management (The Brain OIDC) | `mobile/lib/services/auth_service.dart` | P0 |
 | 9 | PushService: FCM integration | `mobile/lib/services/push_service.dart` | P1 |
 | 10 | TaskListScreen: assigned tasks with completion percentage | `mobile/lib/screens/task_list_screen.dart` | P0 |
 | 11 | DailyLogScreen: weather, summary, safety, photos | `mobile/lib/screens/daily_log_screen.dart` | P0 |
@@ -407,10 +451,11 @@ FB-OS Sprints 0–5 ──► FB-OS Sprint 6
 |--------|-------|-------|-----------------|---------------------|
 | S0 | 1–2 | Walking Skeleton | Core schema, JWT middleware, River setup, Project CRUD, CI | **Blocked by** Brain S0 (JWKS) |
 | S1 | 3–4 | Physics Engine | CPM/DHSM/SWIM from vault, benchmarks, schedule API, `make audit` | Blocks S2 |
+| **S1.5** | **end of 4** | **Brain Client Foundation (3-day spike)** | **Typed retrying `internal/brain/` package: BrainClient, Maestro envelopes, Hub stubs, mock client** | **Blocks S4, S5** |
 | S2 | 5–6 | Financials | Composite Currency Pattern tables, endpoints, corporate rollup | Blocks S3 |
-| S3 | 7–8 | Pre-Construction | Pipeline CRM, estimates, permits, Kanban→CPM transition | — |
-| S4 | 9–10 | AI Agents + Feed | DailyFocus, Procurement, SubLiaison agents, feed cards | — |
-| S5 | 11–12 | A2A + Notifications | Webhook receiver, JWS verify, event handlers, notifications | **Blocked by** Brain S3 (A2A Client) |
+| S3 | 7–8 | Pre-Construction | Pipeline CRM, estimates, permits, Kanban→CPM transition | Blocks S4 (LocalBlue lead handler needs prospects table) |
+| S4 | 9–10 | A2A + LocalBlue + Notifications | Webhook receiver, JWS verify, 6 event handlers (incl. `localblue.lead_captured`), notifications | **Blocked by** Brain S3 (A2A Client) |
+| S5 | 11–12 | AI Agents + Feed | DailyFocus, Procurement, SubLiaison agents (via Maestro), feed cards, procurement | Depends on S1.5, S4 |
 | S6 | 13–14 | Fleet/HR + Field Sync | Fleet, employees, certifications, field sync endpoints | — |
 | S7 | 15–16 | Flutter Mobile | Drift, outbox, sync service, 4 screens, offline mode | Depends on S6 |
 | S8 | 17–18 | Lit Web Frontend | All pages, pipeline Kanban, Gantt, design system, Lighthouse | Depends on S0–S6 |
@@ -420,11 +465,14 @@ FB-OS Sprints 0–5 ──► FB-OS Sprint 6
 ```
 Week:    1    2    3    4    5    6    7    8    9   10   11   12   13   14   15   16   17   18
 Brain:  [  S0  ][  S1  ][  S2  ][  S3  ][  S4  ][  S5  ]
-OS:     [  S0  ][  S1  ][  S2  ][  S3  ][  S4  ][  S5  ][  S6  ][  S7  ][  S8  ]
-         ▲                                ▲
-         │                                │
-    Brain OIDC                     Brain A2A Client
-    unblocks OS S0                 unblocks OS S5
+OS:     [  S0  ][  S1  ]½[ S2  ][  S3  ][  S4  ][  S5  ][  S6  ][  S7  ][  S8  ]
+         ▲              ▲                ▲
+         │              │                │
+    Brain OIDC     Brain client     Brain A2A Client
+    unblocks       transport in     unblocks OS S4
+    OS S0          place for S2+    (now A2A receiver)
+
+       ½ = Sprint 1.5 (Brain Client Foundation, 3-day spike)
 ```
 
 ### Velocity Assumptions
@@ -442,6 +490,6 @@ OS:     [  S0  ][  S1  ][  S2  ][  S3  ][  S4  ][  S5  ][  S6  ][  S7  ][  S8  ]
 | Brain OIDC delays block OS S0 | S0 | Static JWKS fixture for Week 1; live switch in Week 2 |
 | Physics engine vault code doesn't compile | S1 | Allocate buffer for API modernization (gonum v0.15) |
 | CPM benchmarks fail on CI hardware | S1 | Benchmark on consistent hardware; use relative gates |
-| Brain A2A delays block OS S5 | S5 | Mock JWS signer for integration tests |
+| Brain A2A delays block OS S4 | S4 | Mock JWS signer for integration tests |
 | Flutter offline sync edge cases | S7 | Use Testcontainers for simulated connectivity drops |
 | Lit component count exceeds sprint capacity | S8 | Prioritize P0 pages; defer P1/P2 to post-MVP |

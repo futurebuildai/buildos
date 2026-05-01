@@ -141,7 +141,7 @@ Build Organization-root dashboard views using Lit Web Components with GableLBM I
 ## Concept 4: Autonomous Agents -- A2A-Compatible Webhook-Driven Architecture
 
 ### Problem
-The legacy agents (DailyFocus, Procurement, SubLiaison) are cron-triggered Go services. They cannot communicate with external systems (FB-Brain, supplier APIs) in a standardized way.
+The legacy agents (DailyFocus, Procurement, SubLiaison) are cron-triggered Go services. They cannot communicate with external systems (The Brain, supplier APIs) in a standardized way.
 
 ### Solution
 Evolve agents to Google A2A protocol compatibility:
@@ -149,7 +149,7 @@ Evolve agents to Google A2A protocol compatibility:
 1. **Agent Card**: Each agent publishes an Agent Card (JSON manifest) describing its capabilities, skills, and authentication requirements
 2. **Task Protocol**: Agents communicate via A2A tasks (JSON-RPC over HTTP) with states: submitted, working, input-required, completed, failed, canceled
 3. **Webhook Push**: Long-running tasks push status updates to registered webhooks (replaces polling)
-4. **Skill Registry**: Each agent registers skills that external agents (FB-Brain) can invoke
+4. **Skill Registry**: Each agent registers skills that external agents (The Brain) can invoke
 
 ### Architecture
 ```go
@@ -171,19 +171,19 @@ type Skill struct {
 ```
 
 ### Agent Evolution
-- **DailyFocusAgent** -> A2A skill: "generate_briefing" (invokable by FB-Brain for on-demand briefings)
-- **ProcurementAgent** -> A2A skill: "analyze_procurement", "place_order" (invokable by FB-Brain with supplier context)
+- **DailyFocusAgent** -> A2A skill: "generate_briefing" (invokable by The Brain for on-demand briefings)
+- **ProcurementAgent** -> A2A skill: "analyze_procurement", "place_order" (invokable by The Brain with supplier context)
 - **SubLiaisonAgent** -> A2A skill: "confirm_sub", "parse_inbound" (invokable by SMS/email gateway)
 - **New: ScheduleAgent** -> A2A skill: "recalculate_schedule", "what_if_analysis"
 
 ### Trade-offs
 - (+) Standard protocol (Linux Foundation governance) for cross-system communication
-- (+) FB-Brain can invoke OS agents via A2A instead of custom webhooks
+- (+) The Brain can invoke OS agents via A2A instead of custom webhooks
 - (+) Enables future marketplace of third-party construction agents
 - (-) A2A v0.3 is still evolving; may require migration effort
 - (-) Adds HTTP endpoint overhead to existing cron-based agents
 
-### Recommendation: BUILD incrementally. Start with Agent Card publication and FB-Brain integration. Keep internal cron triggers alongside A2A endpoints.
+### Recommendation: BUILD incrementally. Start with Agent Card publication and The Brain integration. Keep internal cron triggers alongside A2A endpoints.
 
 ---
 

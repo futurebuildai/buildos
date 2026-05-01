@@ -1,6 +1,6 @@
 # Product Requirements Document
 
-**System:** FutureBuild OS (System of Execution)
+**System:** BuildOS (System of Execution)
 **Pipeline Stage:** 06 - Product Specification
 **Date:** 2026-04-02
 **Status:** COMPLETE
@@ -9,7 +9,7 @@
 
 ## 1. Product Overview
 
-FutureBuild OS is the AI-native operating system for residential general contractors managing 5-50 active projects in the $500K-$5M range (1500-6000 GSF). It covers the full project lifecycle from lead capture through construction completion — replacing the manual coordination of spreadsheets, phone calls, and disconnected tools with a probabilistic pre-construction pipeline, a deterministic physics engine, autonomous AI agents, and an offline-first field platform. The system supports multi-currency operations (USD and CAD).
+BuildOS is the AI-native operating system for residential general contractors managing 5-50 active projects in the $500K-$5M range (1500-6000 GSF). It covers the full project lifecycle from lead capture through construction completion — replacing the manual coordination of spreadsheets, phone calls, and disconnected tools with a probabilistic pre-construction pipeline, a deterministic physics engine, autonomous AI agents, and an offline-first field platform. The system supports multi-currency operations (USD and CAD).
 
 ### Vision Statement
 
@@ -235,7 +235,7 @@ Then a feed card is sent to Tom with: item name, total cost formatted from BIGIN
 **Acceptance Criteria:**
 
 ```
-Given Tom logs in via FB-Brain JWT and lands on the Portfolio Dashboard
+Given Tom logs in via The Brain JWT and lands on the Portfolio Dashboard
 When fb-financials-view loads
 Then fb-budget-summary displays: Total Estimated, Total Committed, Total Actual, and Variance
   And all monetary values are rendered from BIGINT cents (int64) divided by 100 for display
@@ -612,10 +612,10 @@ And all monetary calculations use integer arithmetic with BIGINT cents
 
 | Requirement | Specification |
 |-------------|---------------|
-| NFR-4.1: Authentication | JWT validation via FB-Brain JWKS endpoint — Clerk dependency fully removed |
+| NFR-4.1: Authentication | JWT validation via The Brain JWKS endpoint — Clerk dependency fully removed |
 | NFR-4.2: JWT Validation Latency | <10ms (JWKS cached locally with refresh on key rotation) |
 | NFR-4.3: Token Claims | Access tokens carry: sub, org_id, role, plan_tier, iat, exp |
-| NFR-4.4: A2A Webhook Verification | JWS signature verification on all inbound A2A webhooks from FB-Brain |
+| NFR-4.4: A2A Webhook Verification | JWS signature verification on all inbound A2A webhooks from The Brain |
 | NFR-4.5: SQL Injection Prevention | All queries via pgx parameterized queries — no string concatenation |
 | NFR-4.6: RBAC | Role-based access: owner, admin, superintendent, field_worker |
 
@@ -664,7 +664,7 @@ Every P0 "Must Have" capability from SCOPE_DEFINITION.md is traced to specific u
 | /api/v1/org/financials endpoint | US-3.1 | NFR-1.8, NFR-3.1 |
 | fb-org-shell + fb-financials-view | US-3.1, US-3.2 | NFR-1.7, NFR-1.11, NFR-1.12 |
 | Flutter scaffold + Drift local DB | US-4.1, US-4.3 | NFR-5.1, NFR-1.10 |
-| JWT validation from FB-Brain | US-3.1 (login step) | NFR-4.1, NFR-4.2, NFR-4.3 |
+| JWT validation from The Brain | US-3.1 (login step) | NFR-4.1, NFR-4.2, NFR-4.3 |
 | CI/CD with BIGINT linter + CPM gate | — | NFR-3.1, NFR-1.1, NFR-3.4 |
 
 ### MVP Feature Traceability
@@ -720,7 +720,7 @@ All monetary fields in the system follow the **Composite Currency Pattern** — 
 
 | Dependency | Required For | Risk | Mitigation |
 |-----------|-------------|------|-----------|
-| FB-Brain JWT Issuer | Walking Skeleton auth | Cross-team coordination | Define JWKS contract early; use mock JWKS for parallel development |
+| The Brain JWT Issuer | Walking Skeleton auth | Cross-team coordination | Define JWKS contract early; use mock JWKS for parallel development |
 | Tomorrow.io API Key | M3: SWIM v2 | API availability, rate limits | Free tier (500 calls/day); fallback to legacy static multipliers |
 | Firebase Project | M4: Flutter push | Push notification delivery | FCM is mature and reliable; offline outbox as backup |
 | Legal Review | M5: Tribunal Level 1 | Autonomous ordering liability | Level 1 is recommend-only — no autonomous action |

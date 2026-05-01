@@ -11,8 +11,8 @@ import (
 	"gonum.org/v1/gonum/graph/simple"
 	"gonum.org/v1/gonum/graph/topo"
 
-	"github.com/futurebuild/futurebuild-os/internal/models"
-	"github.com/futurebuild/futurebuild-os/internal/models/types"
+	"github.com/futurebuildai/buildos/internal/models"
+	"github.com/futurebuildai/buildos/internal/models/types"
 )
 
 // ErrInvalidTaskDuration indicates a task has no valid duration for CPM calculation.

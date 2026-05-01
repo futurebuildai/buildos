@@ -2,7 +2,7 @@
 
 This file is the single source of truth for the project's technology choices. All workflows and skills reference this file instead of hardcoding tech stacks.
 
-**System:** FutureBuild OS (System of Execution)
+**System:** BuildOS (System of Execution)
 
 ---
 
@@ -34,7 +34,7 @@ This file is the single source of truth for the project's technology choices. Al
 
 - **Style:** REST
 - **Spec Format:** OpenAPI 3.1
-- **Auth Model:** Centralized JWT — delegates all identity and authentication to FB-Brain (OIDC Provider). FB-OS validates JWTs issued by FB-Brain and enforces local authorization (roles, permissions, resource-level access). FB-OS never stores credentials or manages login flows.
+- **Auth Model:** Centralized JWT — delegates all identity and authentication to The Brain (OIDC Provider). BuildOS validates JWTs issued by The Brain and enforces local authorization (roles, permissions, resource-level access). BuildOS never stores credentials or manages login flows.
 
 ## Infrastructure & Deployment
 
@@ -83,8 +83,8 @@ This file is the single source of truth for the project's technology choices. Al
   - **TypeScript ESLint Rule:** Custom rule flags `number` type annotations on properties matching monetary name patterns unless the property name ends in `Cents`. Properties ending in `Cents` must have a sibling property ending in `CurrencyCode`. Enforced via `eslint-plugin-fb` in frontend lint config.
 - **Numerical Typography:** JetBrains Mono for all numerical data fields in the UI.
 - **AI-First Principle:** Anthropic Claude is the default AI provider across the ecosystem. Do not introduce Google Vertex, OpenAI, or other commercial LLM providers unless Anthropic cannot serve the use case. Open-source models are acceptable for edge cases only.
-- **Identity Delegation:** FB-OS is a relying party. All authentication flows (login, signup, password reset, MFA) are handled by FB-Brain. FB-OS receives JWTs, validates them against FB-Brain's JWKS endpoint, and enforces local RBAC.
-- **Polyrepo:** FB-Brain and FB-OS are separate repositories with separate deployment lifecycles.
+- **Identity Delegation:** BuildOS is a relying party. All authentication flows (login, signup, password reset, MFA) are handled by The Brain. BuildOS receives JWTs, validates them against The Brain's JWKS endpoint, and enforces local RBAC.
+- **Polyrepo:** The Brain and BuildOS are separate repositories with separate deployment lifecycles.
 - **pgvector:** Used for AI-powered features (semantic search, document similarity, recommendation). Vectors stored alongside relational data in the same PostgreSQL instance.
 - **Asynq:** Redis-backed task queue for background jobs (report generation, notification delivery, AI inference pipelines). No separate message broker needed.
 - **Flutter Scope:** Mobile app covers field-only surfaces. All administrative, planning, and management workflows are web-only.

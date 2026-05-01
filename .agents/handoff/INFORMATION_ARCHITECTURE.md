@@ -1,7 +1,7 @@
 # Information Architecture
 
 **Document ID:** AG-05-IA
-**System:** FutureBuild OS (System of Execution)
+**System:** BuildOS (System of Execution)
 **Created:** 2026-04-02
 **Pipeline Stage:** 05 - Design System
 **Status:** COMPLETE
@@ -10,11 +10,11 @@
 
 ## 1. Workspace Model
 
-FutureBuild OS organizes all user experience into **three workspaces**, each optimized for a distinct user archetype and interaction pattern.
+BuildOS organizes all user experience into **three workspaces**, each optimized for a distinct user archetype and interaction pattern.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                        FutureBuild OS                                   │
+│                        BuildOS                                   │
 ├─────────────────┬─────────────────────────┬─────────────────────────────┤
 │  PORTFOLIO      │  AGENT COMMAND CENTER   │  FIELD PORTAL               │
 │  Dashboard      │  (Chat + Feed Cards)    │  (Flutter Mobile)           │
@@ -51,7 +51,7 @@ The left sidebar persists across all web workspaces. It collapses to a hamburger
 
 ```
 ┌─────────────────────┐
-│ ⬡ FutureBuild OS    │  ← Logo + workspace switcher
+│ ⬡ BuildOS    │  ← Logo + workspace switcher
 ├─────────────────────┤
 │                     │
 │ 📊 Portfolio        │  ← Workspace: Portfolio Dashboard
@@ -136,7 +136,7 @@ Within each workspace, secondary navigation uses:
 
 | Screen | Route | Components |
 |--------|-------|------------|
-| **Login** | `/login` | FB-Brain OIDC redirect (no local login form) |
+| **Login** | `/login` | The Brain OIDC redirect (no local login form) |
 | **Settings** | `/settings` | Org config, Brain integration status, notification preferences |
 | **Profile** | `/profile` | User info, role display, notification settings |
 | **Not Found** | `/404` | Empty state with navigation back |
@@ -191,7 +191,7 @@ Within each workspace, secondary navigation uses:
 
 ```
 /                                    → Redirect to /portfolio/financials (default)
-/login                               → FB-Brain OIDC redirect
+/login                               → The Brain OIDC redirect
 
 # Portfolio Workspace
 /portfolio                           → Redirect to /portfolio/financials
@@ -214,7 +214,7 @@ Within each workspace, secondary navigation uses:
 
 # Settings
 /settings                            → Organization settings
-/settings/brain                      → FB-Brain integration config
+/settings/brain                      → The Brain integration config
 /settings/notifications              → Notification preferences
 /profile                             → User profile
 ```
@@ -370,7 +370,7 @@ Level 4: Action Modal (modify state)
 └───────────────────────┼──────────┘
                         │ HTTPS
 ┌───────────────────────▼──────────┐
-│         FB-OS Server              │
+│         BuildOS Server              │
 │  Validates idempotency_key        │
 │  Returns missed notifications     │
 │  via /api/v1/field/sync           │

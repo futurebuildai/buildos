@@ -1,4 +1,4 @@
-# Vision Brief: FutureBuild OS 2030-Ready Revamp
+# Vision Brief: BuildOS 2030-Ready Revamp
 
 **Date:** 2026-04-02
 **Pipeline Stage:** 00 - Vision Intake
@@ -8,7 +8,7 @@
 
 ## 1. Vision Statement
 
-Revamp FutureBuild OS into a 2030-ready AI-Native Operating System for residential construction. This is NOT a greenfield build -- it is the evolution of a working, production-deployed system with 82 database migrations, 18 completed roadmap phases, and battle-tested physics engine code. The revamp extracts the deterministic CPM-res1.0 physics engine and SWIM weather model from the legacy Go codebase, builds an Industrial Dark dashboard using Lit/Vite for Organization-level management (Corporate Financials, HR, Fleet), and replaces manual admin bandwidth with autonomous agents for procurement and site management.
+Revamp BuildOS into a 2030-ready AI-Native Operating System for residential construction. This is NOT a greenfield build -- it is the evolution of a working, production-deployed system with 82 database migrations, 18 completed roadmap phases, and battle-tested physics engine code. The revamp extracts the deterministic CPM-res1.0 physics engine and SWIM weather model from the legacy Go codebase, builds an Industrial Dark dashboard using Lit/Vite for Organization-level management (Corporate Financials, HR, Fleet), and replaces manual admin bandwidth with autonomous agents for procurement and site management.
 
 ---
 
@@ -136,9 +136,9 @@ From `reference-vault/futurebuild-os/internal/service/interfaces.go`:
 
 ### 2.10 Cross-System Context
 
-From `reference-vault/FB-Brain/CLAUDE.md`:
+From `reference-vault/The Brain/CLAUDE.md`:
 
-FB-Brain is an upstream orchestration platform that sends webhooks to FB-OS. Separate Go + PostgreSQL system with MaterialsFlow and LaborFlow orchestrators. FB-OS receives JWTs issued by FB-Brain for authentication. A2A protocol bridges the two systems.
+The Brain is an upstream orchestration platform that sends webhooks to BuildOS. Separate Go + PostgreSQL system with MaterialsFlow and LaborFlow orchestrators. BuildOS receives JWTs issued by The Brain for authentication. A2A protocol bridges the two systems.
 
 ---
 
@@ -165,7 +165,7 @@ FB-Brain is an upstream orchestration platform that sends webhooks to FB-OS. Sep
 6. **Corporate modules** -- Expand CorporateFinancialsServicer, EmployeeServicer, FleetServicer into full modules
 7. **Tribunal** -- Evolve from consensus voting to decision engine for autonomous procurement execution
 8. **Mobile** -- Flutter offline-first field app with background sync
-9. **Auth** -- Centralized JWT delegation to FB-Brain (already in TECH_STACK.md)
+9. **Auth** -- Centralized JWT delegation to The Brain (already in TECH_STACK.md)
 
 ---
 
@@ -193,7 +193,7 @@ From `.agents/TECH_STACK.md`:
 | Mobile | Flutter (field surfaces only, offline-first) |
 | Database | PostgreSQL 16+ with pgvector |
 | Queue | Redis 7 via Asynq |
-| Auth | Centralized JWT delegation to FB-Brain |
+| Auth | Centralized JWT delegation to The Brain |
 | CI/CD | GitHub Actions, Docker, Railway |
 | Observability | OpenTelemetry, Prometheus, Sentry |
 

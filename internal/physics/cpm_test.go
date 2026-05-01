@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/futurebuild/futurebuild-os/internal/models"
-	"github.com/futurebuild/futurebuild-os/internal/models/types"
+	"github.com/futurebuildai/buildos/internal/models"
+	"github.com/futurebuildai/buildos/internal/models/types"
 )
 
 // Helper to create a ProjectTask with minimal fields

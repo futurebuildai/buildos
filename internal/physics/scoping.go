@@ -3,8 +3,8 @@ package physics
 import (
 	"strings"
 
-	"github.com/futurebuild/futurebuild-os/internal/models"
-	"github.com/futurebuild/futurebuild-os/internal/models/types"
+	"github.com/futurebuildai/buildos/internal/models"
+	"github.com/futurebuildai/buildos/internal/models/types"
 )
 
 // ProjectScopeContext captures the attributes that drive scope-adaptive WBS generation.

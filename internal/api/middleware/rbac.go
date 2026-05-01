@@ -4,7 +4,7 @@ import (
 	"net/http"
 )
 
-// Role constants matching FB-Brain OIDC role claim values.
+// Role constants matching The Brain OIDC role claim values.
 const (
 	RoleOwner          = "owner"
 	RoleAdmin          = "admin"

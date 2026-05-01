@@ -12,11 +12,14 @@ import (
 	"sync"
 	"time"
 
+	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
+
+	"github.com/futurebuildai/buildos/internal/brain"
 )
 
-// Claims represents the JWT claims issued by FB-Brain OIDC Provider.
+// Claims represents the JWT claims issued by The Brain OIDC Provider.
 type Claims struct {
 	Sub      string `json:"sub"`
 	OrgID    string `json:"org_id"`
@@ -26,6 +29,13 @@ type Claims struct {
 }
 
 type claimsContextKey struct{}
+
+// ContextWithClaims returns a new context carrying the given Claims.
+// Production middleware uses this; tests in other packages use this to
+// install fake claims without exporting the unexported context key.
+func ContextWithClaims(ctx context.Context, claims Claims) context.Context {
+	return context.WithValue(ctx, claimsContextKey{}, claims)
+}
 
 // ClaimsFromContext extracts the authenticated Claims from the request context.
 func ClaimsFromContext(ctx context.Context) (Claims, bool) {
@@ -43,7 +53,7 @@ func MustClaimsFromContext(ctx context.Context) Claims {
 	return c
 }
 
-// JWKSProvider fetches and caches the JSON Web Key Set from FB-Brain.
+// JWKSProvider fetches and caches the JSON Web Key Set from The Brain.
 type JWKSProvider struct {
 	jwksURL    string
 	httpClient *http.Client
@@ -65,6 +75,33 @@ func NewJWKSProvider(jwksURL string, logger *slog.Logger) *JWKSProvider {
 		logger:   logger,
 		cacheTTL: 5 * time.Minute,
 	}
+}
+
+// CacheStatus reports on the JWKS provider's cache state for the
+// readiness probe. Two values:
+//
+//	keyCount: how many keys we currently hold (0 means we've never
+//	          successfully fetched, or the upstream returned an
+//	          empty set).
+//	age:      how long since the cache was last successfully filled.
+//	          time.Duration(0) when keyCount == 0 (never fetched).
+//
+// The probe treats keyCount == 0 OR age > 2*cacheTTL as unhealthy:
+// we're either booting cold or have lost the upstream long enough
+// that the cached keys are likely past Brain's rotation horizon.
+func (p *JWKSProvider) CacheStatus() (keyCount int, age time.Duration) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.keySet == nil {
+		return 0, 0
+	}
+	return len(p.keySet.Keys), time.Since(p.fetchedAt)
+}
+
+// CacheTTL returns the configured refresh interval. Used by the
+// readiness probe to compute its "stale" threshold.
+func (p *JWKSProvider) CacheTTL() time.Duration {
+	return p.cacheTTL
 }
 
 // GetKeySet returns the cached JWKS, refreshing if stale.
@@ -125,19 +162,24 @@ func (p *JWKSProvider) refresh(ctx context.Context) (*jose.JSONWebKeySet, error)
 	return p.keySet, nil
 }
 
-// Auth creates middleware that validates JWT Bearer tokens from FB-Brain.
-func Auth(jwks *JWKSProvider, issuerURL string, devBypass bool, logger *slog.Logger) func(http.Handler) http.Handler {
+// Auth creates middleware that validates JWT Bearer tokens from The Brain.
+//
+// authMode controls the path:
+//   - ""        production: validate JWT against jwks/issuerURL
+//   - "header"  dev/CI: read claims from X-Dev-Auth: <sub>,<org_id>,<role>[,<plan_tier>]
+//
+// For staging or sales demos, leave authMode empty and point BRAIN_JWKS_URL/
+// BRAIN_ISSUER_URL at the cmd/dev-idp mini-IdP — no middleware change needed.
+func Auth(jwks *JWKSProvider, issuerURL, authMode string, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Dev bypass: inject synthetic claims without JWT validation
-			if devBypass {
-				claims := Claims{
-					Sub:      "dev-user-00000000-0000-0000-0000-000000000000",
-					OrgID:    "dev-org-00000000-0000-0000-0000-000000000000",
-					Role:     "owner",
-					PlanTier: "enterprise",
+			if authMode == "header" {
+				claims, err := claimsFromDevHeader(r.Header.Get("X-Dev-Auth"))
+				if err != nil {
+					writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "X-Dev-Auth invalid: "+err.Error())
+					return
 				}
-				ctx := context.WithValue(r.Context(), claimsContextKey{}, claims)
+				ctx := ContextWithClaims(r.Context(), claims)
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
@@ -200,12 +242,31 @@ func Auth(jwks *JWKSProvider, issuerURL string, devBypass bool, logger *slog.Log
 				return
 			}
 
-			// Inject claims into context
-			ctx := context.WithValue(r.Context(), claimsContextKey{}, claims)
+			// Inject claims AND raw token into context. Service-layer
+			// code that calls Brain reads the token from ctx via
+			// brain.TokenFromContext — no need to plumb it through every
+			// service-method signature.
+			ctx := ContextWithClaims(r.Context(), claims)
+			ctx = brain.ContextWithToken(ctx, rawToken)
+			// Propagate chi's request ID into the brain ctx so
+			// outbound calls stamp X-Request-ID for end-to-end
+			// correlation. Empty (e.g. RequestID middleware not
+			// mounted) just disables the header — no harm.
+			if reqID := chimw.GetReqID(r.Context()); reqID != "" {
+				ctx = brain.ContextWithRequestID(ctx, reqID)
+			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
+
+// claimsFromDevHeader is defined in auth_dev.go (build !prod) and
+// auth_prod.go (build prod). The non-prod implementation parses an
+// X-Dev-Auth header into Claims; the prod stub always returns an
+// error so DEV_AUTH_MODE=header is a no-op in prod binaries.
+//
+// This is the D8 build-tag hardening: prod images cannot reactivate
+// the dev-auth bypass via env flip. See ADR-002.
 
 // verifyToken attempts to verify the token against any key in the JWKS.
 func verifyToken(tok *jwt.JSONWebToken, keySet *jose.JSONWebKeySet, claims *Claims) error {

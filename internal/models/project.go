@@ -3,7 +3,7 @@ package models
 import (
 	"time"
 
-	"github.com/futurebuild/futurebuild-os/internal/models/types"
+	"github.com/futurebuildai/buildos/internal/models/types"
 	"github.com/google/uuid"
 )
 

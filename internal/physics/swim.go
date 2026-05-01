@@ -4,8 +4,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/futurebuild/futurebuild-os/internal/models"
-	"github.com/futurebuild/futurebuild-os/internal/models/types"
+	"github.com/futurebuildai/buildos/internal/models"
+	"github.com/futurebuildai/buildos/internal/models/types"
 )
 
 // ApplyWeatherAdjustment applies the SWIM weather model to a task's duration.
