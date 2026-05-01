@@ -1,4 +1,4 @@
-.PHONY: build build-server build-worker build-migrate build-dev-idp dev-idp build-prod test test-integration test-prod lint lint-migrations lint-migrations-test migrate migrate-down db-up db-down audit bench-physics docker-build docker-run clean
+.PHONY: build build-server build-worker build-migrate build-dev-idp dev-idp build-prod build-fork-init fork-init test test-integration test-prod lint lint-migrations lint-migrations-test migrate migrate-down db-up db-down audit bench-physics docker-build docker-run clean
 
 # Default DATABASE_URL for local dev (docker-compose db on port 5433)
 DATABASE_URL ?= postgres://fb_user:fb_pass@localhost:5433/futurebuild_os?sslmode=disable
@@ -18,6 +18,22 @@ build-migrate:
 # Mock OIDC issuer for staging and sales demos. NOT for production.
 build-dev-idp:
 	go build -o bin/dev-idp ./cmd/dev-idp
+
+# Fork lifecycle bootstrap tool — generates a fresh A2A signing
+# keypair + JWKS for a new customer fork. Run once per fork during
+# initial provisioning.
+build-fork-init:
+	go build -o bin/buildos-fork-init ./cmd/buildos-fork-init
+
+# Convenience wrapper. Required: OUT=<dir>; optional: KID=<kid>,
+# ORG_ID=<uuid>. Example:
+#   make fork-init OUT=./forks/acme/secrets KID=acme-2026-q2
+fork-init: build-fork-init
+	@if [ -z "$(OUT)" ]; then echo "make fork-init: OUT=<dir> is required"; exit 64; fi
+	./bin/buildos-fork-init \
+		--out "$(OUT)" \
+		$(if $(KID),--kid "$(KID)") \
+		$(if $(ORG_ID),--org-id "$(ORG_ID)")
 
 # Run the dev-idp on :8083. Point BuildOS at it with:
 #   BRAIN_JWKS_URL=http://localhost:8083/jwks BRAIN_ISSUER_URL=http://localhost:8083
