@@ -158,6 +158,7 @@ func run(logger *slog.Logger) error {
 		BillingClient:      brainClient.Billing,
 		AgentsService:      agentsService,
 		SentryEnabled:      sentryOK,
+		RateLimiter:        middleware.NewIPRateLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst),
 	})
 
 	srv := &http.Server{

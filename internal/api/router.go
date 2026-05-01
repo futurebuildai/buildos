@@ -64,6 +64,7 @@ type RouterConfig struct {
 	AgentsService      AgentsServicer    // optional — when nil, /agents/* routes don't mount
 	Metrics            MetricsRecorder   // optional — when nil, /metrics doesn't mount and HTTP middleware is skipped
 	SentryEnabled      bool              // when true, the Sentry HTTP middleware is mounted to capture panics
+	RateLimiter        *mw.IPRateLimiter // optional — when nil, no rate limiting is applied
 }
 
 // NewRouter creates the Chi router with all route groups and middleware.
@@ -79,6 +80,13 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	//   - Logger emits the request line, with request_id already set.
 	r.Use(chimw.RequestID)
 	r.Use(chimw.RealIP)
+	// Rate limiter mounts EARLY in the stack so rejected requests
+	// don't pay the cost of downstream middleware (auth, metrics,
+	// audit). Mounted after RealIP so the per-IP bucket sees the
+	// real client IP, not the LB's.
+	if cfg.RateLimiter != nil {
+		r.Use(cfg.RateLimiter.Middleware)
+	}
 	// Sentry middleware sits BEFORE chi.Recoverer so it sees the
 	// panic before Recoverer's defer swallows it. The SDK's Repanic
 	// option re-throws the panic on its way back up, then Recoverer

@@ -50,6 +50,12 @@ type Config struct {
 	SentryRelease     string  // build SHA or version tag; empty uses Sentry's auto-release
 	SentryTracesRate  float64 // 0.0 disables performance tracing; defaults to 0.0
 
+	// Rate limiting — per-IP token bucket. Stopgap until the unified
+	// per-tenant credit system (Maestro + Brain coordinated) lands.
+	// Defaults are deliberately permissive: 50 rps steady, 100 burst.
+	RateLimitRPS   int // requests per second per IP; 0 = use default
+	RateLimitBurst int // burst capacity per IP; 0 = use default
+
 	// Physics Engine
 	Physics PhysicsConfig
 }
@@ -101,6 +107,9 @@ func Load() (*Config, error) {
 		SentryEnvironment: getEnvStr("SENTRY_ENVIRONMENT", "dev"),
 		SentryRelease:     os.Getenv("SENTRY_RELEASE"),
 		SentryTracesRate:  getEnvFloat("SENTRY_TRACES_SAMPLE_RATE", 0.0),
+
+		RateLimitRPS:   getEnvInt("RATE_LIMIT_RPS", 0),   // 0 → middleware default
+		RateLimitBurst: getEnvInt("RATE_LIMIT_BURST", 0), // 0 → middleware default
 
 		Physics: PhysicsConfig{
 			StandardHouseSizeSF:    getEnvFloat("PHYSICS_STANDARD_HOUSE_SF", 2000.0),
