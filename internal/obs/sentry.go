@@ -5,10 +5,13 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/getsentry/sentry-go"
 	sentryhttp "github.com/getsentry/sentry-go/http"
+
+	"github.com/futurebuildai/buildos/internal/pii"
 )
 
 // SentryConfig is the subset of operator-controlled Sentry parameters
@@ -53,6 +56,18 @@ func InitSentry(cfg SentryConfig, logger *slog.Logger) (flush func(), initialize
 		// error message string.
 		AttachStacktrace: true,
 		// EnableTracing is implicit when TracesSampleRate > 0.
+
+		// BeforeSend scrubs known PII before any event leaves the
+		// process for Sentry's ingest endpoint. We default to a
+		// Restricted threshold: redact personal data (names, emails,
+		// phone, GPS, OIDC subject) but keep business-sensitive
+		// fields (vendor names, amounts, project names) so engineering
+		// has enough context to debug. Customer forks subject to
+		// stricter agreements can crank the threshold by editing
+		// this file in their fork.
+		BeforeSend: func(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
+			return scrubSentryEvent(event, pii.Restricted)
+		},
 	})
 	if err != nil {
 		logger.Error("sentry: init failed; continuing without",
@@ -149,6 +164,72 @@ func CaptureMessage(ctx context.Context, level sentry.Level, message string, tag
 		}
 		hub.CaptureMessage(message)
 	})
+}
+
+// scrubSentryEvent walks the major PII-bearing fields on a Sentry
+// event and applies pii.MaskString / pii.ScrubMap at the supplied
+// threshold. Hooked into BeforeSend so EVERY event — exception,
+// message, transaction — passes through. Unknown future fields are
+// safe-by-default since the Sentry Event struct's nested maps go
+// through ScrubMap which knows the BuildOS field-name catalog.
+func scrubSentryEvent(event *sentry.Event, threshold pii.Class) *sentry.Event {
+	if event == nil {
+		return nil
+	}
+	// Tags: scrub the values whose key matches a known PII pattern.
+	// (Tag values are always strings.)
+	if event.Tags != nil {
+		out := make(map[string]string, len(event.Tags))
+		for k, v := range event.Tags {
+			cls := pii.ClassFor(k)
+			if cls.IsAtLeast(threshold) {
+				out[k] = pii.MaskString(v, cls)
+			} else {
+				out[k] = v
+			}
+		}
+		event.Tags = out
+	}
+	// Contexts: each context bag is a map[string]any; scrub each
+	// to apply the field-name catalog. Sentry's "extra" field of
+	// older SDK versions has been folded into Contexts in v0.x —
+	// this single-pass walk covers both the pre-v0.20 and current
+	// shapes.
+	if event.Contexts != nil {
+		for name, ctxMap := range event.Contexts {
+			event.Contexts[name] = sentry.Context(pii.ScrubMap(ctxMap, threshold))
+		}
+	}
+	// User: the Sentry SDK's User struct has named PII fields. We
+	// keep the ID intact (used for the "users impacted" UI) but
+	// redact email + IP + username.
+	if event.User.Email != "" {
+		event.User.Email = pii.MaskString(event.User.Email, pii.Restricted)
+	}
+	if event.User.IPAddress != "" {
+		event.User.IPAddress = pii.MaskString(event.User.IPAddress, pii.Restricted)
+	}
+	if event.User.Username != "" {
+		event.User.Username = pii.MaskString(event.User.Username, pii.Restricted)
+	}
+	// Request payload: query params + cookies + headers + data. The
+	// Request struct has typed fields; cookies and a few headers
+	// (Authorization) are always sensitive. Strip Authorization
+	// outright; scrub the rest by name.
+	if event.Request != nil {
+		event.Request.Cookies = ""
+		if event.Request.Headers != nil {
+			for k := range event.Request.Headers {
+				if strings.EqualFold(k, "Authorization") || strings.EqualFold(k, "Cookie") {
+					event.Request.Headers[k] = "[REDACTED]"
+				}
+			}
+		}
+		if event.Request.Data != "" {
+			event.Request.Data = string(pii.ScrubJSON([]byte(event.Request.Data), threshold))
+		}
+	}
+	return event
 }
 
 // CaptureUnless is a convenience wrapper that only reports `err` when
