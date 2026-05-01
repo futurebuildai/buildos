@@ -22,7 +22,9 @@ import (
 func newFeedSvcForValidationTests() *FeedService {
 	// nil riverClient is fine for validation-only tests — the
 	// outbound enqueue branch is gated on a non-nil client.
-	return NewFeedService(nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	// nil audit is also fine — NewFeedService substitutes a no-op
+	// recorder when audit is nil.
+	return NewFeedService(nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil)
 }
 
 func TestFeedService_ListFeed_RejectsMissingOrg(t *testing.T) {
@@ -86,11 +88,11 @@ func TestFeedService_ListFeed_RejectsBadPriority(t *testing.T) {
 
 func TestFeedService_DismissCard_RejectsZeroIDs(t *testing.T) {
 	svc := newFeedSvcForValidationTests()
-	_, err := svc.DismissCard(context.Background(), uuid.Nil, uuid.New())
+	_, err := svc.DismissCard(context.Background(), uuid.Nil, "sub-1", uuid.New())
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("nil orgID: err = %v, want ErrInvalidInput", err)
 	}
-	_, err = svc.DismissCard(context.Background(), uuid.New(), uuid.Nil)
+	_, err = svc.DismissCard(context.Background(), uuid.New(), "sub-1", uuid.Nil)
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("nil cardID: err = %v, want ErrInvalidInput", err)
 	}
@@ -110,7 +112,7 @@ func TestFeedService_ActionCard_RejectsBadInput(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := svc.ActionCard(context.Background(), c.org, c.card, c.in)
+			_, err := svc.ActionCard(context.Background(), c.org, "sub-1", c.card, c.in)
 			if !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("err = %v, want ErrInvalidInput", err)
 			}
@@ -123,7 +125,7 @@ func TestFeedService_ActionCard_RejectsOversizedPayload(t *testing.T) {
 	// 9 KiB JSON string — over the 8 KiB cap.
 	big := bytes.Repeat([]byte("a"), MaxFeedActionPayloadBytes+1024)
 	payload, _ := json.Marshal(string(big))
-	_, err := svc.ActionCard(context.Background(), uuid.New(), uuid.New(), FeedActionInput{
+	_, err := svc.ActionCard(context.Background(), uuid.New(), "sub-1", uuid.New(), FeedActionInput{
 		ActionType: "approve",
 		Payload:    payload,
 	})

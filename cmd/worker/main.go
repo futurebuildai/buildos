@@ -66,8 +66,14 @@ func run(logger *slog.Logger) error {
 	notifStore := store.NewNotificationsStore()
 	notifService := service.NewNotificationDeliveryService(pool, service.NewLoggingSender(logger), notifStore, logger)
 
+	// Worker-side procurement: the daily check runs server-managed
+	// (no human caller), so audit rows would have a NULL user_sub.
+	// We pass a no-op recorder for now — the cron runs every 24h,
+	// already logs its row count, and per-row mutations are bulk
+	// SQL UPDATEs rather than per-item RPC. Once the agent emits
+	// per-item feed cards we'll wire the real audit there.
 	procurementStore := store.NewProcurementStore()
-	procurementService := service.NewProcurementService(pool, procurementStore)
+	procurementService := service.NewProcurementService(pool, procurementStore, service.NewNoopAuditRecorder())
 
 	// Outbound A2A: optional. When A2A_SIGNING_KEY_PATH is unset the
 	// worker registry falls back to a no-op handler that logs and

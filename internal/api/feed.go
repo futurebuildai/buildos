@@ -20,8 +20,8 @@ import (
 // the database pool.
 type FeedServicer interface {
 	ListFeed(ctx context.Context, opts service.FeedListOptions) (service.FeedListResult, error)
-	DismissCard(ctx context.Context, callerOrgID, cardID uuid.UUID) (models.FeedCard, error)
-	ActionCard(ctx context.Context, callerOrgID, cardID uuid.UUID, in service.FeedActionInput) (models.FeedCard, error)
+	DismissCard(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, cardID uuid.UUID) (models.FeedCard, error)
+	ActionCard(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, cardID uuid.UUID, in service.FeedActionInput) (models.FeedCard, error)
 }
 
 // FeedHandler handles /api/v1/feed/* endpoints.
@@ -91,9 +91,8 @@ type feedActionRequest struct {
 }
 
 // Action processes a feed card action — transitions status to
-// 'actioned' and records the action_type/payload in the audit log.
-// Side-effect dispatch (e.g., approve_quote → outbound A2A) is wired
-// in a later sprint.
+// 'actioned', enqueues an outbound A2A event, and records the action
+// in audit_log.
 //
 // POST /api/v1/feed/{cardID}/action
 func (h *FeedHandler) Action(w http.ResponseWriter, r *http.Request) {
@@ -101,6 +100,7 @@ func (h *FeedHandler) Action(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	claims := mw.MustClaimsFromContext(r.Context())
 	callerOrg, ok := callerOrgIDFromClaims(w, r)
 	if !ok {
 		return
@@ -112,7 +112,7 @@ func (h *FeedHandler) Action(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	card, err := h.svc.ActionCard(r.Context(), callerOrg, cardID, service.FeedActionInput{
+	card, err := h.svc.ActionCard(r.Context(), callerOrg, claims.Sub, cardID, service.FeedActionInput{
 		ActionType: body.ActionType,
 		Payload:    body.Payload,
 	})
@@ -131,12 +131,13 @@ func (h *FeedHandler) Dismiss(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	claims := mw.MustClaimsFromContext(r.Context())
 	callerOrg, ok := callerOrgIDFromClaims(w, r)
 	if !ok {
 		return
 	}
 
-	card, err := h.svc.DismissCard(r.Context(), callerOrg, cardID)
+	card, err := h.svc.DismissCard(r.Context(), callerOrg, claims.Sub, cardID)
 	if err != nil {
 		h.writeServiceError(w, r, err)
 		return

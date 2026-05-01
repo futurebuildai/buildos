@@ -67,11 +67,16 @@ type UpdateProcurementItemInput struct {
 type ProcurementService struct {
 	pool  *pgxpool.Pool
 	store *store.ProcurementStore
+	audit AuditRecorder
 }
 
 // NewProcurementService creates a service bound to a pool + store.
-func NewProcurementService(pool *pgxpool.Pool, items *store.ProcurementStore) *ProcurementService {
-	return &ProcurementService{pool: pool, store: items}
+// audit may be nil; nil falls back to a no-op recorder.
+func NewProcurementService(pool *pgxpool.Pool, items *store.ProcurementStore, audit AuditRecorder) *ProcurementService {
+	if audit == nil {
+		audit = NewNoopAuditRecorder()
+	}
+	return &ProcurementService{pool: pool, store: items, audit: audit}
 }
 
 // ListProcurement returns all items on a project visible to the caller's
@@ -118,7 +123,9 @@ func (s *ProcurementService) ListProcurement(ctx context.Context, projectID, cal
 //   - LeadTimeDays >= 0, WeatherBufferDays >= 0.
 //   - Currency code in the supported set (USD/CAD).
 //   - ProjectID belongs to callerOrgID (cross-org isolation).
-func (s *ProcurementService) CreateProcurementItem(ctx context.Context, callerOrgID uuid.UUID, in CreateProcurementItemInput) (models.ProcurementItem, error) {
+//
+// callerUserSub is recorded on the audit row.
+func (s *ProcurementService) CreateProcurementItem(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, in CreateProcurementItemInput) (models.ProcurementItem, error) {
 	if callerOrgID == uuid.Nil {
 		return models.ProcurementItem{}, fmt.Errorf("%w: caller org_id is required", ErrInvalidInput)
 	}
@@ -162,6 +169,20 @@ func (s *ProcurementService) CreateProcurementItem(ctx context.Context, callerOr
 			return err
 		}
 		item = got
+		s.audit.Record(ctx, tx, AuditEntry{
+			OrgID:        callerOrgID,
+			UserSub:      callerUserSub,
+			Action:       "procurement.item.created",
+			ResourceType: AuditResourceProcurementItem,
+			ResourceID:   got.ID,
+			After:        marshalAudit(got),
+			Metadata: marshalAudit(map[string]any{
+				"project_id":   in.ProjectID,
+				"wbs_code":     got.WBSCode,
+				"cost_cents":   got.EstimatedCostCents,
+				"currency":     got.EstimatedCostCurrencyCode,
+			}),
+		})
 		return nil
 	})
 	if err != nil {
@@ -182,7 +203,9 @@ func (s *ProcurementService) CreateProcurementItem(ctx context.Context, callerOr
 // We don't enforce a strict status FSM (OK→WARNING→CRITICAL→ORDERED)
 // because the agent overwrites time-based statuses on every tick — a
 // brief stale-state read shouldn't block a human marking ORDERED.
-func (s *ProcurementService) UpdateProcurementItem(ctx context.Context, callerOrgID uuid.UUID, in UpdateProcurementItemInput) (models.ProcurementItem, error) {
+//
+// callerUserSub is recorded on the audit row.
+func (s *ProcurementService) UpdateProcurementItem(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, in UpdateProcurementItemInput) (models.ProcurementItem, error) {
 	if callerOrgID == uuid.Nil {
 		return models.ProcurementItem{}, fmt.Errorf("%w: caller org_id is required", ErrInvalidInput)
 	}
@@ -220,6 +243,19 @@ func (s *ProcurementService) UpdateProcurementItem(ctx context.Context, callerOr
 			return err
 		}
 		item = got
+		s.audit.Record(ctx, tx, AuditEntry{
+			OrgID:        callerOrgID,
+			UserSub:      callerUserSub,
+			Action:       "procurement.item.updated",
+			ResourceType: AuditResourceProcurementItem,
+			ResourceID:   got.ID,
+			After:        marshalAudit(got),
+			Metadata: marshalAudit(map[string]any{
+				"status":     in.Status,
+				"po_number":  in.PONumber,
+				"ordered_at": in.OrderedAt,
+			}),
+		})
 		return nil
 	})
 	if err != nil {

@@ -16,7 +16,10 @@ import (
 // panic.
 
 func newProcurementSvcForValidationTests() *ProcurementService {
-	return NewProcurementService(nil, nil)
+	// nil audit falls back to a no-op recorder; nil pool/store
+	// causes any post-validation path to panic, which proves the
+	// validation gates short-circuit before touching either.
+	return NewProcurementService(nil, nil, nil)
 }
 
 func ptrString(s string) *string { return &s }
@@ -58,7 +61,7 @@ func TestProcurementService_Create_RejectsBadInput(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := svc.CreateProcurementItem(context.Background(), c.org, c.in)
+			_, err := svc.CreateProcurementItem(context.Background(), c.org, "sub-1", c.in)
 			if !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("err = %v, want ErrInvalidInput", err)
 			}
@@ -85,7 +88,7 @@ func TestProcurementService_Update_RejectsBadInput(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := svc.UpdateProcurementItem(context.Background(), c.org, c.in)
+			_, err := svc.UpdateProcurementItem(context.Background(), c.org, "sub-1", c.in)
 			if !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("err = %v, want ErrInvalidInput", err)
 			}

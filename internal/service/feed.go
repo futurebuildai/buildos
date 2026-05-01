@@ -70,18 +70,25 @@ type FeedActionInput struct {
 // update — that way a successful HTTP response always corresponds to
 // a queued dispatch (no phantom job, no missed event). When nil, the
 // dispatch step is skipped silently and we fall back to logging only.
+//
+// audit is also optional; nil falls back to a no-op recorder.
 type FeedService struct {
 	pool        *pgxpool.Pool
 	store       *store.FeedCardsStore
 	logger      *slog.Logger
 	riverClient *river.Client[pgx.Tx]
+	audit       AuditRecorder
 }
 
 // NewFeedService creates a service bound to a pool + store + logger.
 // riverClient may be nil; when nil, ActionCard skips outbound A2A
-// emission (dev rigs, fork deployments without Brain).
-func NewFeedService(pool *pgxpool.Pool, cards *store.FeedCardsStore, logger *slog.Logger, riverClient *river.Client[pgx.Tx]) *FeedService {
-	return &FeedService{pool: pool, store: cards, logger: logger, riverClient: riverClient}
+// emission (dev rigs, fork deployments without Brain). audit may be
+// nil; when nil, audit recording is skipped silently.
+func NewFeedService(pool *pgxpool.Pool, cards *store.FeedCardsStore, logger *slog.Logger, riverClient *river.Client[pgx.Tx], audit AuditRecorder) *FeedService {
+	if audit == nil {
+		audit = NewNoopAuditRecorder()
+	}
+	return &FeedService{pool: pool, store: cards, logger: logger, riverClient: riverClient, audit: audit}
 }
 
 // ListFeed returns a page of cards visible to the caller. RBAC
@@ -146,7 +153,10 @@ func (s *FeedService) ListFeed(ctx context.Context, opts FeedListOptions) (FeedL
 // are blocked at the SQL level (id + org_id composite filter); a
 // missing row from a sibling org surfaces as ErrFeedCardNotFound,
 // matching the contract's "no leakage across tenants" rule.
-func (s *FeedService) DismissCard(ctx context.Context, callerOrgID, cardID uuid.UUID) (models.FeedCard, error) {
+//
+// callerUserSub is the JWT `sub` claim — recorded on the audit row.
+// Pass empty for system actors (none today; CRUD is human-driven).
+func (s *FeedService) DismissCard(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, cardID uuid.UUID) (models.FeedCard, error) {
 	if callerOrgID == uuid.Nil || cardID == uuid.Nil {
 		return models.FeedCard{}, fmt.Errorf("%w: org_id and card_id are required", ErrInvalidInput)
 	}
@@ -157,6 +167,15 @@ func (s *FeedService) DismissCard(ctx context.Context, callerOrgID, cardID uuid.
 			return err
 		}
 		out = c
+		s.audit.Record(ctx, tx, AuditEntry{
+			OrgID:        callerOrgID,
+			UserSub:      callerUserSub,
+			Action:       "feed.card.dismissed",
+			ResourceType: AuditResourceFeedCard,
+			ResourceID:   c.ID,
+			After:        marshalAudit(c),
+			Metadata:     marshalAudit(map[string]string{"card_type": c.CardType}),
+		})
 		return nil
 	})
 	if err != nil {
@@ -166,6 +185,21 @@ func (s *FeedService) DismissCard(ctx context.Context, callerOrgID, cardID uuid.
 		return models.FeedCard{}, fmt.Errorf("dismiss card: %w", err)
 	}
 	return out, nil
+}
+
+// marshalAudit returns the JSON encoding of v, or nil on error. Used
+// so audit Record calls don't need an err check at every call site —
+// a marshal failure simply records the row with a NULL state column,
+// which is more informative than dropping the audit row entirely.
+func marshalAudit(v any) []byte {
+	if v == nil {
+		return nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 // FeedCardActionedEventType is the wire-protocol event_type stamped on
@@ -194,7 +228,9 @@ type feedActionedPayload struct {
 // corresponds to a queued dispatch. River's InsertTx writes the job
 // row in the same tx as the status update — either both commit or
 // both roll back, never just one.
-func (s *FeedService) ActionCard(ctx context.Context, callerOrgID, cardID uuid.UUID, in FeedActionInput) (models.FeedCard, error) {
+//
+// callerUserSub is recorded on the audit row.
+func (s *FeedService) ActionCard(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, cardID uuid.UUID, in FeedActionInput) (models.FeedCard, error) {
 	if callerOrgID == uuid.Nil || cardID == uuid.Nil {
 		return models.FeedCard{}, fmt.Errorf("%w: org_id and card_id are required", ErrInvalidInput)
 	}
@@ -236,6 +272,20 @@ func (s *FeedService) ActionCard(ctx context.Context, callerOrgID, cardID uuid.U
 				return fmt.Errorf("enqueue outbound A2A: %w", err)
 			}
 		}
+
+		s.audit.Record(ctx, tx, AuditEntry{
+			OrgID:        callerOrgID,
+			UserSub:      callerUserSub,
+			Action:       "feed.card.actioned",
+			ResourceType: AuditResourceFeedCard,
+			ResourceID:   c.ID,
+			After:        marshalAudit(c),
+			Metadata: marshalAudit(map[string]any{
+				"action_type":   in.ActionType,
+				"action_payload": in.Payload, // already json.RawMessage; preserved as-is
+				"card_type":     c.CardType,
+			}),
+		})
 		return nil
 	})
 	if err != nil {

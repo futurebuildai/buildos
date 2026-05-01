@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	mw "github.com/futurebuildai/buildos/internal/api/middleware"
 	"github.com/futurebuildai/buildos/internal/models"
 	"github.com/futurebuildai/buildos/internal/service"
 )
@@ -18,8 +19,8 @@ import (
 // can be unit-tested without spinning up a database.
 type ProcurementServicer interface {
 	ListProcurement(ctx context.Context, projectID, callerOrgID uuid.UUID, statusFilter []string) ([]models.ProcurementItem, error)
-	CreateProcurementItem(ctx context.Context, callerOrgID uuid.UUID, in service.CreateProcurementItemInput) (models.ProcurementItem, error)
-	UpdateProcurementItem(ctx context.Context, callerOrgID uuid.UUID, in service.UpdateProcurementItemInput) (models.ProcurementItem, error)
+	CreateProcurementItem(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, in service.CreateProcurementItemInput) (models.ProcurementItem, error)
+	UpdateProcurementItem(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, in service.UpdateProcurementItemInput) (models.ProcurementItem, error)
 }
 
 // ProcurementHandler handles /api/v1/projects/{projectID}/procurement/* endpoints.
@@ -89,7 +90,8 @@ func (h *ProcurementHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	item, err := h.svc.CreateProcurementItem(r.Context(), callerOrg, service.CreateProcurementItemInput{
+	claims := mw.MustClaimsFromContext(r.Context())
+	item, err := h.svc.CreateProcurementItem(r.Context(), callerOrg, claims.Sub, service.CreateProcurementItemInput{
 		ProjectID:                 projectID,
 		Name:                      body.Name,
 		WBSCode:                   body.WBSCode,
@@ -141,7 +143,8 @@ func (h *ProcurementHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	item, err := h.svc.UpdateProcurementItem(r.Context(), callerOrg, service.UpdateProcurementItemInput{
+	claims := mw.MustClaimsFromContext(r.Context())
+	item, err := h.svc.UpdateProcurementItem(r.Context(), callerOrg, claims.Sub, service.UpdateProcurementItemInput{
 		ItemID:    itemID,
 		ProjectID: projectID,
 		Status:    body.Status,
