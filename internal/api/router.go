@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	mw "github.com/futurebuildai/buildos/internal/api/middleware"
 	"github.com/futurebuildai/buildos/internal/obs"
@@ -80,6 +81,23 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	//   - Logger emits the request line, with request_id already set.
 	r.Use(chimw.RequestID)
 	r.Use(chimw.RealIP)
+	// OTel HTTP middleware sits HERE — after RequestID/RealIP (so
+	// the span tags include both) but before everything else (so
+	// every downstream middleware's behavior is captured under the
+	// span). The wrapper is a no-op when no global tracer is
+	// configured; dev rigs without OTel pay no cost.
+	r.Use(func(next http.Handler) http.Handler {
+		return otelhttp.NewHandler(next, "buildos.http",
+			otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+				// Default span name is the HTTP method which doesn't
+				// distinguish routes. Postpone naming to chi's
+				// post-routing hook so we get the matched pattern
+				// (e.g. "GET /api/v1/projects/{projectID}") rather
+				// than the raw URL.
+				return r.Method + " " + r.URL.Path
+			}),
+		)
+	})
 	// Rate limiter mounts EARLY in the stack so rejected requests
 	// don't pay the cost of downstream middleware (auth, metrics,
 	// audit). Mounted after RealIP so the per-IP bucket sees the

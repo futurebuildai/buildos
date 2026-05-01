@@ -57,6 +57,16 @@ type Config struct {
 	RateLimitRPS   int // requests per second per IP; 0 = use default
 	RateLimitBurst int // burst capacity per IP; 0 = use default
 
+	// OpenTelemetry tracing. Empty Endpoint disables initialization;
+	// the SDK falls back to a no-op tracer that's safe to call but
+	// emits nothing. The W3C TraceContext propagator is set
+	// regardless so trace_ids still flow over inbound headers and
+	// outbound Brain calls — useful for log correlation even when
+	// not exporting spans.
+	OTelEndpoint    string  // OTLP-HTTP collector URL; "" disables
+	OTelInsecure    bool    // allow plaintext HTTP to collector (loopback / sidecar only)
+	OTelSampleRate  float64 // [0.0, 1.0]; defaults to 0.1 in InitTracing
+
 	// Physics Engine
 	Physics PhysicsConfig
 }
@@ -145,6 +155,10 @@ func LoadWithSource(ctx context.Context, src SecretSource) (*Config, error) {
 
 		RateLimitRPS:   getEnvInt("RATE_LIMIT_RPS", 0),   // 0 → middleware default
 		RateLimitBurst: getEnvInt("RATE_LIMIT_BURST", 0), // 0 → middleware default
+
+		OTelEndpoint:   secret("OTEL_EXPORTER_OTLP_ENDPOINT"),
+		OTelInsecure:   getEnvBool("OTEL_EXPORTER_OTLP_INSECURE", false),
+		OTelSampleRate: getEnvFloat("OTEL_TRACES_SAMPLE_RATE", 0.0),
 
 		Physics: PhysicsConfig{
 			StandardHouseSizeSF:    getEnvFloat("PHYSICS_STANDARD_HOUSE_SF", 2000.0),

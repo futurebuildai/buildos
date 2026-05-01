@@ -34,6 +34,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // MetricsObserver is the consumer-side surface the brain client uses
@@ -78,6 +80,21 @@ func NewClient(cfg Config) (*Client, error) {
 		// override this floor in the more-restrictive direction.
 		cfg.HTTPClient = &http.Client{Timeout: 60 * time.Second}
 	}
+	// Wrap the transport with OTel HTTP instrumentation so every
+	// Brain call gets a child span + propagates W3C `traceparent`.
+	// otelhttp's NewTransport is a no-op when no global tracer is
+	// configured, so dev rigs that haven't enabled OTel pay no cost.
+	if cfg.HTTPClient.Transport == nil {
+		cfg.HTTPClient.Transport = http.DefaultTransport
+	}
+	cfg.HTTPClient.Transport = otelhttp.NewTransport(cfg.HTTPClient.Transport,
+		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+			// Default name is the HTTP method which is too coarse;
+			// "GET /api/billing/usage" is what an operator wants in
+			// Jaeger / Tempo / Honeycomb.
+			return r.Method + " " + r.URL.Path
+		}),
+	)
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
