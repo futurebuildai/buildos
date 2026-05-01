@@ -33,13 +33,13 @@ CREATE TABLE audit_log (
 );
 
 -- Primary lookup: "what happened in this org, recently".
-CREATE INDEX idx_audit_log_org_occurred ON audit_log(org_id, occurred_at DESC);
+CREATE INDEX idx_audit_log_org_occurred ON audit_log(org_id, occurred_at DESC); -- buildos:lock-ok: fresh table created in same migration
 
 -- "Show me the history of this specific resource."
-CREATE INDEX idx_audit_log_resource ON audit_log(resource_type, resource_id, occurred_at DESC);
+CREATE INDEX idx_audit_log_resource ON audit_log(resource_type, resource_id, occurred_at DESC); -- buildos:lock-ok: fresh table created in same migration
 
 -- "What did this user do?"
-CREATE INDEX idx_audit_log_user_sub ON audit_log(user_sub, occurred_at DESC) WHERE user_sub IS NOT NULL;
+CREATE INDEX idx_audit_log_user_sub ON audit_log(user_sub, occurred_at DESC) WHERE user_sub IS NOT NULL; -- buildos:lock-ok: fresh table created in same migration
 
 -- "All approvals in the last 24h." Useful for agentic compliance scans.
-CREATE INDEX idx_audit_log_action ON audit_log(action, occurred_at DESC);
+CREATE INDEX idx_audit_log_action ON audit_log(action, occurred_at DESC); -- buildos:lock-ok: fresh table created in same migration

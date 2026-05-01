@@ -1,4 +1,4 @@
-.PHONY: build build-server build-worker build-migrate build-dev-idp dev-idp test test-integration lint lint-migrations migrate migrate-down db-up db-down audit bench-physics clean
+.PHONY: build build-server build-worker build-migrate build-dev-idp dev-idp test test-integration lint lint-migrations lint-migrations-test migrate migrate-down db-up db-down audit bench-physics clean
 
 # Default DATABASE_URL for local dev (docker-compose db on port 5433)
 DATABASE_URL ?= postgres://fb_user:fb_pass@localhost:5433/futurebuild_os?sslmode=disable
@@ -40,6 +40,12 @@ lint:
 lint-migrations:
 	bash scripts/lint-migrations.sh
 
+# Regression suite for the linter itself — runs the four fixture
+# directories under scripts/lint-migrations-fixtures/ and asserts each
+# passes or fails as expected.
+lint-migrations-test:
+	bash scripts/lint-migrations.test.sh
+
 ## Database
 db-up:
 	docker compose up -d db
@@ -60,7 +66,7 @@ bench-physics:
 		go run ./tools/bench-gate/main.go --cpm80=200ms --cpm200=500ms
 
 ## Audit (lint + migration lint + test + physics benchmarks)
-audit: lint-migrations test bench-physics
+audit: lint-migrations lint-migrations-test test bench-physics
 	@echo "Audit: ALL PASSED"
 
 ## Clean

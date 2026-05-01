@@ -43,7 +43,7 @@ CREATE TABLE corporate_budgets (
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE(org_id, fiscal_year, quarter, currency_code)
 );
-CREATE INDEX idx_corp_budget_org ON corporate_budgets(org_id);
+CREATE INDEX idx_corp_budget_org ON corporate_budgets(org_id); -- buildos:lock-ok: fresh table created in same migration
 
 -- ============================================================
 -- 3. AR Aging Snapshots — one row per currency per snapshot date
@@ -102,5 +102,5 @@ CREATE TABLE procurement_items (
     created_at                      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at                      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_procurement_project ON procurement_items(project_id);
-CREATE INDEX idx_procurement_status ON procurement_items(status);
+CREATE INDEX idx_procurement_project ON procurement_items(project_id); -- buildos:lock-ok: fresh table created in same migration
+CREATE INDEX idx_procurement_status ON procurement_items(status); -- buildos:lock-ok: fresh table created in same migration

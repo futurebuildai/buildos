@@ -21,8 +21,8 @@ CREATE TABLE crew_checkins (
     idempotency_key UUID NOT NULL UNIQUE,
     reported_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_crew_checkins_project ON crew_checkins(project_id);
-CREATE INDEX idx_crew_checkins_reported_at ON crew_checkins(reported_at DESC);
+CREATE INDEX idx_crew_checkins_project ON crew_checkins(project_id); -- buildos:lock-ok: fresh table created in same migration
+CREATE INDEX idx_crew_checkins_reported_at ON crew_checkins(reported_at DESC); -- buildos:lock-ok: fresh table created in same migration
 
 -- ============================================================
 -- daily_logs — end-of-day report from the site
@@ -40,4 +40,4 @@ CREATE TABLE daily_logs (
     idempotency_key     UUID NOT NULL UNIQUE,
     reported_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_daily_logs_project_date ON daily_logs(project_id, log_date DESC);
+CREATE INDEX idx_daily_logs_project_date ON daily_logs(project_id, log_date DESC); -- buildos:lock-ok: fresh table created in same migration

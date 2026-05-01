@@ -24,8 +24,8 @@ CREATE TABLE pre_construction_prospects (
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_prospects_org ON pre_construction_prospects(org_id);
-CREATE INDEX idx_prospects_stage ON pre_construction_prospects(pipeline_stage);
+CREATE INDEX idx_prospects_org ON pre_construction_prospects(org_id); -- buildos:lock-ok: fresh table created in same migration
+CREATE INDEX idx_prospects_stage ON pre_construction_prospects(pipeline_stage); -- buildos:lock-ok: fresh table created in same migration
 
 -- ============================================================
 -- 2. Pre-Construction Estimates (preliminary, pre-permit)
@@ -44,7 +44,7 @@ CREATE TABLE pre_construction_estimates (
     created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_estimates_prospect ON pre_construction_estimates(prospect_id);
+CREATE INDEX idx_estimates_prospect ON pre_construction_estimates(prospect_id); -- buildos:lock-ok: fresh table created in same migration
 
 -- ============================================================
 -- 3. Pre-Construction Permits (municipal tracking)
@@ -66,5 +66,5 @@ CREATE TABLE pre_construction_permits (
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_permits_prospect ON pre_construction_permits(prospect_id);
-CREATE INDEX idx_permits_status ON pre_construction_permits(status);
+CREATE INDEX idx_permits_prospect ON pre_construction_permits(prospect_id); -- buildos:lock-ok: fresh table created in same migration
+CREATE INDEX idx_permits_status ON pre_construction_permits(status); -- buildos:lock-ok: fresh table created in same migration

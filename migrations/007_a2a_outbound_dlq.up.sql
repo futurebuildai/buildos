@@ -21,5 +21,5 @@ CREATE TABLE a2a_outbound_dlq (
     last_error      TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_a2a_outbound_dlq_org_event ON a2a_outbound_dlq(org_id, event_type);
-CREATE INDEX idx_a2a_outbound_dlq_created  ON a2a_outbound_dlq(created_at DESC);
+CREATE INDEX idx_a2a_outbound_dlq_org_event ON a2a_outbound_dlq(org_id, event_type); -- buildos:lock-ok: fresh table created in same migration
+CREATE INDEX idx_a2a_outbound_dlq_created  ON a2a_outbound_dlq(created_at DESC); -- buildos:lock-ok: fresh table created in same migration

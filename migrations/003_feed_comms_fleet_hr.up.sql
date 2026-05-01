@@ -19,8 +19,8 @@ CREATE TABLE feed_cards (
     expires_at      TIMESTAMPTZ,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_feed_org_status ON feed_cards(org_id, status);
-CREATE INDEX idx_feed_target ON feed_cards(target_user_id);
+CREATE INDEX idx_feed_org_status ON feed_cards(org_id, status); -- buildos:lock-ok: fresh table created in same migration
+CREATE INDEX idx_feed_target ON feed_cards(target_user_id); -- buildos:lock-ok: fresh table created in same migration
 
 -- ============================================================
 -- 2. Communication Logs (Sub Liaison)
@@ -98,7 +98,7 @@ CREATE TABLE certifications (
     status          TEXT NOT NULL DEFAULT 'active',
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_certs_expiry ON certifications(expiry_date);
+CREATE INDEX idx_certs_expiry ON certifications(expiry_date); -- buildos:lock-ok: fresh table created in same migration
 
 -- ============================================================
 -- 7. Field Notification Dead Letter Queue
@@ -124,5 +124,5 @@ CREATE TABLE weather_cache (
     fetched_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at      TIMESTAMPTZ NOT NULL
 );
-CREATE INDEX idx_weather_cache_location ON weather_cache(lat, lng);
-CREATE INDEX idx_weather_cache_expiry ON weather_cache(expires_at);
+CREATE INDEX idx_weather_cache_location ON weather_cache(lat, lng); -- buildos:lock-ok: fresh table created in same migration
+CREATE INDEX idx_weather_cache_expiry ON weather_cache(expires_at); -- buildos:lock-ok: fresh table created in same migration

@@ -21,5 +21,5 @@ CREATE TABLE a2a_inbound_log (
     received_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_a2a_inbound_event_type ON a2a_inbound_log(event_type);
-CREATE INDEX idx_a2a_inbound_received_at ON a2a_inbound_log(received_at);
+CREATE INDEX idx_a2a_inbound_event_type ON a2a_inbound_log(event_type); -- buildos:lock-ok: fresh table created in same migration
+CREATE INDEX idx_a2a_inbound_received_at ON a2a_inbound_log(received_at); -- buildos:lock-ok: fresh table created in same migration

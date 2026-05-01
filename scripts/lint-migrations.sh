@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# lint-migrations.sh — Composite Currency Pattern Enforcement
+# lint-migrations.sh — migration safety + Composite Currency Pattern enforcement
 #
-# Hard-failing CI gate (GitHub Actions). No exemptions.
+# Hard-failing CI gate (GitHub Actions). No exemptions for the
+# Composite Currency rules; the migration-safety rules support a
+# documented opt-out comment for genuinely-safe cases.
 #
-# Two checks:
+# Five checks:
 #   1. FORBIDDEN TYPES: Scans migrations/*.sql for DECIMAL, NUMERIC, REAL,
 #      DOUBLE PRECISION, MONEY, or FLOAT on columns matching monetary patterns.
 #      EXCEPTION: gps_lat, gps_lng, lat, lng columns are explicitly allowed
@@ -11,6 +13,21 @@
 #
 #   2. ORPHAN CENTS: Any column ending in _cents that matches monetary patterns
 #      must have a corresponding currency_code column in the same CREATE TABLE.
+#
+#   3. PAIRED MIGRATIONS: Every migrations/NNN_name.up.sql must have a matching
+#      migrations/NNN_name.down.sql. For irreversible migrations, the .down.sql
+#      can be a single comment line documenting why (e.g. "-- irreversible: data
+#      backfill").
+#
+#   4. DESTRUCTIVE OPS: DROP TABLE / DROP COLUMN / TRUNCATE / ALTER TYPE ... DROP
+#      VALUE require an opt-in header comment of the form
+#      "-- buildos:destructive: <reason>". Forces operator consent and surfaces
+#      the reason in PR review + the deployment runbook.
+#
+#   5. CONCURRENT INDEX: Plain CREATE INDEX takes an ACCESS EXCLUSIVE lock for
+#      the duration of the build. CREATE INDEX CONCURRENTLY builds without
+#      blocking writes. Opt-out: append "-- buildos:lock-ok: <reason>" on the
+#      same line for genuinely-small / fresh-table cases.
 #
 # Exit code 0 = PASS, 1 = FAIL
 
@@ -171,7 +188,106 @@ else
     echo "PASS: All _cents columns have corresponding currency_code columns."
 fi
 
+# --------------------------------------------------------------------------
+# Check 3: Every up migration has a matching down migration
+# --------------------------------------------------------------------------
+echo "--- Check 3: Paired up/down migrations ---"
+
+PAIR_EXIT=0
+for up_file in "${MIGRATION_DIR}"/*.up.sql; do
+    [ -f "$up_file" ] || continue
+    down_file="${up_file%.up.sql}.down.sql"
+    if [ ! -f "$down_file" ]; then
+        echo "FAIL: ${up_file} has no matching ${down_file##*/}"
+        PAIR_EXIT=1
+    fi
+done
+
+if [ "$PAIR_EXIT" -eq 0 ]; then
+    echo "PASS: Every up migration has a matching down migration."
+else
+    EXIT_CODE=1
+fi
 echo ""
+
+# --------------------------------------------------------------------------
+# Check 4: Destructive operations require opt-in header comment
+# --------------------------------------------------------------------------
+# Each *.up.sql is treated as a unit: at least one line containing a
+# destructive op (DROP TABLE / DROP COLUMN / TRUNCATE / DROP VALUE) requires
+# a "-- buildos:destructive:" header anywhere in the file. The reason
+# string after the colon goes into PR review and the deployment runbook.
+echo "--- Check 4: Destructive ops require opt-in comment ---"
+
+DESTRUCT_EXIT=0
+DESTRUCTIVE_PATTERN='\b(drop[[:space:]]+table|drop[[:space:]]+column|truncate[[:space:]]+table|alter[[:space:]]+type[[:space:]]+[a-z_]+[[:space:]]+drop[[:space:]]+value)\b'
+
+for file in "${MIGRATION_DIR}"/*.up.sql; do
+    [ -f "$file" ] || continue
+    lower_file=$(tr '[:upper:]' '[:lower:]' < "$file")
+
+    if echo "$lower_file" | grep -qE "$DESTRUCTIVE_PATTERN"; then
+        if ! grep -qiE -- '-- *buildos:destructive:' "$file"; then
+            echo "FAIL: ${file}: contains destructive op (DROP TABLE / DROP COLUMN / TRUNCATE / DROP VALUE)"
+            echo "  > add a header comment '-- buildos:destructive: <reason>' to acknowledge"
+            DESTRUCT_EXIT=1
+        fi
+    fi
+done
+
+if [ "$DESTRUCT_EXIT" -eq 0 ]; then
+    echo "PASS: No destructive ops without opt-in header."
+else
+    EXIT_CODE=1
+fi
+echo ""
+
+# --------------------------------------------------------------------------
+# Check 5: CREATE INDEX must be CONCURRENTLY (or per-line opt-out)
+# --------------------------------------------------------------------------
+# Plain CREATE INDEX takes ACCESS EXCLUSIVE for the duration of the build.
+# CONCURRENTLY avoids the lock at the cost of being non-transactional.
+# Opt-out: append "-- buildos:lock-ok: <reason>" on the same line.
+echo "--- Check 5: CREATE INDEX requires CONCURRENTLY ---"
+
+LOCK_EXIT=0
+
+for file in "${MIGRATION_DIR}"/*.up.sql; do
+    [ -f "$file" ] || continue
+
+    line_num=0
+    while IFS= read -r line; do
+        line_num=$((line_num + 1))
+        lower_line=$(echo "$line" | tr '[:upper:]' '[:lower:]')
+
+        # Skip pure comment lines.
+        [[ "$lower_line" =~ ^[[:space:]]*-- ]] && continue
+
+        # Match CREATE INDEX (also CREATE UNIQUE INDEX) but not
+        # CREATE INDEX CONCURRENTLY.
+        if echo "$lower_line" | grep -qE '\bcreate[[:space:]]+(unique[[:space:]]+)?index\b'; then
+            if echo "$lower_line" | grep -qE '\bconcurrently\b'; then
+                continue
+            fi
+            # Same-line opt-out comment.
+            if echo "$line" | grep -qiE -- '-- *buildos:lock-ok:'; then
+                continue
+            fi
+            echo "FAIL: ${file}:${line_num}: CREATE INDEX without CONCURRENTLY"
+            echo "  > ${line}"
+            echo "  > use CREATE INDEX CONCURRENTLY, or append '-- buildos:lock-ok: <reason>'"
+            LOCK_EXIT=1
+        fi
+    done < "$file"
+done
+
+if [ "$LOCK_EXIT" -eq 0 ]; then
+    echo "PASS: All CREATE INDEX statements use CONCURRENTLY or have an opt-out."
+else
+    EXIT_CODE=1
+fi
+echo ""
+
 echo "=== Lint Complete ==="
 
 if [ "$EXIT_CODE" -ne 0 ]; then

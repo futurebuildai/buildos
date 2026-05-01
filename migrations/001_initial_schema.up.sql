@@ -30,8 +30,8 @@ CREATE TABLE users (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_users_oidc_subject ON users(oidc_subject);
-CREATE INDEX idx_users_org_id ON users(org_id);
+CREATE INDEX idx_users_oidc_subject ON users(oidc_subject); -- buildos:lock-ok: fresh table created in same migration
+CREATE INDEX idx_users_org_id ON users(org_id); -- buildos:lock-ok: fresh table created in same migration
 
 -- ============================================================
 -- 3. Projects
@@ -48,7 +48,7 @@ CREATE TABLE projects (
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_projects_org_id ON projects(org_id);
+CREATE INDEX idx_projects_org_id ON projects(org_id); -- buildos:lock-ok: fresh table created in same migration
 
 -- ============================================================
 -- 4. Project Tasks (WBS-based)
@@ -72,8 +72,8 @@ CREATE TABLE project_tasks (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE(project_id, wbs_code)
 );
-CREATE INDEX idx_tasks_project ON project_tasks(project_id);
-CREATE INDEX idx_tasks_status ON project_tasks(status);
+CREATE INDEX idx_tasks_project ON project_tasks(project_id); -- buildos:lock-ok: fresh table created in same migration
+CREATE INDEX idx_tasks_status ON project_tasks(status); -- buildos:lock-ok: fresh table created in same migration
 
 -- ============================================================
 -- 5. Task Dependencies (4 types: FS, FF, SS, SF)
@@ -104,5 +104,5 @@ CREATE TABLE task_progress (
     idempotency_key UUID UNIQUE,  -- For offline dedup
     reported_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_progress_task ON task_progress(task_id);
-CREATE INDEX idx_progress_idempotency ON task_progress(idempotency_key);
+CREATE INDEX idx_progress_task ON task_progress(task_id); -- buildos:lock-ok: fresh table created in same migration
+CREATE INDEX idx_progress_idempotency ON task_progress(idempotency_key); -- buildos:lock-ok: fresh table created in same migration
