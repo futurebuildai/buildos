@@ -15,7 +15,10 @@ import (
 // panic, which is what proves the gates work.
 
 func newFieldSvcForValidationTests() *FieldService {
-	return NewFieldService(nil, nil, nil)
+	// nil audit falls back to a no-op recorder; the validation gates
+	// run before any post-validation path so nil pool/store stay
+	// safe.
+	return NewFieldService(nil, nil, nil, nil)
 }
 
 func ptrFloat(f float64) *float64 { return &f }

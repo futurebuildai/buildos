@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	mw "github.com/futurebuildai/buildos/internal/api/middleware"
 	"github.com/futurebuildai/buildos/internal/models"
 	"github.com/futurebuildai/buildos/internal/service"
 )
@@ -22,8 +23,8 @@ type BudgetServicer interface {
 	GetOrgFinancialsSummary(ctx context.Context, orgID uuid.UUID, currencyCode string) (service.FinancialsSummary, error)
 	GetARAging(ctx context.Context, orgID uuid.UUID, currencyCode string) ([]models.ARAgingSnapshot, error)
 	GetProjectFinancials(ctx context.Context, orgID uuid.UUID, currencyCode string) ([]models.ProjectFinancial, error)
-	CreateInvoice(ctx context.Context, callerOrgID uuid.UUID, in service.CreateInvoiceInput) (models.Invoice, error)
-	UpdateInvoice(ctx context.Context, callerOrgID uuid.UUID, in service.UpdateInvoiceInput) (models.Invoice, error)
+	CreateInvoice(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, in service.CreateInvoiceInput) (models.Invoice, error)
+	UpdateInvoice(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, in service.UpdateInvoiceInput) (models.Invoice, error)
 }
 
 // FinancialsHandler handles /api/v1/org/{orgID}/financials/* and
@@ -143,7 +144,8 @@ func (h *FinancialsHandler) CreateInvoice(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	inv, err := h.svc.CreateInvoice(r.Context(), callerOrg, service.CreateInvoiceInput{
+	claims := mw.MustClaimsFromContext(r.Context())
+	inv, err := h.svc.CreateInvoice(r.Context(), callerOrg, claims.Sub, service.CreateInvoiceInput{
 		ProjectID:     projectID,
 		VendorName:    body.VendorName,
 		InvoiceNumber: body.InvoiceNumber,
@@ -192,7 +194,8 @@ func (h *FinancialsHandler) UpdateInvoice(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	inv, err := h.svc.UpdateInvoice(r.Context(), callerOrg, service.UpdateInvoiceInput{
+	claims := mw.MustClaimsFromContext(r.Context())
+	inv, err := h.svc.UpdateInvoice(r.Context(), callerOrg, claims.Sub, service.UpdateInvoiceInput{
 		InvoiceID: invoiceID,
 		ProjectID: projectID,
 		Status:    body.Status,

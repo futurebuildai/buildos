@@ -56,8 +56,13 @@ func run(logger *slog.Logger) error {
 	logger.Info("database connected for worker", "max_conns", cfg.DBPoolMax)
 
 	// Stores + services for workers that need service-layer access.
+	// CorporateRollupWorker writes via the budget service; rollups are
+	// system-actor mutations (no human caller), so we pass a no-op
+	// audit recorder. Per-row audit for those rollups would be huge
+	// volume + low signal; the daily aggregate count goes to the log
+	// line at completion time, which is sufficient observability.
 	financialsStore := store.NewFinancialsStore()
-	budgetService := service.NewBudgetService(pool, financialsStore)
+	budgetService := service.NewBudgetService(pool, financialsStore, service.NewNoopAuditRecorder())
 
 	// Notification delivery: the LoggingSender just logs and succeeds
 	// — fine until Sprint 5 PR 3 swaps in real Twilio/FCM senders.

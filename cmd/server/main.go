@@ -99,26 +99,28 @@ func run(logger *slog.Logger) error {
 	}
 	logger.Info("brain client initialized", "base_url", cfg.BrainIssuerURL)
 
-	// Stores + services
+	// Stores + services. Audit service first so domain services can
+	// receive it as a dependency.
+	auditStore := store.NewAuditStore()
+	auditService := service.NewAuditService(auditStore, logger)
+
 	financialsStore := store.NewFinancialsStore()
-	budgetService := service.NewBudgetService(pool, financialsStore)
+	budgetService := service.NewBudgetService(pool, financialsStore, auditService)
 	pipelineStore := store.NewPipelineStore()
 	pipelineService := service.NewPipelineService(pool, pipelineStore, riverClient)
 	scheduleStore := store.NewScheduleStore()
 	scheduleService := service.NewScheduleService(pool, scheduleStore, riverClient)
 	a2aStore := store.NewA2AStore()
 	feedCardsStore := store.NewFeedCardsStore()
-	auditStore := store.NewAuditStore()
-	auditService := service.NewAuditService(auditStore, logger)
 	feedService := service.NewFeedService(pool, feedCardsStore, logger, riverClient, auditService)
 	procurementStore := store.NewProcurementStore()
 	procurementService := service.NewProcurementService(pool, procurementStore, auditService)
 	fleetStore := store.NewFleetStore()
-	fleetService := service.NewFleetService(pool, fleetStore)
+	fleetService := service.NewFleetService(pool, fleetStore, auditService)
 	hrStore := store.NewHRStore()
 	hrService := service.NewHRService(pool, hrStore)
 	fieldStore := store.NewFieldStore()
-	fieldService := service.NewFieldService(pool, fieldStore, feedCardsStore)
+	fieldService := service.NewFieldService(pool, fieldStore, feedCardsStore, auditService)
 	agentsService := service.NewAgentsService(pool, fieldStore, feedCardsStore, brainClient.Maestro)
 	a2aService := service.NewA2AService(pool, a2aStore, feedCardsStore, pipelineStore, cfg.DefaultOrgID)
 	a2aVerifier := api.NewJWKSVerifier(jwks) // verifies Brain's JWS using the same JWKS used for JWT validation

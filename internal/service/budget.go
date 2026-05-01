@@ -34,11 +34,16 @@ var (
 type BudgetService struct {
 	pool  *pgxpool.Pool
 	store *store.FinancialsStore
+	audit AuditRecorder
 }
 
 // NewBudgetService creates a new BudgetService.
-func NewBudgetService(pool *pgxpool.Pool, fs *store.FinancialsStore) *BudgetService {
-	return &BudgetService{pool: pool, store: fs}
+// audit may be nil; nil falls back to a no-op recorder.
+func NewBudgetService(pool *pgxpool.Pool, fs *store.FinancialsStore, audit AuditRecorder) *BudgetService {
+	if audit == nil {
+		audit = NewNoopAuditRecorder()
+	}
+	return &BudgetService{pool: pool, store: fs, audit: audit}
 }
 
 // ---------- Reads ----------
@@ -151,7 +156,9 @@ type CreateInvoiceInput struct {
 // CreateInvoice records a new invoice for a project, scoped to the
 // caller's org. Validates currency code and that the project belongs
 // to the org. Returns the persisted invoice.
-func (s *BudgetService) CreateInvoice(ctx context.Context, callerOrgID uuid.UUID, in CreateInvoiceInput) (models.Invoice, error) {
+//
+// callerUserSub is recorded on the audit row.
+func (s *BudgetService) CreateInvoice(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, in CreateInvoiceInput) (models.Invoice, error) {
 	if err := currency.Validate(in.CurrencyCode); err != nil {
 		return models.Invoice{}, fmt.Errorf("%w: currency_code: %v", ErrInvalidInput, err)
 	}
@@ -181,6 +188,21 @@ func (s *BudgetService) CreateInvoice(ctx context.Context, callerOrgID uuid.UUID
 			return err
 		}
 		inv = created
+		s.audit.Record(ctx, tx, AuditEntry{
+			OrgID:        callerOrgID,
+			UserSub:      callerUserSub,
+			Action:       "invoice.created",
+			ResourceType: AuditResourceInvoice,
+			ResourceID:   created.ID,
+			After:        marshalAudit(created),
+			Metadata: marshalAudit(map[string]any{
+				"project_id":   in.ProjectID,
+				"vendor_name":  in.VendorName,
+				"amount_cents": in.AmountCents,
+				"currency":     in.CurrencyCode,
+				"wbs_code":     in.WBSCode,
+			}),
+		})
 		return nil
 	})
 	if err != nil {
@@ -201,7 +223,9 @@ type UpdateInvoiceInput struct {
 // UpdateInvoice modifies an invoice's status and/or paid_date. Verifies
 // the invoice belongs to the project, which belongs to the caller's org.
 // Validates status transitions if a new status is provided.
-func (s *BudgetService) UpdateInvoice(ctx context.Context, callerOrgID uuid.UUID, in UpdateInvoiceInput) (models.Invoice, error) {
+//
+// callerUserSub is recorded on the audit row.
+func (s *BudgetService) UpdateInvoice(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, in UpdateInvoiceInput) (models.Invoice, error) {
 	if in.Status != nil && !models.IsValidInvoiceStatus(*in.Status) {
 		return models.Invoice{}, fmt.Errorf("%w: status %q is not one of {pending, approved, rejected, paid}", ErrInvalidInput, *in.Status)
 	}
@@ -220,6 +244,18 @@ func (s *BudgetService) UpdateInvoice(ctx context.Context, callerOrgID uuid.UUID
 			return err
 		}
 		inv = updated
+		s.audit.Record(ctx, tx, AuditEntry{
+			OrgID:        callerOrgID,
+			UserSub:      callerUserSub,
+			Action:       "invoice.updated",
+			ResourceType: AuditResourceInvoice,
+			ResourceID:   updated.ID,
+			After:        marshalAudit(updated),
+			Metadata: marshalAudit(map[string]any{
+				"status":    in.Status,
+				"paid_date": in.PaidDate,
+			}),
+		})
 		return nil
 	})
 	if err != nil {

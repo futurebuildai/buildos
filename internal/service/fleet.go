@@ -48,11 +48,16 @@ type AllocateAssetInput struct {
 type FleetService struct {
 	pool  *pgxpool.Pool
 	store *store.FleetStore
+	audit AuditRecorder
 }
 
 // NewFleetService creates a service bound to a pool + store.
-func NewFleetService(pool *pgxpool.Pool, fleet *store.FleetStore) *FleetService {
-	return &FleetService{pool: pool, store: fleet}
+// audit may be nil; nil falls back to a no-op recorder.
+func NewFleetService(pool *pgxpool.Pool, fleet *store.FleetStore, audit AuditRecorder) *FleetService {
+	if audit == nil {
+		audit = NewNoopAuditRecorder()
+	}
+	return &FleetService{pool: pool, store: fleet, audit: audit}
 }
 
 // ListAssets returns all fleet assets for the caller's org.
@@ -85,7 +90,8 @@ func (s *FleetService) ListAssets(ctx context.Context, callerOrgID uuid.UUID, st
 }
 
 // CreateAsset inserts a new asset. Validates non-empty name + asset_type.
-func (s *FleetService) CreateAsset(ctx context.Context, callerOrgID uuid.UUID, in CreateAssetInput) (models.FleetAsset, error) {
+// callerUserSub is recorded on the audit row.
+func (s *FleetService) CreateAsset(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, in CreateAssetInput) (models.FleetAsset, error) {
 	if callerOrgID == uuid.Nil {
 		return models.FleetAsset{}, fmt.Errorf("%w: caller org_id is required", ErrInvalidInput)
 	}
@@ -119,6 +125,18 @@ func (s *FleetService) CreateAsset(ctx context.Context, callerOrgID uuid.UUID, i
 			return err
 		}
 		asset = got
+		s.audit.Record(ctx, tx, AuditEntry{
+			OrgID:        callerOrgID,
+			UserSub:      callerUserSub,
+			Action:       "fleet.asset.created",
+			ResourceType: AuditResourceFleetAsset,
+			ResourceID:   got.ID,
+			After:        marshalAudit(got),
+			Metadata: marshalAudit(map[string]any{
+				"asset_type": got.AssetType,
+				"name":       got.Name,
+			}),
+		})
 		return nil
 	})
 	if err != nil {
@@ -133,8 +151,9 @@ func (s *FleetService) CreateAsset(ctx context.Context, callerOrgID uuid.UUID, i
 //   - project belongs to caller's org.
 //
 // On GiST exclusion conflict (overlapping range for same asset),
-// returns ErrAllocationConflict.
-func (s *FleetService) AllocateAsset(ctx context.Context, callerOrgID uuid.UUID, in AllocateAssetInput) (models.EquipmentAllocation, error) {
+// returns ErrAllocationConflict. callerUserSub is recorded on the
+// audit row.
+func (s *FleetService) AllocateAsset(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, in AllocateAssetInput) (models.EquipmentAllocation, error) {
 	if callerOrgID == uuid.Nil {
 		return models.EquipmentAllocation{}, fmt.Errorf("%w: caller org_id is required", ErrInvalidInput)
 	}
@@ -166,6 +185,20 @@ func (s *FleetService) AllocateAsset(ctx context.Context, callerOrgID uuid.UUID,
 			return err
 		}
 		alloc = got
+		s.audit.Record(ctx, tx, AuditEntry{
+			OrgID:        callerOrgID,
+			UserSub:      callerUserSub,
+			Action:       "fleet.asset.allocated",
+			ResourceType: AuditResourceEquipmentAlloc,
+			ResourceID:   got.ID,
+			After:        marshalAudit(got),
+			Metadata: marshalAudit(map[string]any{
+				"asset_id":   got.AssetID,
+				"project_id": got.ProjectID,
+				"start_date": got.StartDate,
+				"end_date":   got.EndDate,
+			}),
+		})
 		return nil
 	})
 	if err != nil {

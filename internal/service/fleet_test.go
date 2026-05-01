@@ -13,7 +13,8 @@ import (
 // would panic, which is what proves the gates work.
 
 func newFleetSvcForValidationTests() *FleetService {
-	return NewFleetService(nil, nil)
+	// nil audit falls back to a no-op recorder.
+	return NewFleetService(nil, nil, nil)
 }
 
 func TestFleetService_ListAssets_RejectsBadInput(t *testing.T) {
@@ -39,7 +40,7 @@ func TestFleetService_CreateAsset_RejectsBadInput(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := svc.CreateAsset(context.Background(), c.org, c.in)
+			_, err := svc.CreateAsset(context.Background(), c.org, "sub-1", c.in)
 			if !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("err = %v, want ErrInvalidInput", err)
 			}
@@ -67,7 +68,7 @@ func TestFleetService_AllocateAsset_RejectsBadInput(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := svc.AllocateAsset(context.Background(), c.org, c.in)
+			_, err := svc.AllocateAsset(context.Background(), c.org, "sub-1", c.in)
 			if !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("err = %v, want ErrInvalidInput", err)
 			}

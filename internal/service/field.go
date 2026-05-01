@@ -70,12 +70,17 @@ type FieldService struct {
 	pool      *pgxpool.Pool
 	store     *store.FieldStore
 	feedStore *store.FeedCardsStore
+	audit     AuditRecorder
 }
 
 // NewFieldService creates a service bound to a pool, the FieldStore,
 // and a FeedCardsStore (for /field/sync to bundle recent cards).
-func NewFieldService(pool *pgxpool.Pool, fields *store.FieldStore, feed *store.FeedCardsStore) *FieldService {
-	return &FieldService{pool: pool, store: fields, feedStore: feed}
+// audit may be nil; nil falls back to a no-op recorder.
+func NewFieldService(pool *pgxpool.Pool, fields *store.FieldStore, feed *store.FeedCardsStore, audit AuditRecorder) *FieldService {
+	if audit == nil {
+		audit = NewNoopAuditRecorder()
+	}
+	return &FieldService{pool: pool, store: fields, feedStore: feed, audit: audit}
 }
 
 // SyncOptions narrows a /field/sync read.
@@ -198,6 +203,19 @@ func (s *FieldService) ReportProgress(ctx context.Context, callerOrgID uuid.UUID
 			return err
 		}
 		got = row
+		s.audit.Record(ctx, tx, AuditEntry{
+			OrgID:        callerOrgID,
+			UserSub:      callerOIDCSubject,
+			Action:       "field.task_progress.reported",
+			ResourceType: AuditResourceTaskProgress,
+			ResourceID:   row.ID,
+			After:        marshalAudit(row),
+			Metadata: marshalAudit(map[string]any{
+				"task_id":          in.TaskID,
+				"percent_complete": in.PercentComplete,
+				"reported_via":     models.ReportedViaMobile,
+			}),
+		})
 		return nil
 	})
 	if err != nil {
@@ -253,6 +271,17 @@ func (s *FieldService) Checkin(ctx context.Context, callerOrgID uuid.UUID, calle
 			return err
 		}
 		got = row
+		s.audit.Record(ctx, tx, AuditEntry{
+			OrgID:        callerOrgID,
+			UserSub:      callerOIDCSubject,
+			Action:       "field.crew_checkin.recorded",
+			ResourceType: AuditResourceCrewCheckin,
+			ResourceID:   row.ID,
+			After:        marshalAudit(row),
+			Metadata: marshalAudit(map[string]any{
+				"project_id": in.ProjectID,
+			}),
+		})
 		return nil
 	})
 	if err != nil {
@@ -318,6 +347,18 @@ func (s *FieldService) DailyLog(ctx context.Context, callerOrgID uuid.UUID, call
 			return err
 		}
 		got = row
+		s.audit.Record(ctx, tx, AuditEntry{
+			OrgID:        callerOrgID,
+			UserSub:      callerOIDCSubject,
+			Action:       "field.daily_log.recorded",
+			ResourceType: AuditResourceDailyLog,
+			ResourceID:   row.ID,
+			After:        marshalAudit(row),
+			Metadata: marshalAudit(map[string]any{
+				"project_id": in.ProjectID,
+				"log_date":   in.LogDate,
+			}),
+		})
 		return nil
 	})
 	if err != nil {

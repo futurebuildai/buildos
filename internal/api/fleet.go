@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	mw "github.com/futurebuildai/buildos/internal/api/middleware"
 	"github.com/futurebuildai/buildos/internal/models"
 	"github.com/futurebuildai/buildos/internal/service"
 )
@@ -17,8 +18,8 @@ import (
 // FleetHandler.
 type FleetServicer interface {
 	ListAssets(ctx context.Context, callerOrgID uuid.UUID, statusFilter []string) ([]models.FleetAsset, error)
-	CreateAsset(ctx context.Context, callerOrgID uuid.UUID, in service.CreateAssetInput) (models.FleetAsset, error)
-	AllocateAsset(ctx context.Context, callerOrgID uuid.UUID, in service.AllocateAssetInput) (models.EquipmentAllocation, error)
+	CreateAsset(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, in service.CreateAssetInput) (models.FleetAsset, error)
+	AllocateAsset(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, in service.AllocateAssetInput) (models.EquipmentAllocation, error)
 }
 
 // FleetHandler handles /api/v1/org/{orgID}/fleet/* endpoints.
@@ -70,7 +71,8 @@ func (h *FleetHandler) CreateAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	asset, err := h.svc.CreateAsset(r.Context(), orgID, service.CreateAssetInput{
+	claims := mw.MustClaimsFromContext(r.Context())
+	asset, err := h.svc.CreateAsset(r.Context(), orgID, claims.Sub, service.CreateAssetInput{
 		Name:         body.Name,
 		AssetType:    body.AssetType,
 		SerialNumber: body.SerialNumber,
@@ -117,7 +119,8 @@ func (h *FleetHandler) AllocateAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	alloc, err := h.svc.AllocateAsset(r.Context(), orgID, service.AllocateAssetInput{
+	claims := mw.MustClaimsFromContext(r.Context())
+	alloc, err := h.svc.AllocateAsset(r.Context(), orgID, claims.Sub, service.AllocateAssetInput{
 		AssetID:   assetID,
 		ProjectID: body.ProjectID,
 		StartDate: start,

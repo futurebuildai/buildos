@@ -68,12 +68,12 @@ func (m *mockBudgetService) GetProjectFinancials(_ context.Context, orgID uuid.U
 	return m.getProjectFinancialsResult, m.getProjectFinancialsErr
 }
 
-func (m *mockBudgetService) CreateInvoice(_ context.Context, callerOrgID uuid.UUID, _ service.CreateInvoiceInput) (models.Invoice, error) {
+func (m *mockBudgetService) CreateInvoice(_ context.Context, callerOrgID uuid.UUID, _ string, _ service.CreateInvoiceInput) (models.Invoice, error) {
 	m.lastCallerOrgID = callerOrgID
 	return m.createInvoiceResult, m.createInvoiceErr
 }
 
-func (m *mockBudgetService) UpdateInvoice(_ context.Context, callerOrgID uuid.UUID, _ service.UpdateInvoiceInput) (models.Invoice, error) {
+func (m *mockBudgetService) UpdateInvoice(_ context.Context, callerOrgID uuid.UUID, _ string, _ service.UpdateInvoiceInput) (models.Invoice, error) {
 	m.lastCallerOrgID = callerOrgID
 	return m.updateInvoiceResult, m.updateInvoiceErr
 }
