@@ -4,29 +4,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-**BuildOS** — a Go backend (the "system of execution") for residential construction project management. Multi-tenant, REST API + River job queue, with auth/AI/3rd-party APIs/billing all delegated to a proprietary central service called **The Brain** (see "The Brain dependency" below). The core domain object is a project schedule computed by a deterministic **Critical Path Method (CPM) physics engine**.
+**BuildOS** — a Go backend (the "system of execution") for residential construction project management. **Single-tenant per customer fork** (see ADR-002), REST API + River job queue, with auth/AI/3rd-party APIs/billing all delegated to a proprietary central service called **The Brain** (see "The Brain dependency" below). The core domain object is a project schedule computed by a deterministic **Critical Path Method (CPM) physics engine**.
 
 Companion frontends (Lit web, Flutter mobile for field surfaces) live in other repos. This repo is backend-only.
 
-**Deployment model:** every customer gets their own forked BuildOS repo and instance — they own the core code and data. A possible future co-op variant runs multi-tenant within one BuildOS deployment for member organizations.
+**Deployment model (per [ADR-002](.agents/handoff/ADR-002-single-tenant-fork-model.md)):** every customer gets their own forked BuildOS repo and their own deployment instance — they own the core code and data. **Tenant isolation = deployment isolation.** No Postgres RLS, no per-tenant rate limiting, no multi-region routing logic in the application. A possible future co-op variant runs multi-tenant within one deployment; ships only if/when the product roadmap calls for it.
 
-Status: Sprint 1. CPM engine, schedule service, auth middleware, worker registry, and migrations are real. Most other domain handlers (`internal/api/financials.go`, `pipeline.go`, `fleet.go`, `procurement.go`, `feed.go`, `field.go`) are intentional stubs from the Sprint 0 walking skeleton — don't mistake them for bugs.
+Status (as of 2026-05-01): Sprints 1-5 done + Phase F core (production Dockerfile, D8 build-tag hardening, cmd/buildos-fork-init keypair generator) + observability (Prometheus /metrics, OpenTelemetry tracing, Sentry with PII masking) + secret-source abstraction. See [HANDOFF.md](HANDOFF.md) for current per-session state and [.agents/handoff/NEXT_STEPS.md](.agents/handoff/NEXT_STEPS.md) for the prioritized backlog.
 
 ## Common commands
 
 ```bash
 make build              # builds bin/server and bin/worker
 make build-migrate      # builds bin/migrate (separate target)
+make build-prod         # CGO_ENABLED=0 + tags=prod + trimpath + stripped (matches Dockerfile)
+make build-fork-init    # offline keypair generator for new customer fork onboarding
+make fork-init OUT=...  # invoke the generator (see docs/fork-onboarding.md)
 make test               # unit tests only (no Docker)
+make test-prod          # prod-tagged subset (D8 hardening — auth_prod.go stub, etc.)
 make test-integration   # integration tests via Testcontainers (Docker required)
 make lint               # golangci-lint run ./...
-make lint-migrations    # bash scripts/lint-migrations.sh — see "Composite Currency" below
+make lint-migrations    # bash scripts/lint-migrations.sh — 5 rules, see below
+make lint-migrations-test # regression suite for the migration linter itself
 make db-up              # docker compose up -d db (Postgres 16, port 5433)
 make db-down
 make migrate            # runs migrations up against $DATABASE_URL
 make migrate-down       # rolls back
 make bench-physics      # CPM benchmarks through tools/bench-gate (CI hard gate)
-make audit              # lint-migrations + test + bench-physics — full pre-merge gate
+make docker-build       # multi-stage distroless image; entrypoint dispatches by BUILDOS_ROLE
+make audit              # full pre-merge gate (lint-migrations + lint-migrations-test
+                        # + test + test-prod + bench-physics)
 ```
 
 Run a single Go test: `go test ./internal/physics/... -run TestCPMDeterminism -count=1`
@@ -59,11 +66,16 @@ Request flow for a schedule recalc: HTTP → JWT middleware → RBAC middleware 
 
 **All monetary values are stored as `amount_cents BIGINT` paired with `currency_code VARCHAR(3) DEFAULT 'USD'`. No floats, ever.** Supported currencies: USD, CAD. Cross-currency arithmetic is forbidden — aggregations must group by `currency_code`.
 
-[scripts/lint-migrations.sh](scripts/lint-migrations.sh) is a hard CI fail with no exemptions. It scans `migrations/*.up.sql` for two violations:
+[scripts/lint-migrations.sh](scripts/lint-migrations.sh) is a hard CI fail with no exemptions. It runs **5 rules** (3-5 added 2026-05-01 per the migration-safety hardening):
 1. Forbidden types (`DECIMAL`, `NUMERIC`, `REAL`, `DOUBLE PRECISION`, `MONEY`, `FLOAT`) on columns matching `cost|price|amount|total|budget|cents|fee|payment|invoice|balance|revenue|expense`. The only allowed `DOUBLE PRECISION` columns are GPS coords (`gps_lat`, `gps_lng`, `lat`, `lng`).
 2. Any `_cents` column without a `currency_code` column in the same `CREATE TABLE`.
+3. **Paired up/down**: every `migrations/NNN_name.up.sql` must have a matching `.down.sql`. For irreversible migrations the down can be a single comment line documenting why.
+4. **Destructive ops require opt-in**: `DROP TABLE` / `DROP COLUMN` / `TRUNCATE` / `ALTER TYPE ... DROP VALUE` require a `-- buildos:destructive: <reason>` header anywhere in the file. Forces operator consent and surfaces the reason in PR review.
+5. **CREATE INDEX must use CONCURRENTLY** (or per-line opt-out). Plain `CREATE INDEX` takes ACCESS EXCLUSIVE for the duration of the build. Opt-out: append `-- buildos:lock-ok: <reason>` on the same line for genuinely-small / fresh-table cases (existing migrations 001-008 are all annotated this way since their indexes land on tables freshly created in the same migration).
 
 Go convention: monetary fields end in `Cents` (e.g. `TotalActualCostCents`) with a sibling `CurrencyCode` field. Don't introduce `float64` for money.
+
+The linter has its own regression suite at `scripts/lint-migrations.test.sh` with four fixtures (pass + three fail-modes). `make lint-migrations-test` runs it; both lint targets are part of `make audit`.
 
 ## The Brain dependency
 
@@ -116,3 +128,66 @@ Practical implications when working here:
 ## Local dependency: futurebuild-brain
 
 [go.mod](go.mod) ends with `replace github.com/futurebuild/futurebuild-brain => ../futurebuild-brain`. The sibling repo must be checked out at `../futurebuild-brain` for builds to resolve. If you see a missing-module error, that's the cause.
+
+## Build-tag posture (D8 hardening)
+
+Two build modes:
+
+- **Default (`go build ./...`)** — dev/CI. `cmd/dev-idp` mock OIDC issuer compiles; `internal/api/middleware/auth_dev.go` provides a `DEV_AUTH_MODE=header` bypass for local rigs.
+- **Production (`go build -tags=prod ./...`)** — what the Dockerfile builds.
+  - `cmd/dev-idp` does NOT compile (build constraints exclude it entirely).
+  - `auth_prod.go` stub replaces `claimsFromDevHeader` — `DEV_AUTH_MODE=header` is a no-op even with the env set.
+  - `cmd/server` fails fast at startup if a prod binary sees `DEV_AUTH_MODE` (refusing to start beats serving uniform 401s).
+
+Adding new dev-only auth paths? Tag them `//go:build !prod` and ship a `prod` stub that no-ops or errors loudly. Test both modes (`make test` + `make test-prod`).
+
+## Observability
+
+Three independent layers, all turn-on-when-configured (empty config = no-op, no error):
+
+- **Sentry** — panics + tagged exception capture. `SENTRY_DSN` enables. PII is scrubbed via `BeforeSend` using the `internal/pii` classification catalog (see "PII handling" below).
+- **Prometheus `/metrics`** — HTTP request count + duration (chi route pattern, not raw URL — bounded cardinality), Brain client request count + duration, River job runs by kind + outcome. Mount unauth (Prometheus convention); restrict via network policy.
+- **OpenTelemetry traces** — `OTEL_EXPORTER_OTLP_ENDPOINT` enables. Brain client wraps its HTTP transport with `otelhttp.NewTransport` (every Brain call is a child span propagating W3C `traceparent`). Router stack mounts `otelhttp.NewHandler` (every inbound request is a span). Default sample rate 0.1.
+
+`internal/obs.CorrelatingHandler` wraps the JSON slog handler so every log record carries the standard correlation trio: `request_id` (from chi), `trace_id` + `span_id` (from active OTel span). Egress wrappers should always log via `*Context` variants (`InfoContext`, `WarnContext`, etc.) so the trio gets stamped.
+
+## PII handling
+
+`internal/pii` package owns the data taxonomy + masking. Four classifications (per SOC 2 / ISO 27001 / GDPR convention):
+
+- **Public** — org names, UUIDs, build versions
+- **Internal** — request_id, trace_id, event_type, action, resource_id, org_id (kept clear so triage works)
+- **Confidential** — vendor/invoice/project names, *_cents amounts (length-preserved mask: "Acme Corp" → "A********")
+- **Restricted** — emails, phones, names, GPS coords, OIDC subject, IP addresses (full redaction: "[REDACTED]"; length intentionally NOT preserved to defend against length-based fingerprinting)
+
+`pii.FieldClass` is the central catalog of field-name → class mappings. `pii.ScrubMap` / `pii.ScrubJSON` walk arbitrary nested data. Sentry `BeforeSend` is wired today (Restricted threshold). Audit-log JSONB scrubbing + structured-log scrubbing are next-up items.
+
+## Secret management
+
+`internal/config.SecretSource` interface decouples secret sources from the rest of BuildOS. `CONFIG_SOURCE` env var selects the implementation:
+
+- `""` / `"env"` — `EnvSecretSource` (default; same behavior as direct `os.Getenv`)
+- `"file:/path"` — `FileSecretSource` reads `<path>/<KEY>`. Matches kubernetes secret-mount convention.
+- `"chain:a,b,..."` — `ChainSecretSource` priority-ordered fallback. Transport errors short-circuit (Vault down ≠ silent downgrade to env).
+
+Vault / AWS Secrets Manager / GCP Secret Manager backends follow the same prefix scheme; additive in follow-up PRs.
+
+Sensitive fields routed through the source: `DATABASE_URL`, `BRAIN_*`, `A2A_*`, `SENTRY_DSN`, `OTEL_EXPORTER_OTLP_ENDPOINT`. Non-sensitive scalars (`PORT`, `DB_POOL_MAX`, etc.) keep direct env reads.
+
+## Per-customer fork lifecycle
+
+Each customer fork gets its own RSA-2048 keypair for outbound A2A signing. Generation is one command:
+
+```
+make fork-init OUT=./forks/acme/secrets KID=acme-2026-q2 ORG_ID=<uuid>
+```
+
+Outputs four artifacts: `private.pem` (NEVER commit; goes in secret store), `public.pem` (committable), `jwks.json` (paste into Brain's per-fork registration), `fork.yaml` (operator-readable: kid + fingerprint + env-var reference).
+
+Full provisioning runbook: [docs/fork-onboarding.md](docs/fork-onboarding.md).
+
+## Per-session handoff state
+
+[HANDOFF.md](HANDOFF.md) at repo root is the living per-session state document. Update it at the end of every working session: what shipped, what's in flight, what's blocked, what's next. The next Claude Code session (different workstation, different time) should be able to land cold and know what to do in 60 seconds.
+
+[.agents/handoff/NEXT_STEPS.md](.agents/handoff/NEXT_STEPS.md) is the prioritized backlog with concrete file-path entry points. Pick from the top.
