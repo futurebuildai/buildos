@@ -103,7 +103,7 @@ Production-hardening TODO: build-tag gate the header path so `DEV_AUTH_MODE=head
 
 ### Wire-protocol values still on legacy names
 
-JWT `iss` is `"fb-brain"` and `aud` is `"fb-os"` — see [auth.go:184](internal/api/middleware/auth.go:184). These are wire-protocol contracts with The Brain and cannot be renamed unilaterally; coordinate with the Brain team before changing.
+JWT `iss` is `"fb-brain"` and `aud` is `"fb-os"` — see [auth.go:226](internal/api/middleware/auth.go:226). The `aud` literal is hardcoded in the `jwt.Expected` struct; `iss` is the runtime value of `BRAIN_ISSUER_URL` (passed at line 225). These are wire-protocol contracts with The Brain and cannot be renamed unilaterally; coordinate with the Brain team before changing.
 
 ## Performance gates
 
