@@ -20,6 +20,7 @@ Companion docs:
 
 ## Last shipped (most recent → older)
 
+- **2026-05-04** PR #10 [`92231c0`] Tier 1 #1: audit-log JSONB Restricted-class PII scrub. `AuditStore.InsertAudit` now wraps Before/After/Metadata in `pii.ScrubJSON(blob, pii.Restricted)` before INSERT. Confidential-class fields (vendor, *_cents, project) intentionally preserved for investigative value. 5 unit tests + 1 integration round-trip test.
 - **2026-05-04** PR #9 [`6119ab3`] CI + release workflows activated at `.github/workflows/` (5 commits: relocation, gofmt sweep across repo, Trivy action `v0.36.0` real-tag pin, Dockerfile alpine bump 3.20→3.22). All 6 CI jobs green on first activation. Plus L8 SRE audit gate added to PR description protocol.
 - **2026-05-04** PR #8 [`chore/workstation-switch`] CI workflow YAMLs recovered to `docs/ci-templates/` + workstation-switch checklist added to this file.
 - **2026-05-01** PR #7 [`8ea5a3e`] HANDOFF.md + NEXT_STEPS.md + CLAUDE.md refresh — cross-session continuity docs.
@@ -29,7 +30,7 @@ Companion docs:
 - **2026-05-01** PR #3 [`29ea6fe`] SecretSource abstraction (env/file/chain) + `LoadWithSource()`.
 - **2026-05-01** PR #2 [`699a64d`] Sprints 1-5 + Phase F core (44 commits — domain endpoints, Brain integration, production hardening, Dockerfile, D8 build-tag hardening).
 
-8 PRs merged under the L8 self-audit gate (PR #9 added the L8 SRE
+9 PRs merged under the L8 self-audit gate (PR #9 added the L8 SRE
 audit gate as a second checklist applied per PR). Every landed
 commit had `make audit` green + integration suite green +
 govulncheck clean. PRs #9 onward also have CI green at merge time
@@ -55,17 +56,17 @@ Known follow-up surfaced by PR #9 (not blocking, queued):
 See [.agents/handoff/NEXT_STEPS.md](./.agents/handoff/NEXT_STEPS.md)
 for the full prioritized backlog with entry-point file paths.
 
-Top three an L8 PE would queue:
+Top three an L8 PE would queue (#1 done in PR #10):
 
-1. **Audit-log JSONB scrub** — same `internal/pii` package, different
-   egress. Wrap audit insert with `pii.ScrubJSON(blob, pii.Restricted)`.
-   ~100 LOC + tests. High-leverage compliance posture for any EU fork.
-2. **Structured-log PII scrubbing** — slog handler that runs
+1. **Structured-log PII scrubbing** — slog handler that runs
    `pii.MaskString` over attribute values whose key matches the
    catalog. Sits behind the existing `obs.CorrelatingHandler`.
-3. **D7 wave 3 finish** — Schedule + Pipeline service audit recording.
+2. **D7 wave 3 finish** — Schedule + Pipeline service audit recording.
    Pattern is established (Fleet + Procurement already wired); copy
    the shape. Half a session.
+3. **S1.5 Brain Client Foundation** — resilience layer (retry +
+   timeout + circuit), Maestro typed envelopes (D5), Hub proxy
+   stubs (D6). Triggers Gate 1.
 
 ## Working agreement (L8 self-audit gate)
 
