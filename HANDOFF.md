@@ -20,6 +20,7 @@ Companion docs:
 
 ## Last shipped (most recent → older)
 
+- **2026-05-04** PR #9 [`6119ab3`] CI + release workflows activated at `.github/workflows/` (5 commits: relocation, gofmt sweep across repo, Trivy action `v0.36.0` real-tag pin, Dockerfile alpine bump 3.20→3.22). All 6 CI jobs green on first activation. Plus L8 SRE audit gate added to PR description protocol.
 - **2026-05-04** PR #8 [`chore/workstation-switch`] CI workflow YAMLs recovered to `docs/ci-templates/` + workstation-switch checklist added to this file.
 - **2026-05-01** PR #7 [`8ea5a3e`] HANDOFF.md + NEXT_STEPS.md + CLAUDE.md refresh — cross-session continuity docs.
 - **2026-05-01** PR #6 [`d71a98f`] PII classification + Sentry BeforeSend masking. `internal/pii/` package + `obs.scrubSentryEvent`. Closes the GDPR/CCPA gap on Sentry egress.
@@ -28,8 +29,11 @@ Companion docs:
 - **2026-05-01** PR #3 [`29ea6fe`] SecretSource abstraction (env/file/chain) + `LoadWithSource()`.
 - **2026-05-01** PR #2 [`699a64d`] Sprints 1-5 + Phase F core (44 commits — domain endpoints, Brain integration, production hardening, Dockerfile, D8 build-tag hardening).
 
-7 PRs merged under the L8 self-audit gate. Every landed commit had
-`make audit` green + integration suite green + govulncheck clean.
+8 PRs merged under the L8 self-audit gate (PR #9 added the L8 SRE
+audit gate as a second checklist applied per PR). Every landed
+commit had `make audit` green + integration suite green +
+govulncheck clean. PRs #9 onward also have CI green at merge time
+(no longer just local audit).
 
 ## In flight
 
@@ -37,13 +41,14 @@ Nothing on a branch waiting for review right now.
 
 ## Blocked
 
-- **GitHub Actions workflows** ready but not yet at `.github/workflows/`.
-  The Claude Code OAuth token can't push to that path. The YAMLs sit at
-  [`docs/ci-templates/{ci,release}.yml`](./docs/ci-templates/) for the
-  next workstation to relocate. See
-  [`docs/ci-templates/README.md`](./docs/ci-templates/README.md) for
-  the one-line `git mv` activation procedure (any token with
-  `workflow` scope works; standard `gh auth login` grants this).
+Nothing blocked right now. (PR #9 cleared the workflow-activation
+blocker; CI is now live on `.github/workflows/{ci,release}.yml`.)
+
+Known follow-up surfaced by PR #9 (not blocking, queued):
+
+- `make audit` is weaker than CI: doesn't run `gofmt -l` strictly
+  and doesn't smoke-build the Dockerfile. Add both to the local
+  audit so future sessions catch issues before CI does.
 
 ## Next up (prioritized — pick from the top)
 
