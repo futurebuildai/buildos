@@ -281,9 +281,9 @@ func (s *FeedService) ActionCard(ctx context.Context, callerOrgID uuid.UUID, cal
 			ResourceID:   c.ID,
 			After:        marshalAudit(c),
 			Metadata: marshalAudit(map[string]any{
-				"action_type":   in.ActionType,
+				"action_type":    in.ActionType,
 				"action_payload": in.Payload, // already json.RawMessage; preserved as-is
-				"card_type":     c.CardType,
+				"card_type":      c.CardType,
 			}),
 		})
 		return nil

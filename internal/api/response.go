@@ -10,7 +10,7 @@ import (
 
 // envelope wraps all API responses in the standard format.
 type envelope struct {
-	Data  any   `json:"data,omitempty"`
+	Data  any       `json:"data,omitempty"`
 	Error *apiError `json:"error,omitempty"`
 	Meta  meta      `json:"meta"`
 }
@@ -21,9 +21,9 @@ type meta struct {
 }
 
 type apiError struct {
-	Code    string        `json:"code"`
-	Message string        `json:"message"`
-	Details []fieldError  `json:"details,omitempty"`
+	Code    string       `json:"code"`
+	Message string       `json:"message"`
+	Details []fieldError `json:"details,omitempty"`
 }
 
 type fieldError struct {

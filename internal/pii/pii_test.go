@@ -41,11 +41,11 @@ func TestMaskString_PerClass(t *testing.T) {
 	}{
 		{"alice@buildos.dev", Public, "alice@buildos.dev"},   // public unchanged
 		{"alice@buildos.dev", Internal, "alice@buildos.dev"}, // internal unchanged
-		{"alice@buildos.dev", Restricted, "[REDACTED]"},       // PII fully redacted
-		{"Acme Corp", Confidential, "A********"},              // first-char + length-preserving
-		{"X", Confidential, "*"},                              // single-char edge case
-		{"", Confidential, ""},                                // empty unchanged
-		{"", Restricted, ""},                                  // empty unchanged
+		{"alice@buildos.dev", Restricted, "[REDACTED]"},      // PII fully redacted
+		{"Acme Corp", Confidential, "A********"},             // first-char + length-preserving
+		{"X", Confidential, "*"},                             // single-char edge case
+		{"", Confidential, ""},                               // empty unchanged
+		{"", Restricted, ""},                                 // empty unchanged
 	}
 	for _, c := range cases {
 		got := MaskString(c.in, c.class)
@@ -89,13 +89,13 @@ func TestClassFor_KnownFields(t *testing.T) {
 
 func TestScrubMap_RestrictedThresholdKeepsBusinessFields(t *testing.T) {
 	in := map[string]any{
-		"email":          "alice@buildos.dev",
-		"phone":          "+1-555-0100",
-		"gps_lat":        45.5231,
-		"vendor_name":    "Acme Lumber",
-		"amount_cents":   int64(450000),
-		"request_id":     "req-abc-123",
-		"event_type":     "feed.card.actioned",
+		"email":        "alice@buildos.dev",
+		"phone":        "+1-555-0100",
+		"gps_lat":      45.5231,
+		"vendor_name":  "Acme Lumber",
+		"amount_cents": int64(450000),
+		"request_id":   "req-abc-123",
+		"event_type":   "feed.card.actioned",
 	}
 	out := ScrubMap(in, Restricted)
 

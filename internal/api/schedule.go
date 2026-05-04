@@ -111,9 +111,9 @@ func (h *ScheduleHandler) ListTasks(w http.ResponseWriter, r *http.Request) {
 }
 
 type updateTaskRequest struct {
-	PercentComplete *int          `json:"percent_complete,omitempty"`
-	Status          *string       `json:"status,omitempty"`
-	AssignedCrew    *[]uuid.UUID  `json:"assigned_crew,omitempty"` // pointer distinguishes absent vs []
+	PercentComplete *int         `json:"percent_complete,omitempty"`
+	Status          *string      `json:"status,omitempty"`
+	AssignedCrew    *[]uuid.UUID `json:"assigned_crew,omitempty"` // pointer distinguishes absent vs []
 }
 
 // UpdateTask modifies a project task.

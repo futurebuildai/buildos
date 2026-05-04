@@ -41,8 +41,8 @@ type ProjectTask struct {
 	IsCritical  bool       `json:"is_critical"`
 
 	// Status fields
-	Status          string    `json:"status"`
-	PercentComplete int       `json:"percent_complete"`
+	Status          string      `json:"status"`
+	PercentComplete int         `json:"percent_complete"`
 	AssignedCrew    []uuid.UUID `json:"assigned_crew,omitempty"`
 
 	// Timestamps
@@ -87,9 +87,9 @@ type WBSTemplateDep struct {
 
 // ProjectContext holds project-level variables that influence DHSM calculations.
 type ProjectContext struct {
-	SupplyChainVolatility   int `json:"supply_chain_volatility"`
-	RoughInspectionLatency  int `json:"rough_inspection_latency"`
-	FinalInspectionLatency  int `json:"final_inspection_latency"`
+	SupplyChainVolatility  int `json:"supply_chain_volatility"`
+	RoughInspectionLatency int `json:"rough_inspection_latency"`
+	FinalInspectionLatency int `json:"final_inspection_latency"`
 }
 
 // DurationMultiplier defines a configurable multiplier rule for DHSM.

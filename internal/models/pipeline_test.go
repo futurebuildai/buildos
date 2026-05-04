@@ -7,13 +7,13 @@ import (
 
 func TestPipelineStage_Probability(t *testing.T) {
 	cases := map[PipelineStage]int{
-		StageLead:             10,
-		StageQualified:        25,
-		StageEstimateSent:     50,
-		StageVerbalCommitment: 75,
-		StagePermitApplied:    85,
-		StagePermitIssued:     100,
-		StageLost:             0,
+		StageLead:              10,
+		StageQualified:         25,
+		StageEstimateSent:      50,
+		StageVerbalCommitment:  75,
+		StagePermitApplied:     85,
+		StagePermitIssued:      100,
+		StageLost:              0,
 		PipelineStage("BOGUS"): 0, // unknown stage falls through
 	}
 	for stage, want := range cases {

@@ -240,9 +240,10 @@ func (s *ScheduleService) ListProjectTasks(ctx context.Context, in ListProjectTa
 
 // UpdateTaskInput is the service-layer input for partial-updating a task.
 // AssignedCrew uses a pointer-to-slice so callers can distinguish:
-//   nil          → no change
-//   &[]uuid.UUID{} → clear crew
-//   &[]uuid.UUID{ids...} → replace crew
+//
+//	nil          → no change
+//	&[]uuid.UUID{} → clear crew
+//	&[]uuid.UUID{ids...} → replace crew
 type UpdateTaskInput struct {
 	TaskID          uuid.UUID
 	ProjectID       uuid.UUID

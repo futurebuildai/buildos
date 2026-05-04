@@ -44,10 +44,10 @@ func NewAgentsService(pool *pgxpool.Pool, fields *store.FieldStore, feed *store.
 // passed back so the client can continue the conversation if the user
 // asks follow-up questions.
 type DailyBriefing struct {
-	Reply       string    `json:"reply"`
-	SessionID   uuid.UUID `json:"session_id"`
-	TaskCount   int       `json:"task_count"`
-	AlertCount  int       `json:"alert_count"`
+	Reply      string    `json:"reply"`
+	SessionID  uuid.UUID `json:"session_id"`
+	TaskCount  int       `json:"task_count"`
+	AlertCount int       `json:"alert_count"`
 }
 
 // GenerateDailyBriefing assembles the caller's open tasks + recent
@@ -67,7 +67,7 @@ func (s *AgentsService) GenerateDailyBriefing(ctx context.Context, callerOrgID u
 	}
 
 	type loadedContext struct {
-		taskNames  []string
+		taskNames   []string
 		alertTitles []string
 	}
 

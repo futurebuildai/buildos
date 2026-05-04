@@ -34,12 +34,12 @@ type mockPipelineService struct {
 	createEstimateErr    error
 	updateEstimateResult models.PipelineEstimate
 	updateEstimateErr    error
-	createPermitResult models.Permit
-	createPermitErr    error
-	updatePermitResult models.Permit
-	updatePermitErr    error
-	analyticsResult    []models.PipelineAnalyticsRow
-	analyticsErr       error
+	createPermitResult   models.Permit
+	createPermitErr      error
+	updatePermitResult   models.Permit
+	updatePermitErr      error
+	analyticsResult      []models.PipelineAnalyticsRow
+	analyticsErr         error
 
 	// Captured args for assertions.
 	lastListInput           service.ListProspectsInput

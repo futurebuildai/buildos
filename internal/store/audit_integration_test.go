@@ -122,7 +122,7 @@ func TestAuditStore_InsertAudit_NullableFields(t *testing.T) {
 	}
 
 	var (
-		userSub, reqID *string
+		userSub, reqID          *string
 		before, after, metadata []byte
 	)
 	err = pool.QueryRow(ctx, `

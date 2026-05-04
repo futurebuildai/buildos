@@ -33,7 +33,7 @@
 # syntax=docker/dockerfile:1.7
 
 ARG GO_VERSION=1.26
-ARG ALPINE_VERSION=3.20
+ARG ALPINE_VERSION=3.22
 ARG DISTROLESS_TAG=nonroot
 
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS builder

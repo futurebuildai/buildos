@@ -182,8 +182,8 @@ type erroringSource struct{}
 func (erroringSource) LookupSecret(_ context.Context, _ string) (string, bool, error) {
 	return "", false, errors.New("simulated transport failure")
 }
-func (erroringSource) Name() string  { return "erroring" }
-func (erroringSource) Close() error  { return nil }
+func (erroringSource) Name() string { return "erroring" }
+func (erroringSource) Close() error { return nil }
 
 func TestChainSecretSource_TransportErrorShortCircuits(t *testing.T) {
 	// First source errors; second source has the key. The chain

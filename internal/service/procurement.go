@@ -177,10 +177,10 @@ func (s *ProcurementService) CreateProcurementItem(ctx context.Context, callerOr
 			ResourceID:   got.ID,
 			After:        marshalAudit(got),
 			Metadata: marshalAudit(map[string]any{
-				"project_id":   in.ProjectID,
-				"wbs_code":     got.WBSCode,
-				"cost_cents":   got.EstimatedCostCents,
-				"currency":     got.EstimatedCostCurrencyCode,
+				"project_id": in.ProjectID,
+				"wbs_code":   got.WBSCode,
+				"cost_cents": got.EstimatedCostCents,
+				"currency":   got.EstimatedCostCurrencyCode,
 			}),
 		})
 		return nil

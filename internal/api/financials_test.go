@@ -88,6 +88,7 @@ const (
 // buildRequest constructs a request whose context carries:
 //   - JWT claims for the caller (via middleware.ContextWithClaims)
 //   - Chi URL params (via chi.RouteCtxKey)
+//
 // Both layers are required because the handler reads from each.
 func buildRequest(t *testing.T, method, target, callerOrgID string, params map[string]string, body io.Reader) *http.Request {
 	t.Helper()
