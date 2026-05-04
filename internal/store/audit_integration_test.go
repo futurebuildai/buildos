@@ -97,6 +97,79 @@ func TestAuditStore_InsertAudit_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestAuditStore_InsertAudit_PIIScrubbedRoundTrip — end-to-end
+// proof that a payload with a Restricted-class field (email) is
+// redacted before it lands in the audit_log table. Reads the row
+// back via raw SQL and asserts the original email substring is
+// absent. Pairs with the unit-level coverage in audit_test.go.
+func TestAuditStore_InsertAudit_PIIScrubbedRoundTrip(t *testing.T) {
+	pool := testdb.NewPool(t)
+	s := NewAuditStore()
+	ctx := context.Background()
+
+	orgID := uuid.New()
+	resourceID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Acme")
+
+	dirty := json.RawMessage(
+		`{"email":"alice@example.com","vendor_name":"Acme Lumber","amount_cents":150000}`)
+
+	err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		return s.InsertAudit(ctx, tx, InsertAuditParams{
+			OrgID:        orgID,
+			UserSub:      "user-sub-pii-test",
+			Action:       "procurement.quote.approved",
+			ResourceType: "quote",
+			ResourceID:   resourceID,
+			Before:       dirty,
+			After:        dirty,
+			Metadata:     dirty,
+		})
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	var before, after, meta []byte
+	err = pool.QueryRow(ctx, `
+		SELECT before_state, after_state, metadata
+		FROM audit_log
+		WHERE org_id = $1`, orgID).Scan(&before, &after, &meta)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+
+	for label, blob := range map[string][]byte{
+		"before_state": before,
+		"after_state":  after,
+		"metadata":     meta,
+	} {
+		s := string(blob)
+		// Restricted MUST be gone.
+		if bytesContain(s, "alice@example.com") {
+			t.Errorf("%s leaked Restricted email: %s", label, s)
+		}
+		// Confidential MUST survive (audit investigative value).
+		if !bytesContain(s, "Acme Lumber") {
+			t.Errorf("%s lost Confidential vendor_name: %s", label, s)
+		}
+		if !bytesContain(s, "150000") {
+			t.Errorf("%s lost Confidential amount_cents: %s", label, s)
+		}
+	}
+}
+
+func bytesContain(haystack, needle string) bool {
+	return len(haystack) >= len(needle) && (func() bool {
+		for i := 0; i+len(needle) <= len(haystack); i++ {
+			if haystack[i:i+len(needle)] == needle {
+				return true
+			}
+		}
+		return false
+	})()
+}
+
 func TestAuditStore_InsertAudit_NullableFields(t *testing.T) {
 	// user_sub, request_id, before, after, metadata all support NULL.
 	// Confirms the empty-input → SQL NULL conversion lives end-to-end.
