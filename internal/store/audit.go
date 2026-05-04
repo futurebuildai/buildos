@@ -7,6 +7,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/futurebuildai/buildos/internal/pii"
 )
 
 // AuditStore manages audit_log inserts.
@@ -34,7 +36,24 @@ type InsertAuditParams struct {
 // the mutation it describes — that way a rolled-back action also
 // rolls back its audit row, and a successful action ALWAYS has its
 // trail row.
+//
+// Before/After/Metadata JSONB payloads are scrubbed of Restricted-class
+// PII (emails, phones, names, GPS coords, OIDC subjects, IPs) before
+// persistence — the audit log is read by compliance reviewers and
+// support staff and must not leak PII even within the fork. Caller-
+// known business-sensitive values (vendor names, *_cents amounts —
+// Confidential class) are preserved so the audit trail retains its
+// investigative value.
+//
+// The scrub is idempotent: calling InsertAudit with already-scrubbed
+// JSON is a no-op on those fields.
+//
+// Caveat: pii.ScrubJSON returns the input unchanged on JSON parse
+// failure (per package design — better to ship a maybe-leaky audit
+// than drop the row). Malformed-JSON payloads will reach the row
+// unscrubbed; callers MUST construct valid JSON before calling.
 func (s *AuditStore) InsertAudit(ctx context.Context, tx pgx.Tx, p InsertAuditParams) error {
+	p = scrubAuditPayloads(p)
 	var (
 		userSub   *string
 		requestID *string
@@ -57,6 +76,20 @@ func (s *AuditStore) InsertAudit(ctx context.Context, tx pgx.Tx, p InsertAuditPa
 		return fmt.Errorf("insert audit_log: %w", err)
 	}
 	return nil
+}
+
+// scrubAuditPayloads returns a copy of p with Before/After/Metadata
+// scrubbed of Restricted-class PII via pii.ScrubJSON. Other fields
+// (OrgID, UserSub, Action, etc.) are passed through unchanged — the
+// scrub targets dynamic JSONB blobs only. UserSub itself is a JWT
+// subject (Restricted in the catalog) but is intentionally retained
+// in the audit table column for accountability tracing; the JSONB
+// scrub catches any incidental copy of it inside Before/After/Metadata.
+func scrubAuditPayloads(p InsertAuditParams) InsertAuditParams {
+	p.Before = pii.ScrubJSON(p.Before, pii.Restricted)
+	p.After = pii.ScrubJSON(p.After, pii.Restricted)
+	p.Metadata = pii.ScrubJSON(p.Metadata, pii.Restricted)
+	return p
 }
 
 // nullableJSON returns nil for an empty RawMessage so the column lands
