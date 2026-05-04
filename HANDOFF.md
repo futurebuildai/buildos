@@ -20,33 +20,30 @@ Companion docs:
 
 ## Last shipped (most recent → older)
 
-- **2026-05-01** PR #6 [`b3...`] PII classification + Sentry BeforeSend masking. `internal/pii/` package + `obs.scrubSentryEvent`. Closes the GDPR/CCPA gap on Sentry egress.
+- **2026-05-04** PR #8 [`chore/workstation-switch`] CI workflow YAMLs recovered to `docs/ci-templates/` + workstation-switch checklist added to this file.
+- **2026-05-01** PR #7 [`8ea5a3e`] HANDOFF.md + NEXT_STEPS.md + CLAUDE.md refresh — cross-session continuity docs.
+- **2026-05-01** PR #6 [`d71a98f`] PII classification + Sentry BeforeSend masking. `internal/pii/` package + `obs.scrubSentryEvent`. Closes the GDPR/CCPA gap on Sentry egress.
 - **2026-05-01** PR #5 [`ca36fa3`] OpenTelemetry tracing — `internal/obs/tracer.go`, brain-client `otelhttp` wrap, router middleware, log-correlation (trace_id+span_id alongside request_id).
 - **2026-05-01** PR #4 [`7facfce`] `cmd/buildos-fork-init` keypair generator + `docs/fork-onboarding.md`.
 - **2026-05-01** PR #3 [`29ea6fe`] SecretSource abstraction (env/file/chain) + `LoadWithSource()`.
 - **2026-05-01** PR #2 [`699a64d`] Sprints 1-5 + Phase F core (44 commits — domain endpoints, Brain integration, production hardening, Dockerfile, D8 build-tag hardening).
 
-5 PRs merged in one session under the L8 self-audit gate. Every
-landed commit had `make audit` green + integration suite green +
-govulncheck clean.
+7 PRs merged under the L8 self-audit gate. Every landed commit had
+`make audit` green + integration suite green + govulncheck clean.
 
 ## In flight
 
-Nothing on a branch waiting for review right now. The session ended
-with all branches deleted (merged) except whatever the next session
-opens.
+Nothing on a branch waiting for review right now.
 
 ## Blocked
 
-- **GitHub Actions workflows** (`.github/workflows/{ci,release}.yml`)
-  still un-pushed. The token Claude Code is using doesn't have GitHub's
-  `workflow` scope. The YAML is correct + tested locally; ship it via
-  one of:
-  - GitHub UI: paste the YAML through "Add file → Create new file"
-  - Local clone: push from a token that has `workflow` scope
-  - Refresh: `gh auth refresh -h github.com -s workflow` then re-push
-  Files exist locally between sessions if you keep the worktree alive;
-  if not, they're at the bottom of this doc as an appendix.
+- **GitHub Actions workflows** ready but not yet at `.github/workflows/`.
+  The Claude Code OAuth token can't push to that path. The YAMLs sit at
+  [`docs/ci-templates/{ci,release}.yml`](./docs/ci-templates/) for the
+  next workstation to relocate. See
+  [`docs/ci-templates/README.md`](./docs/ci-templates/README.md) for
+  the one-line `git mv` activation procedure (any token with
+  `workflow` scope works; standard `gh auth login` grants this).
 
 ## Next up (prioritized — pick from the top)
 
@@ -121,21 +118,99 @@ to forget when working on one side only. The Brain repo lives at
 | `WebhookEvent.OrgID` field | Brain | optional today, should become required | when Brain enforces this, BuildOS continues to send it as it does now |
 | Maestro Chat | Brain | live | called from `internal/service/agents.go` DailyBriefing |
 | Billing usage | Brain | live | proxied at `/api/v1/billing/usage` |
-| LocalBlue → Brain → BuildOS | Brain | live | `localblue.lead_captured` event handled in `internal/service/a2a.go` |
+| LocalBlue → Brain → BuildOS | Brain | partial | BuildOS handler shipped (`internal/service/a2a.go` `handleLocalblueLeadCaptured`); Brain-side type definitions deleted 2026-05-04 (orphan branch never merged). When Brain emitter wiring resumes, re-derive `LocalblueLeadCapturedPayload` from BuildOS's `localblueLeadCapturedPayload` struct as the canonical reference. |
 | Stripe billing engine | Brain | not yet | gating G1 |
 | Vault / SecretsManager backends for SecretSource | BuildOS | env+file shipped; vault next when first customer fork needs it | `internal/config/secrets.go` interface ready |
 
 ---
 
+## Workstation switch checklist
+
+Use when picking BuildOS up on a fresh workstation (e.g. switching
+from a travel laptop to a primary dev box). The repos themselves are
+already clean — this list is for the new environment.
+
+### One-time setup on the new workstation
+
+```bash
+# 1. Clone both repos as siblings (the go.mod replace directive expects
+#    futurebuild-brain at ../futurebuild-brain relative to buildos):
+mkdir ~/repos && cd ~/repos
+git clone https://github.com/futurebuildai/buildos.git
+git clone https://github.com/futurebuildai/futurebuild-brain.git
+
+# 2. Toolchain:
+#    - Go 1.26+        (for build + tests)
+#    - Docker           (for testcontainers-backed integration tests)
+#    - golangci-lint    (for `make lint`)
+#    - govulncheck      `go install golang.org/x/vuln/cmd/govulncheck@latest`
+#    - gh CLI           (for PR ops)
+#    - make
+
+# 3. gh auth with workflow scope from the start. This unblocks the
+#    `.github/workflows/` push that the Mac session couldn't do:
+gh auth login                # follow prompts; choose HTTPS or SSH
+gh auth refresh -h github.com -s workflow
+
+# 4. git identity:
+git config --global user.name "Your Name"
+git config --global user.email "you@example.com"
+
+# 5. Verify everything builds + tests:
+cd ~/repos/buildos
+make audit
+make test-integration       # spawns Postgres via testcontainers — needs Docker
+
+# 6. Activate the CI workflows that have been waiting in docs/ci-templates/
+git checkout -b ci/activate-workflows
+git mv docs/ci-templates/ci.yml      .github/workflows/ci.yml
+git mv docs/ci-templates/release.yml .github/workflows/release.yml
+git rm docs/ci-templates/README.md
+git commit -m "ci: activate CI + release workflows"
+git push -u origin ci/activate-workflows
+gh pr create --base main --title "ci: activate CI + release workflows"
+```
+
+### What to read first
+
+1. [HANDOFF.md](./HANDOFF.md) (this file) — top-of-file sections give
+   you 60 seconds of "what just happened, what's next."
+2. [CLAUDE.md](./CLAUDE.md) — architecture, conventions, hard CI gates.
+3. [.agents/handoff/NEXT_STEPS.md](./.agents/handoff/NEXT_STEPS.md) —
+   pick from Tier 1 to start work.
+4. [.agents/handoff/ADR-002-single-tenant-fork-model.md](./.agents/handoff/ADR-002-single-tenant-fork-model.md)
+   — the most recent strategic decision. Keep this top-of-mind: BuildOS
+   is single-tenant per customer fork, not multi-tenant SaaS.
+
+### Things you don't need to bring with you
+
+- **The worktree** — every commit is on the remote.
+- **Local secrets** — `.env` files are gitignored. The
+  `internal/config.SecretSource` abstraction means a fresh workstation
+  with its own `.env` (or no `.env`, with `CONFIG_SOURCE=file:/path`)
+  works identically.
+- **Local generated artifacts** — `bin/`, `bin/prod/`, `*.test`. All
+  rebuildable.
+
+### Things to NOT carry over
+
+- Any `private.pem` from `make fork-init` runs. Those go straight into
+  a customer's secret store, never into a worktree on a personal
+  laptop.
+- Any tokens or credentials baked into local shell history. Audit your
+  `~/.bash_history` / `~/.zsh_history` before disposal if you're
+  recycling the old machine.
+
+---
+
 ## Appendix: workflow YAML (if not in worktree)
 
-If the `.github/workflows/{ci,release}.yml` files aren't in your
-checkout, they were generated in [PR #5's predecessor session]. The
-content is captured in the commit message of branch
-`ci/github-workflows` (now deleted) — recoverable via `git reflog`
-or reconstructable from this doc's recipe. Recipe:
+The CI + release YAMLs are tracked at
+[`docs/ci-templates/`](./docs/ci-templates/) until a session with
+`workflow` OAuth scope relocates them to `.github/workflows/`. See
+that directory's README for activation steps. Summary of what they do:
 
-**`.github/workflows/ci.yml`** mounts six jobs on every PR + push to main:
+**`ci.yml`** mounts six jobs on every PR + push to main:
 - lint-migrations (5 rules) + linter regression suite
 - gofmt + go vet (both default and `-tags=prod`)
 - govulncheck CI-blocking (both build modes)
