@@ -182,7 +182,7 @@ jobs:
           fi
           echo "smoke ok: entrypoint rejects unknown role with documented rc=64"
       - name: Trivy vulnerability scan (CI-blocking on HIGH/CRITICAL)
-        uses: aquasecurity/trivy-action@0.20.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           image-ref: buildos:ci-smoke
           format: table
