@@ -476,9 +476,9 @@ func BenchmarkBuildGraph80(b *testing.B) {
 	}
 	for i := 0; i < 79; i++ {
 		deps[i] = models.TaskDependency{
-			ID:            uuid.New(),
-			PredecessorID: tasks[i].ID,
-			SuccessorID:   tasks[i+1].ID,
+			ID:             uuid.New(),
+			PredecessorID:  tasks[i].ID,
+			SuccessorID:    tasks[i+1].ID,
 			DependencyType: types.DependencyTypeFS,
 		}
 	}

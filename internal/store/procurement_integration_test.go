@@ -352,10 +352,10 @@ func TestProcurementStore_RecomputeStatuses_BulkTransition(t *testing.T) {
 	//   future:  must_order=jun-1   → OK       (well outside window)
 	//   ordered: must_order=apr-25 status=ORDERED → unchanged
 	specs := []struct {
-		name      string
-		needBy    time.Time
-		leadDays  int
-		buffer    int
+		name       string
+		needBy     time.Time
+		leadDays   int
+		buffer     int
 		setOrdered bool
 	}{
 		{"past", time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC), 5, 1, false},   // must_order = apr-25

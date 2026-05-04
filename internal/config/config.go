@@ -63,9 +63,9 @@ type Config struct {
 	// regardless so trace_ids still flow over inbound headers and
 	// outbound Brain calls — useful for log correlation even when
 	// not exporting spans.
-	OTelEndpoint    string  // OTLP-HTTP collector URL; "" disables
-	OTelInsecure    bool    // allow plaintext HTTP to collector (loopback / sidecar only)
-	OTelSampleRate  float64 // [0.0, 1.0]; defaults to 0.1 in InitTracing
+	OTelEndpoint   string  // OTLP-HTTP collector URL; "" disables
+	OTelInsecure   bool    // allow plaintext HTTP to collector (loopback / sidecar only)
+	OTelSampleRate float64 // [0.0, 1.0]; defaults to 0.1 in InitTracing
 
 	// Physics Engine
 	Physics PhysicsConfig

@@ -186,10 +186,10 @@ func (c *StandardCalendar) AddWorkingDays(date time.Time, days float64) time.Tim
 
 // CPMResult represents the output of CPM scheduling.
 type CPMResult struct {
-	Tasks            []TaskSchedule `json:"tasks"`
-	CriticalPath     []string       `json:"critical_path"`
-	ProjectEnd       time.Time      `json:"project_end"`
-	CriticalPathChanged bool        `json:"critical_path_changed"`
+	Tasks               []TaskSchedule `json:"tasks"`
+	CriticalPath        []string       `json:"critical_path"`
+	ProjectEnd          time.Time      `json:"project_end"`
+	CriticalPathChanged bool           `json:"critical_path_changed"`
 }
 
 // BuildDependencyGraph constructs a DAG from ProjectTask and TaskDependency models.

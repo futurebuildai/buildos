@@ -20,15 +20,15 @@ type BillingClient struct {
 // UsageSummary is the aggregated response from GET /api/billing/usage.
 // Field shapes mirror Brain's metering store; cents are after markup.
 type UsageSummary struct {
-	OrgID            string    `json:"org_id"`
-	Start            time.Time `json:"start"`
-	End              time.Time `json:"end"`
-	TotalTokens      int64     `json:"total_tokens"`
-	InputTokens      int64     `json:"input_tokens"`
-	OutputTokens     int64     `json:"output_tokens"`
-	CostCents        int64     `json:"cost_cents"`
-	CurrencyCode     string    `json:"currency_code"`
-	ModelBreakdown   []ModelUsage `json:"model_breakdown,omitempty"`
+	OrgID          string       `json:"org_id"`
+	Start          time.Time    `json:"start"`
+	End            time.Time    `json:"end"`
+	TotalTokens    int64        `json:"total_tokens"`
+	InputTokens    int64        `json:"input_tokens"`
+	OutputTokens   int64        `json:"output_tokens"`
+	CostCents      int64        `json:"cost_cents"`
+	CurrencyCode   string       `json:"currency_code"`
+	ModelBreakdown []ModelUsage `json:"model_breakdown,omitempty"`
 }
 
 // ModelUsage is a per-model row in the usage summary.

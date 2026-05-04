@@ -53,17 +53,17 @@ type CrewCheckin struct {
 
 // DailyLog mirrors a daily_logs row.
 type DailyLog struct {
-	ID                 uuid.UUID   `json:"id"`
-	OrgID              uuid.UUID   `json:"org_id"`
-	ProjectID          uuid.UUID   `json:"project_id"`
-	ReportedBy         uuid.UUID   `json:"reported_by"`
-	LogDate            time.Time   `json:"log_date"`
-	WeatherConditions  *string     `json:"weather_conditions,omitempty"`
-	WorkSummary        string      `json:"work_summary"`
-	SafetyIncidents    *string     `json:"safety_incidents,omitempty"`
-	PhotoAssetIDs      []uuid.UUID `json:"photo_asset_ids,omitempty"`
-	IdempotencyKey     uuid.UUID   `json:"idempotency_key"`
-	ReportedAt         time.Time   `json:"reported_at"`
+	ID                uuid.UUID   `json:"id"`
+	OrgID             uuid.UUID   `json:"org_id"`
+	ProjectID         uuid.UUID   `json:"project_id"`
+	ReportedBy        uuid.UUID   `json:"reported_by"`
+	LogDate           time.Time   `json:"log_date"`
+	WeatherConditions *string     `json:"weather_conditions,omitempty"`
+	WorkSummary       string      `json:"work_summary"`
+	SafetyIncidents   *string     `json:"safety_incidents,omitempty"`
+	PhotoAssetIDs     []uuid.UUID `json:"photo_asset_ids,omitempty"`
+	IdempotencyKey    uuid.UUID   `json:"idempotency_key"`
+	ReportedAt        time.Time   `json:"reported_at"`
 }
 
 // FieldSyncResponse bundles everything a mobile client needs to refresh

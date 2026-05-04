@@ -44,11 +44,11 @@ type JWKSCacheReporter interface {
 
 // RouterConfig holds all dependencies needed to build the API router.
 type RouterConfig struct {
-	Pool            *pgxpool.Pool
-	JWKS            *mw.JWKSProvider
-	IssuerURL       string
-	DevAuthMode     string
-	Logger          *slog.Logger
+	Pool               *pgxpool.Pool
+	JWKS               *mw.JWKSProvider
+	IssuerURL          string
+	DevAuthMode        string
+	Logger             *slog.Logger
 	BudgetService      BudgetServicer
 	PipelineService    PipelineServicer
 	ScheduleService    ScheduleServicer

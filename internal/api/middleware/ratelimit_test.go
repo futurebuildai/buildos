@@ -102,9 +102,9 @@ func TestIPRateLimiter_GCEvictsIdleBuckets(t *testing.T) {
 
 func TestClientIP_StripsPort(t *testing.T) {
 	cases := map[string]string{
-		"10.0.0.1:1234":     "10.0.0.1",
-		"[::1]:443":         "::1",
-		"192.168.1.5":       "192.168.1.5", // no port — return as-is
+		"10.0.0.1:1234": "10.0.0.1",
+		"[::1]:443":     "::1",
+		"192.168.1.5":   "192.168.1.5", // no port — return as-is
 	}
 	for raw, want := range cases {
 		req := httptest.NewRequest(http.MethodGet, "/x", nil)

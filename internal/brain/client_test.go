@@ -395,4 +395,3 @@ func TestTokenFromContext(t *testing.T) {
 		t.Error("empty token in context should return ok=false")
 	}
 }
-

@@ -86,10 +86,10 @@ func NewA2AHandler(verifier JWSVerifier, svc A2AServicer, logger *slog.Logger) *
 //
 // Flow:
 //
-//	1. Read body (1 MB limit).
-//	2. Verify JWS detached signature against Brain's public key.
-//	3. Parse the envelope.
-//	4. Hand off to the service for idempotency dedup + dispatch.
+//  1. Read body (1 MB limit).
+//  2. Verify JWS detached signature against Brain's public key.
+//  3. Parse the envelope.
+//  4. Hand off to the service for idempotency dedup + dispatch.
 //
 // The service runs the dedup INSERT and the per-event handler in one
 // transaction, so duplicate deliveries land cleanly and partial failures
