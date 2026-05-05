@@ -156,7 +156,7 @@ func run(logger *slog.Logger) error {
 	hrService := service.NewHRService(pool, hrStore)
 	fieldStore := store.NewFieldStore()
 	fieldService := service.NewFieldService(pool, fieldStore, feedCardsStore, auditService)
-	agentsService := service.NewAgentsService(pool, fieldStore, feedCardsStore, brainClient.Maestro)
+	agentsService := service.NewAgentsService(pool, fieldStore, feedCardsStore, brainClient.Maestro, auditService)
 	a2aService := service.NewA2AService(pool, a2aStore, feedCardsStore, pipelineStore, cfg.DefaultOrgID)
 	a2aVerifier := api.NewJWKSVerifier(jwks) // verifies Brain's JWS using the same JWKS used for JWT validation
 
