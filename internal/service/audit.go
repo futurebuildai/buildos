@@ -28,6 +28,7 @@ const (
 	AuditResourceEstimate        = "estimate"
 	AuditResourcePermit          = "permit"
 	AuditResourceSchedule        = "schedule"
+	AuditResourceAIRun           = "ai_run"
 )
 
 // AuditRecorder is the consumer-side interface every mutating service
