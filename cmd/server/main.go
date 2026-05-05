@@ -149,7 +149,7 @@ func run(logger *slog.Logger) error {
 	feedCardsStore := store.NewFeedCardsStore()
 	feedService := service.NewFeedService(pool, feedCardsStore, logger, riverClient, auditService)
 	procurementStore := store.NewProcurementStore()
-	procurementService := service.NewProcurementService(pool, procurementStore, auditService)
+	procurementService := service.NewProcurementService(pool, procurementStore, brainClient.Maestro, auditService)
 	fleetStore := store.NewFleetStore()
 	fleetService := service.NewFleetService(pool, fleetStore, auditService)
 	hrStore := store.NewHRStore()

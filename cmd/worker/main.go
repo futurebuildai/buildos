@@ -88,7 +88,11 @@ func run(logger *slog.Logger) error {
 	// SQL UPDATEs rather than per-item RPC. Once the agent emits
 	// per-item feed cards we'll wire the real audit there.
 	procurementStore := store.NewProcurementStore()
-	procurementService := service.NewProcurementService(pool, procurementStore, service.NewNoopAuditRecorder())
+	// Worker only runs RecomputeStatuses (the daily sweep) — no
+	// human caller, no Maestro recommendation. Pass nil for the
+	// MaestroProcurementRecommender; RecommendVendors guards with
+	// ErrMaestroUnavailable but is never invoked from this binary.
+	procurementService := service.NewProcurementService(pool, procurementStore, nil, service.NewNoopAuditRecorder())
 
 	// Outbound A2A: optional. When A2A_SIGNING_KEY_PATH is unset the
 	// worker registry falls back to a no-op handler that logs and

@@ -15,20 +15,21 @@ import (
 // Resource type constants used in audit_log.resource_type. Keep in
 // sync across services so per-domain history queries stay consistent.
 const (
-	AuditResourceFeedCard        = "feed_card"
-	AuditResourceProcurementItem = "procurement_item"
-	AuditResourceFleetAsset      = "fleet_asset"
-	AuditResourceEquipmentAlloc  = "equipment_allocation"
-	AuditResourceInvoice         = "invoice"
-	AuditResourceTaskProgress    = "task_progress"
-	AuditResourceCrewCheckin     = "crew_checkin"
-	AuditResourceDailyLog        = "daily_log"
-	AuditResourceProjectTask     = "project_task"
-	AuditResourceProspect        = "prospect"
-	AuditResourceEstimate        = "estimate"
-	AuditResourcePermit          = "permit"
-	AuditResourceSchedule        = "schedule"
-	AuditResourceAIRun           = "ai_run"
+	AuditResourceFeedCard                  = "feed_card"
+	AuditResourceProcurementItem           = "procurement_item"
+	AuditResourceFleetAsset                = "fleet_asset"
+	AuditResourceEquipmentAlloc            = "equipment_allocation"
+	AuditResourceInvoice                   = "invoice"
+	AuditResourceTaskProgress              = "task_progress"
+	AuditResourceCrewCheckin               = "crew_checkin"
+	AuditResourceDailyLog                  = "daily_log"
+	AuditResourceProjectTask               = "project_task"
+	AuditResourceProspect                  = "prospect"
+	AuditResourceEstimate                  = "estimate"
+	AuditResourcePermit                    = "permit"
+	AuditResourceSchedule                  = "schedule"
+	AuditResourceAIRun                     = "ai_run"
+	AuditResourceProcurementRecommendation = "procurement_recommendation"
 )
 
 // AuditRecorder is the consumer-side interface every mutating service

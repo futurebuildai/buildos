@@ -7,8 +7,28 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/futurebuildai/buildos/internal/brain"
 	"github.com/futurebuildai/buildos/internal/models"
 )
+
+// fakeProcurementRecommender is the test double for
+// MaestroProcurementRecommender. Captures the last request and
+// replays a scripted response — same pattern as fakeBriefer in
+// agents_test.go. Lets the validation tests assert the gate without
+// spinning up an HTTP server.
+type fakeProcurementRecommender struct {
+	lastReq brain.ProcurementRecommendRequest
+	resp    *brain.ProcurementRecommendResponse
+	err     error
+}
+
+func (f *fakeProcurementRecommender) ProcurementRecommend(_ context.Context, req brain.ProcurementRecommendRequest) (*brain.ProcurementRecommendResponse, error) {
+	f.lastReq = req
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.resp, nil
+}
 
 // These tests cover the input-validation gates that run BEFORE
 // ProcurementService touches the database pool. Passing nil pool/store
@@ -19,7 +39,10 @@ func newProcurementSvcForValidationTests() *ProcurementService {
 	// nil audit falls back to a no-op recorder; nil pool/store
 	// causes any post-validation path to panic, which proves the
 	// validation gates short-circuit before touching either.
-	return NewProcurementService(nil, nil, nil)
+	// nil maestro is intentional — only RecommendVendors uses it,
+	// and it short-circuits with ErrMaestroUnavailable rather than
+	// panicking, so we get a clean error in those tests too.
+	return NewProcurementService(nil, nil, nil, nil)
 }
 
 func ptrString(s string) *string { return &s }
@@ -93,5 +116,51 @@ func TestProcurementService_Update_RejectsBadInput(t *testing.T) {
 				t.Errorf("err = %v, want ErrInvalidInput", err)
 			}
 		})
+	}
+}
+
+func TestProcurementService_RecommendVendors_RejectsBadInput(t *testing.T) {
+	svc := newProcurementSvcForValidationTests()
+	if _, err := svc.RecommendVendors(context.Background(), uuid.Nil, "sub-1", uuid.New()); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("nil org: err = %v, want ErrInvalidInput", err)
+	}
+	if _, err := svc.RecommendVendors(context.Background(), uuid.New(), "sub-1", uuid.Nil); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("nil item: err = %v, want ErrInvalidInput", err)
+	}
+}
+
+func TestProcurementService_RecommendVendors_NoMaestroReturnsUnavailable(t *testing.T) {
+	// Constructed with nil Maestro: a worker-style binary that only
+	// recomputes statuses. RecommendVendors must surface a sentinel
+	// rather than panicking on the nil call. Validation has already
+	// passed here (non-nil ids), so we know the path reached the
+	// nil-Maestro gate.
+	svc := NewProcurementService(nil, nil, nil, nil)
+	_, err := svc.RecommendVendors(context.Background(), uuid.New(), "sub-1", uuid.New())
+	if !errors.Is(err, ErrMaestroUnavailable) {
+		t.Errorf("err = %v, want ErrMaestroUnavailable", err)
+	}
+}
+
+func TestConfidenceToPct(t *testing.T) {
+	cases := []struct {
+		in   float64
+		want int
+	}{
+		{0.0, 0},
+		{0.5, 50},
+		{1.0, 100},
+		{0.123, 12},   // rounds half-down
+		{0.125, 13},   // half-up at .5
+		{0.999, 100},  // rounds to 100
+		{-0.5, 0},     // clamps below 0
+		{1.5, 100},    // clamps above 1
+		{0.005, 1},    // very small
+	}
+	for _, c := range cases {
+		got := confidenceToPct(c.in)
+		if got != c.want {
+			t.Errorf("confidenceToPct(%v) = %d, want %d", c.in, got, c.want)
+		}
 	}
 }

@@ -201,6 +201,94 @@ func (s *ProcurementStore) UpdateProcurementItem(ctx context.Context, tx pgx.Tx,
 	return item, nil
 }
 
+// GetProcurementItem fetches a single procurement item and verifies
+// it belongs to the caller's org. Used by RecommendVendors to confirm
+// ownership and pull budget context (estimated_cost) for Maestro.
+// Returns ErrProcurementItemNotFound on miss or org-mismatch.
+func (s *ProcurementStore) GetProcurementItem(ctx context.Context, tx pgx.Tx, itemID, orgID uuid.UUID) (models.ProcurementItem, error) {
+	var item models.ProcurementItem
+	err := tx.QueryRow(ctx, `
+		SELECT id, project_id, org_id, name, wbs_code,
+		       estimated_cost_cents, estimated_cost_currency_code,
+		       lead_time_days, weather_buffer_days, vendor_id,
+		       need_by_date, must_order_date,
+		       status, ordered_at, po_number,
+		       status_changed_at, created_at, updated_at
+		FROM procurement_items
+		WHERE id = $1 AND org_id = $2`,
+		itemID, orgID,
+	).Scan(
+		&item.ID, &item.ProjectID, &item.OrgID, &item.Name, &item.WBSCode,
+		&item.EstimatedCostCents, &item.EstimatedCostCurrencyCode,
+		&item.LeadTimeDays, &item.WeatherBufferDays, &item.VendorID,
+		&item.NeedByDate, &item.MustOrderDate,
+		&item.Status, &item.OrderedAt, &item.PONumber,
+		&item.StatusChangedAt, &item.CreatedAt, &item.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return models.ProcurementItem{}, ErrProcurementItemNotFound
+		}
+		return models.ProcurementItem{}, fmt.Errorf("get procurement_item: %w", err)
+	}
+	return item, nil
+}
+
+// CreateProcurementRecommendationParams is the input for one
+// procurement_recommendations row. RunID is shared across the batch
+// of recommendations from one Maestro call so consumers can replay
+// "what did Maestro produce in run X". VendorID is nullable because
+// Maestro may recommend a vendor that doesn't yet have a record in
+// BuildOS; vendor_name is always populated for human rendering.
+type CreateProcurementRecommendationParams struct {
+	ProcurementItemID          uuid.UUID
+	OrgID                      uuid.UUID
+	RunID                      uuid.UUID
+	VendorID                   *uuid.UUID
+	VendorName                 string
+	PredictedSpendCents        int64
+	PredictedSpendCurrencyCode string
+	ConfidencePct              int
+	Reasoning                  *string
+}
+
+// CreateProcurementRecommendation inserts one row. Caller batches
+// inserts inside a single tx (see ProcurementService.RecommendVendors)
+// so all rows from one Maestro call commit or roll back together.
+func (s *ProcurementStore) CreateProcurementRecommendation(ctx context.Context, tx pgx.Tx, p CreateProcurementRecommendationParams) (models.ProcurementRecommendation, error) {
+	var rec models.ProcurementRecommendation
+	err := tx.QueryRow(ctx, `
+		INSERT INTO procurement_recommendations (
+			procurement_item_id, org_id, run_id,
+			vendor_id, vendor_name,
+			predicted_spend_cents, predicted_spend_currency_code,
+			confidence_pct, reasoning
+		) VALUES (
+			$1, $2, $3,
+			$4, $5,
+			$6, $7,
+			$8, $9
+		)
+		RETURNING id, procurement_item_id, org_id, run_id,
+		          vendor_id, vendor_name,
+		          predicted_spend_cents, predicted_spend_currency_code,
+		          confidence_pct, reasoning, created_at`,
+		p.ProcurementItemID, p.OrgID, p.RunID,
+		p.VendorID, p.VendorName,
+		p.PredictedSpendCents, p.PredictedSpendCurrencyCode,
+		p.ConfidencePct, p.Reasoning,
+	).Scan(
+		&rec.ID, &rec.ProcurementItemID, &rec.OrgID, &rec.RunID,
+		&rec.VendorID, &rec.VendorName,
+		&rec.PredictedSpendCents, &rec.PredictedSpendCurrencyCode,
+		&rec.ConfidencePct, &rec.Reasoning, &rec.CreatedAt,
+	)
+	if err != nil {
+		return models.ProcurementRecommendation{}, fmt.Errorf("insert procurement_recommendation: %w", err)
+	}
+	return rec, nil
+}
+
 // RecomputeStatusesParams controls a bulk status sweep.
 //
 // WarningWindowDays defines how many days ahead of must_order_date a

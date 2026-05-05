@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/futurebuildai/buildos/internal/brain"
 	"github.com/futurebuildai/buildos/internal/currency"
 	"github.com/futurebuildai/buildos/internal/models"
 	"github.com/futurebuildai/buildos/internal/store"
@@ -31,7 +33,26 @@ var (
 	// ErrProcurementItemNotFound is returned when an item lookup misses
 	// (id + project_id + org_id mismatch). Mirrors the store sentinel.
 	ErrProcurementItemNotFound = errors.New("procurement: item not found")
+
+	// ErrMaestroUnavailable is returned by RecommendVendors when the
+	// service was constructed without a MaestroProcurementRecommender
+	// (e.g. the worker binary that only runs RecomputeStatuses). Lets
+	// handlers surface a clean 503 rather than panicking on a nil call.
+	ErrMaestroUnavailable = errors.New("procurement: maestro client not configured")
 )
+
+// MaestroProcurementRecommender is the consumer-side interface
+// ProcurementService needs from the Brain client. Defined here so
+// tests can substitute a fake without spinning up an HTTP server,
+// and so ProcurementService doesn't transitively pin the entire
+// brain.Client surface.
+//
+// Wraps the typed procurement_recommend Maestro task (ADR-001 D5)
+// shipped in PR #14. CostMetadata on the response carries
+// {run_id, tokens_used, cost_cents, currency_code} for billing.
+type MaestroProcurementRecommender interface {
+	ProcurementRecommend(ctx context.Context, req brain.ProcurementRecommendRequest) (*brain.ProcurementRecommendResponse, error)
+}
 
 // CreateProcurementItemInput is the validated input for Create. The
 // service performs cross-org isolation, currency validation, and
@@ -65,18 +86,21 @@ type UpdateProcurementItemInput struct {
 // cards (not procurement rows), so this service is the only writer
 // of procurement_items.
 type ProcurementService struct {
-	pool  *pgxpool.Pool
-	store *store.ProcurementStore
-	audit AuditRecorder
+	pool    *pgxpool.Pool
+	store   *store.ProcurementStore
+	maestro MaestroProcurementRecommender
+	audit   AuditRecorder
 }
 
 // NewProcurementService creates a service bound to a pool + store.
+// maestro may be nil — RecommendVendors then returns
+// ErrMaestroUnavailable (worker-only deployments don't need it).
 // audit may be nil; nil falls back to a no-op recorder.
-func NewProcurementService(pool *pgxpool.Pool, items *store.ProcurementStore, audit AuditRecorder) *ProcurementService {
+func NewProcurementService(pool *pgxpool.Pool, items *store.ProcurementStore, maestro MaestroProcurementRecommender, audit AuditRecorder) *ProcurementService {
 	if audit == nil {
 		audit = NewNoopAuditRecorder()
 	}
-	return &ProcurementService{pool: pool, store: items, audit: audit}
+	return &ProcurementService{pool: pool, store: items, maestro: maestro, audit: audit}
 }
 
 // ListProcurement returns all items on a project visible to the caller's
@@ -302,4 +326,159 @@ func (s *ProcurementService) RecomputeStatuses(ctx context.Context) (int64, erro
 		return 0, fmt.Errorf("recompute procurement statuses: %w", err)
 	}
 	return changed, nil
+}
+
+// ProcurementRecommendationSet is the response shape from
+// RecommendVendors: the persisted recommendation rows plus the
+// cost-metadata block returned by Maestro (so callers can surface
+// run_id, tokens_used, cost_cents to the operator without a second
+// query).
+type ProcurementRecommendationSet struct {
+	Items        []models.ProcurementRecommendation
+	RunID        uuid.UUID
+	TokensUsed   int64
+	CostCents    int64
+	CurrencyCode string
+}
+
+// RecommendVendors asks Brain's Maestro `procurement_recommend` task
+// for a ranked list of vendors for the given procurement item, then
+// persists each recommendation row inside one tx alongside the audit
+// entry. The whole batch shares Maestro's RunID so future evaluation
+// can correlate "what did this Maestro call produce" with "what was
+// actually ordered" once procurement_items.vendor_id is wired.
+//
+// Validates:
+//   - callerOrgID + procurementItemID non-zero.
+//   - The item belongs to callerOrgID (cross-org isolation).
+//   - The service was constructed with a non-nil Maestro client.
+//
+// Maestro's float64 Confidence (0.0–1.0) is rounded * 100 into the
+// SMALLINT confidence_pct column to match the codebase no-floats
+// culture (CHECK constraint enforces 0..100).
+//
+// callerUserSub is recorded on the audit row.
+func (s *ProcurementService) RecommendVendors(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, procurementItemID uuid.UUID) (ProcurementRecommendationSet, error) {
+	if callerOrgID == uuid.Nil {
+		return ProcurementRecommendationSet{}, fmt.Errorf("%w: caller org_id is required", ErrInvalidInput)
+	}
+	if procurementItemID == uuid.Nil {
+		return ProcurementRecommendationSet{}, fmt.Errorf("%w: procurement_item_id is required", ErrInvalidInput)
+	}
+	if s.maestro == nil {
+		return ProcurementRecommendationSet{}, ErrMaestroUnavailable
+	}
+
+	var result ProcurementRecommendationSet
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		// Ownership check + budget context. Returns
+		// ErrProcurementItemNotFound on miss / cross-org.
+		item, err := s.store.GetProcurementItem(ctx, tx, procurementItemID, callerOrgID)
+		if err != nil {
+			return err
+		}
+
+		// Maestro call rides outside the SQL round-trip but inside the
+		// outer tx — if persistence fails we don't want a phantom
+		// recommendation tracked only in Brain's ai_runs. The
+		// trade-off is that a slow Maestro response holds a tx open
+		// briefly; acceptable for an interactive recommend flow.
+		resp, err := s.maestro.ProcurementRecommend(ctx, brain.ProcurementRecommendRequest{
+			MaterialRequestID: item.ID,
+			BudgetCents:       item.EstimatedCostCents,
+			CurrencyCode:      item.EstimatedCostCurrencyCode,
+		})
+		if err != nil {
+			return fmt.Errorf("maestro procurement_recommend: %w", err)
+		}
+		if resp == nil {
+			return fmt.Errorf("maestro procurement_recommend: nil response")
+		}
+
+		recs := make([]models.ProcurementRecommendation, 0, len(resp.Recommendations))
+		for _, r := range resp.Recommendations {
+			// vendor_id is nullable: Maestro may recommend vendors
+			// that don't exist in BuildOS's vendor table yet. Treat
+			// uuid.Nil as "no canonical id".
+			var vendorIDPtr *uuid.UUID
+			if r.VendorID != uuid.Nil {
+				v := r.VendorID
+				vendorIDPtr = &v
+			}
+			var reasoningPtr *string
+			if strings.TrimSpace(r.Reasoning) != "" {
+				rp := r.Reasoning
+				reasoningPtr = &rp
+			}
+
+			rec, err := s.store.CreateProcurementRecommendation(ctx, tx, store.CreateProcurementRecommendationParams{
+				ProcurementItemID:          item.ID,
+				OrgID:                      callerOrgID,
+				RunID:                      resp.RunID,
+				VendorID:                   vendorIDPtr,
+				VendorName:                 r.VendorName,
+				PredictedSpendCents:        r.PredictedSpendCents,
+				PredictedSpendCurrencyCode: r.CurrencyCode,
+				ConfidencePct:              confidenceToPct(r.Confidence),
+				Reasoning:                  reasoningPtr,
+			})
+			if err != nil {
+				return err
+			}
+			recs = append(recs, rec)
+		}
+
+		// One audit row for the whole batch — the resource is the
+		// recommendation set (keyed by procurement_item_id; run_id
+		// goes in metadata for replay). Per-row audit would create
+		// 3-5 nearly-identical rows per Maestro call with no extra
+		// signal.
+		s.audit.Record(ctx, tx, AuditEntry{
+			OrgID:        callerOrgID,
+			UserSub:      callerUserSub,
+			Action:       "procurement.recommendations.created",
+			ResourceType: AuditResourceProcurementRecommendation,
+			ResourceID:   item.ID,
+			Metadata: marshalAudit(map[string]any{
+				"run_id":               resp.RunID,
+				"recommendation_count": len(recs),
+				"tokens_used":          resp.TokensUsed,
+				"cost_cents":           resp.CostCents,
+				"currency_code":        resp.CurrencyCode,
+			}),
+		})
+
+		result = ProcurementRecommendationSet{
+			Items:        recs,
+			RunID:        resp.RunID,
+			TokensUsed:   resp.TokensUsed,
+			CostCents:    resp.CostCents,
+			CurrencyCode: resp.CurrencyCode,
+		}
+		return nil
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrProcurementItemNotFound):
+			return ProcurementRecommendationSet{}, ErrProcurementItemNotFound
+		case errors.Is(err, store.ErrNotFound):
+			return ProcurementRecommendationSet{}, ErrNotFound
+		}
+		return ProcurementRecommendationSet{}, fmt.Errorf("recommend vendors: %w", err)
+	}
+	return result, nil
+}
+
+// confidenceToPct converts Maestro's float64 confidence (0.0–1.0) to
+// the SMALLINT 0..100 column the schema uses. Rounds half-up; clamps
+// out-of-range inputs so a buggy Brain response can't violate the
+// CHECK constraint and roll back the whole tx.
+func confidenceToPct(c float64) int {
+	if math.IsNaN(c) || c <= 0 {
+		return 0
+	}
+	if c >= 1 {
+		return 100
+	}
+	return int(math.Round(c * 100))
 }

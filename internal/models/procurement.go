@@ -35,6 +35,27 @@ func IsValidProcurementStatus(s string) bool {
 	}
 }
 
+// ProcurementRecommendation mirrors a procurement_recommendations row.
+// Each row is one (vendor, item) recommendation produced by Brain's
+// Maestro `procurement_recommend` task; a single Maestro call typically
+// yields 3-5 rows that all share RunID. PredictedSpendCents +
+// PredictedSpendCurrencyCode is the standard Composite Currency pair.
+// ConfidencePct is the persisted form of Maestro's float64 0..1
+// confidence value (rounded * 100, range-checked 0..100 by SQL).
+type ProcurementRecommendation struct {
+	ID                          uuid.UUID  `json:"id"`
+	ProcurementItemID           uuid.UUID  `json:"procurement_item_id"`
+	OrgID                       uuid.UUID  `json:"org_id"`
+	RunID                       uuid.UUID  `json:"run_id"`
+	VendorID                    *uuid.UUID `json:"vendor_id,omitempty"`
+	VendorName                  string     `json:"vendor_name"`
+	PredictedSpendCents         int64      `json:"predicted_spend_cents"`
+	PredictedSpendCurrencyCode  string     `json:"predicted_spend_currency_code"`
+	ConfidencePct               int        `json:"confidence_pct"`
+	Reasoning                   *string    `json:"reasoning,omitempty"`
+	CreatedAt                   time.Time  `json:"created_at"`
+}
+
 // ProcurementItem mirrors the procurement_items row. Cost is stored as
 // the Composite Currency pair (cents + currency_code). MustOrderDate
 // is computed and persisted by the SQL layer (or set on insert by the
