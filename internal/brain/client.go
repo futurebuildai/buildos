@@ -55,6 +55,8 @@ type Client struct {
 	baseURL    string
 	httpClient *http.Client
 	retry      RetryConfig
+	timeouts   Timeouts
+	breaker    *circuitBreaker
 	logger     *slog.Logger
 	metrics    MetricsObserver // optional; nil disables observation
 }
@@ -62,8 +64,10 @@ type Client struct {
 // Config configures NewClient.
 type Config struct {
 	BaseURL    string          // e.g. "http://localhost:8081"
-	HTTPClient *http.Client    // optional; default is a 10s-timeout client
-	Retry      RetryConfig     // optional; default 3 attempts, 100ms base
+	HTTPClient *http.Client    // optional; default is a 60s-timeout client
+	Retry      RetryConfig     // optional; default 3 attempts, 200ms base, 4x
+	Timeouts   Timeouts        // optional; default Maestro=30s, Billing=5s
+	Circuit    CircuitConfig   // optional; default 5 failures / 60s window, 30s open
 	Logger     *slog.Logger    // optional; default slog.Default()
 	Metrics    MetricsObserver // optional; when nil, ObserveBrain calls are skipped
 }
@@ -102,6 +106,8 @@ func NewClient(cfg Config) (*Client, error) {
 		baseURL:    strings.TrimRight(cfg.BaseURL, "/"),
 		httpClient: cfg.HTTPClient,
 		retry:      cfg.Retry.withDefaults(),
+		timeouts:   cfg.Timeouts.withDefaults(),
+		breaker:    newCircuitBreaker(cfg.Circuit),
 		logger:     cfg.Logger,
 		metrics:    cfg.Metrics,
 	}
@@ -183,8 +189,22 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any) (
 			}
 		}
 
+		// Circuit-breaker gate. allow() returns false when the
+		// breaker is open and the open-duration hasn't elapsed (or
+		// when a half-open probe is already in flight). We treat a
+		// gating refusal as a hard short-circuit — no retry loop
+		// burn — because every other retry would also be refused.
+		ok, gen := c.breaker.allow()
+		if !ok {
+			c.logger.Warn("brain circuit breaker open; short-circuiting",
+				"method", method, "path", path, "attempt", attempt+1)
+			return nil, ErrCircuitOpen
+		}
+
 		req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(bodyBytes))
 		if err != nil {
+			// Breaker outcome unknown — don't credit success or
+			// failure for a request we never sent.
 			return nil, fmt.Errorf("brain: build request: %w", err)
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -207,6 +227,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any) (
 			c.logger.Warn("brain request transport error",
 				"method", method, "path", path, "attempt", attempt+1, "error", err)
 			c.observe(method, path, 0, time.Since(attemptStart))
+			c.breaker.recordFailure(gen)
 			continue // retry on transport error
 		}
 
@@ -217,6 +238,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any) (
 
 		if readErr != nil {
 			lastErr = fmt.Errorf("brain: read response: %w", readErr)
+			c.breaker.recordFailure(gen)
 			continue
 		}
 
@@ -225,11 +247,15 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any) (
 			lastErr = decodeHTTPError(resp.StatusCode, respBody)
 			c.logger.Warn("brain 5xx response",
 				"method", method, "path", path, "status", resp.StatusCode, "attempt", attempt+1)
+			c.breaker.recordFailure(gen)
 			continue
 		}
 
-		// 4xx — return the typed error immediately, no retry.
+		// 4xx — return the typed error immediately, no retry. Client
+		// errors don't indicate Brain-side instability so they don't
+		// count against the breaker.
 		if resp.StatusCode >= 400 {
+			c.breaker.recordSuccess(gen) // brain reachable; just rejected our payload
 			return nil, decodeHTTPError(resp.StatusCode, respBody)
 		}
 
@@ -237,10 +263,12 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any) (
 		var env envelope
 		if len(respBody) > 0 {
 			if err := json.Unmarshal(respBody, &env); err != nil {
+				c.breaker.recordSuccess(gen) // transport healthy; decode bug is ours
 				return nil, fmt.Errorf("brain: decode envelope: %w", err)
 			}
 		}
 		if env.Error != nil {
+			c.breaker.recordSuccess(gen) // structured error from healthy brain
 			return nil, &HTTPError{
 				StatusCode: resp.StatusCode,
 				Code:       env.Error.Code,
@@ -248,6 +276,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any) (
 				RequestID:  metaRequestID(env.Meta),
 			}
 		}
+		c.breaker.recordSuccess(gen)
 		return env.Data, nil
 	}
 

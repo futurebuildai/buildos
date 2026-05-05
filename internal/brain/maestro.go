@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -47,6 +48,8 @@ func (m *MaestroClient) Chat(ctx context.Context, req ChatRequest) (*ChatRespons
 	if req.Message == "" {
 		return nil, fmt.Errorf("brain.Maestro.Chat: message is required")
 	}
+	ctx, cancel := m.withTimeout(ctx)
+	defer cancel()
 	raw, err := m.c.doRequest(ctx, "POST", "/api/maestro/chat", req)
 	if err != nil {
 		return nil, err
@@ -56,6 +59,22 @@ func (m *MaestroClient) Chat(ctx context.Context, req ChatRequest) (*ChatRespons
 		return nil, fmt.Errorf("brain.Maestro.Chat: decode response: %w", err)
 	}
 	return &resp, nil
+}
+
+// withTimeout wraps the caller's ctx with the configured Maestro
+// timeout, but only when the caller hasn't already set a tighter
+// deadline. This lets per-call overrides (e.g., a 5s-deadline
+// background job) take precedence while still bounding the LLM
+// round-trip for callers that pass context.Background.
+func (m *MaestroClient) withTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	t := m.c.timeouts.Maestro
+	if t <= 0 {
+		return ctx, func() {}
+	}
+	if d, ok := ctx.Deadline(); ok && time.Until(d) < t {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, t)
 }
 
 // Session is a chat session header. Real shape on Brain:
@@ -72,6 +91,8 @@ type Session struct {
 
 // ListSessions fetches the current user's chat session headers.
 func (m *MaestroClient) ListSessions(ctx context.Context) ([]Session, error) {
+	ctx, cancel := m.withTimeout(ctx)
+	defer cancel()
 	raw, err := m.c.doRequest(ctx, "GET", "/api/maestro/sessions", nil)
 	if err != nil {
 		return nil, err
@@ -97,6 +118,8 @@ func (m *MaestroClient) GetSession(ctx context.Context, sessionID uuid.UUID) ([]
 	if sessionID == uuid.Nil {
 		return nil, fmt.Errorf("brain.Maestro.GetSession: session_id is required")
 	}
+	ctx, cancel := m.withTimeout(ctx)
+	defer cancel()
 	raw, err := m.c.doRequest(ctx, "GET", "/api/maestro/sessions/"+sessionID.String(), nil)
 	if err != nil {
 		return nil, err
