@@ -51,6 +51,7 @@ type MetricsObserver interface {
 type Client struct {
 	Maestro *MaestroClient
 	Billing *BillingClient
+	Hub     *HubClient
 
 	baseURL    string
 	httpClient *http.Client
@@ -70,6 +71,16 @@ type Config struct {
 	Circuit    CircuitConfig   // optional; default 5 failures / 60s window, 30s open
 	Logger     *slog.Logger    // optional; default slog.Default()
 	Metrics    MetricsObserver // optional; when nil, ObserveBrain calls are skipped
+
+	// HubDirectMode requests the Brain Hub return decrypted
+	// credentials (`Credential.Secret` populated) instead of the
+	// proxy-handle default. Set true only on forks running in
+	// regulated environments where the Brain proxy hop is not
+	// acceptable. Brain's own policy gate decides whether to
+	// honor the request — if it refuses, the response carries a
+	// proxy handle regardless. Driven by the `BRAIN_HUB_DIRECT`
+	// fork-static env var per ADR-001 D6.
+	HubDirectMode bool
 }
 
 // NewClient builds a Brain client. BaseURL is required.
@@ -113,6 +124,7 @@ func NewClient(cfg Config) (*Client, error) {
 	}
 	c.Maestro = &MaestroClient{c: c}
 	c.Billing = &BillingClient{c: c}
+	c.Hub = &HubClient{c: c, directMode: cfg.HubDirectMode}
 	return c, nil
 }
 
