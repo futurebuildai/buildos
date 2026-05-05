@@ -43,17 +43,17 @@ func IsValidProcurementStatus(s string) bool {
 // ConfidencePct is the persisted form of Maestro's float64 0..1
 // confidence value (rounded * 100, range-checked 0..100 by SQL).
 type ProcurementRecommendation struct {
-	ID                          uuid.UUID  `json:"id"`
-	ProcurementItemID           uuid.UUID  `json:"procurement_item_id"`
-	OrgID                       uuid.UUID  `json:"org_id"`
-	RunID                       uuid.UUID  `json:"run_id"`
-	VendorID                    *uuid.UUID `json:"vendor_id,omitempty"`
-	VendorName                  string     `json:"vendor_name"`
-	PredictedSpendCents         int64      `json:"predicted_spend_cents"`
-	PredictedSpendCurrencyCode  string     `json:"predicted_spend_currency_code"`
-	ConfidencePct               int        `json:"confidence_pct"`
-	Reasoning                   *string    `json:"reasoning,omitempty"`
-	CreatedAt                   time.Time  `json:"created_at"`
+	ID                         uuid.UUID  `json:"id"`
+	ProcurementItemID          uuid.UUID  `json:"procurement_item_id"`
+	OrgID                      uuid.UUID  `json:"org_id"`
+	RunID                      uuid.UUID  `json:"run_id"`
+	VendorID                   *uuid.UUID `json:"vendor_id,omitempty"`
+	VendorName                 string     `json:"vendor_name"`
+	PredictedSpendCents        int64      `json:"predicted_spend_cents"`
+	PredictedSpendCurrencyCode string     `json:"predicted_spend_currency_code"`
+	ConfidencePct              int        `json:"confidence_pct"`
+	Reasoning                  *string    `json:"reasoning,omitempty"`
+	CreatedAt                  time.Time  `json:"created_at"`
 }
 
 // ProcurementItem mirrors the procurement_items row. Cost is stored as

@@ -150,12 +150,12 @@ func TestConfidenceToPct(t *testing.T) {
 		{0.0, 0},
 		{0.5, 50},
 		{1.0, 100},
-		{0.123, 12},   // rounds half-down
-		{0.125, 13},   // half-up at .5
-		{0.999, 100},  // rounds to 100
-		{-0.5, 0},     // clamps below 0
-		{1.5, 100},    // clamps above 1
-		{0.005, 1},    // very small
+		{0.123, 12},  // rounds half-down
+		{0.125, 13},  // half-up at .5
+		{0.999, 100}, // rounds to 100
+		{-0.5, 0},    // clamps below 0
+		{1.5, 100},   // clamps above 1
+		{0.005, 1},   // very small
 	}
 	for _, c := range cases {
 		got := confidenceToPct(c.in)
