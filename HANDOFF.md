@@ -20,6 +20,7 @@ Companion docs:
 
 ## Last shipped (most recent → older)
 
+- **2026-05-04** PR #14 [`55325d0`] S1.5 part 2 / Session 3.2: typed Maestro task envelopes (ADR-001 D5). New `internal/brain/maestro_tasks.go` adds the typed `/v1/ai/tasks` surface alongside the existing session-based `Chat`. Five typed methods (`DailyBriefing`, `IntentClassify`, `InvoiceExtract`, `ProcurementRecommend`, `TribunalReview`) each route through one shared `runTask()` helper that handles the discriminated `{task, input}` envelope. Every response carries an embedded `CostMetadata{run_id, tokens_used, cost_cents, currency_code}` per ADR-001 D5 cost-tracking shape so callers can write a per-call billing-audit row. Composite Currency Pattern preserved everywhere monetary fields appear (invoice total, line items, vendor predicted-spend, AI run cost). Client-side validation matches existing pattern (utterance/dispute_id/material_request_id required; either document_url or text). 11 new tests cover round-trip envelope encoding, cost metadata propagation, validation rejection without server hit, and `*HTTPError` chain through the typed wrapper. Cross-repo blocking edge: Brain-side OpenAPI fixture for `/v1/ai/tasks` not yet published — contract tests deferred. Sets up Sessions 3.3 (Hub stubs / D6) and 3.4 (DailyBriefing wiring + Gate 1).
 - **2026-05-04** PR #13 [`89b671e`] S1.5 part 1 / Session 3.1: brain-client resilience layer. (a) In-house circuit breaker (`internal/brain/resilience.go`, ~80 LOC) with closed→open→half-open state machine, generation-counter for stale-outcome safety, defaults 5 failures / 60s window, 30s open. No external `gobreaker` dep per `.agents/TECH_STACK.md` policy. (b) Per-method timeouts via `Config.Timeouts` (Maestro 30s, Billing 5s); caller's tighter ctx deadline wins. (c) Retry defaults retuned to plan spec: 3 attempts, 200ms base, 4× multiplier (200→800→3.2s spacing). 4xx (client error) does NOT count toward breaker threshold. New `ErrCircuitOpen` sentinel for service-layer 503 mapping. 8 new resilience tests; race-clean. Sets up Sessions 3.2 (Maestro typed envelopes / D5), 3.3 (Hub proxy stubs / D6), 3.4 (Daily Briefing wiring + Gate 1).
 - **2026-05-04** PR #12 [`376eefa`] Tier 1 #3 / D7 wave 3: schedule + pipeline transition audit recording. `ScheduleService.RecalculateSchedule` writes `schedule.recalculated` audit row inside the recalc tx with `{task_count, critical_path_size, compute_ms, project_end}`. `PipelineService.AdvanceProspect` / `LoseProspect` / `transitionToPermitIssued` write `pipeline.stage_transitioned` inside the existing tx with before/after stage + probability_pct (project_id metadata for permit-issued, reason for lose). Both constructors take `AuditRecorder` (nil → noop), matching the Fleet/Procurement/Field/Budget pattern. API handlers extract `claims.Sub` via `mw.MustClaimsFromContext` and pass through. New `AuditResourceSchedule` constant. Mock services + happy-path tests assert `user_sub` propagates. Closes the audit-trail gap for the two highest-mutation surfaces (CPM recalcs + pipeline stage transitions).
 - **2026-05-04** PR #11 [`e9edb96`] Tier 1 #2: slog Restricted-class PII attribute scrub via `obs.CorrelatingHandler`. `Handle` rebuilds the `slog.Record` to mask attrs whose key matches `pii.FieldClass` at Restricted (email, phone, gps_*, oidc_subject, ip_address, etc.). Group attrs recurse. `WithAttrs`-baked attrs are also scrubbed so long-lived loggers can't smuggle PII. Confidential and below pass through unchanged (vendor names, *_cents, request_id/trace_id/span_id retained for triage). 6 new test functions (~14 catalog cases). Completes the 3-leg PII-egress trio: Sentry (PR #6) + audit JSONB (PR #10) + slog (PR #11).
@@ -33,7 +34,7 @@ Companion docs:
 - **2026-05-01** PR #3 [`29ea6fe`] SecretSource abstraction (env/file/chain) + `LoadWithSource()`.
 - **2026-05-01** PR #2 [`699a64d`] Sprints 1-5 + Phase F core (44 commits — domain endpoints, Brain integration, production hardening, Dockerfile, D8 build-tag hardening).
 
-12 PRs merged under the L8 self-audit gate (PR #9 added the L8 SRE
+13 PRs merged under the L8 self-audit gate (PR #9 added the L8 SRE
 audit gate as a second checklist applied per PR). Every landed
 commit had `make audit` green + integration suite green +
 govulncheck clean. PRs #9 onward also have CI green at merge time
@@ -59,13 +60,14 @@ Known follow-up surfaced by PR #9 (not blocking, queued):
 See [.agents/handoff/NEXT_STEPS.md](./.agents/handoff/NEXT_STEPS.md)
 for the full prioritized backlog with entry-point file paths.
 
-Top three an L8 PE would queue (Tier 1 trio + S1.5 part 1 done):
+Top three an L8 PE would queue (Tier 1 trio + S1.5 parts 1-2 done):
 
-1. **S1.5 Sessions 3.2–3.4** — typed Maestro envelopes per task
-   (DailyBriefing, IntentClassify, InvoiceExtract, ProcurementRecommend,
-   TribunalReview) with `cost_cents` round-trip (D5), Hub proxy stubs
-   (D6), wire Maestro into `agents.GenerateDailyBriefing` + bill the
-   call. Closing 3.4 triggers Gate 1 (owner approval on D5/D6 shapes).
+1. **S1.5 Sessions 3.3 + 3.4** — Hub proxy stubs (D6:
+   `internal/brain/hub.go` with `GetCredential` + `RefreshIfExpired`,
+   default = proxy through Brain), then wire `Maestro.DailyBriefing`
+   into `agents.GenerateDailyBriefing` and write a per-call
+   billing-audit row using `CostMetadata.CostCents`. Closing 3.4
+   triggers **Gate 1** (owner approval on D5/D6 envelope shapes).
 2. **Vault SecretSource backend** (Tier 2 #4) — `internal/config/vault.go`
    implementing the `SecretSource` interface for HashiCorp Vault.
    Required before first-fork cutover (Phase H).
