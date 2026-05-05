@@ -20,6 +20,7 @@ Companion docs:
 
 ## Last shipped (most recent → older)
 
+- **2026-05-05** PR #23 [`73b6b87`] S3 Session 8.2 — LocalBlue `lead.captured` inbound test surface (`internal/service/a2a_integration_test.go`). Test-only; no production code touched. Pairs with PR #22's receiver-side handler tests to lock the inbound A2A contract before Gate 2. Existing happy-path test covered prospect shape (LEAD stage, `localblue:` source tag, probability_pct=10) and feed-card shape (urgent, owner-targeted); existing `_RejectsMissingContractorOrg` covered the org-resolution gate. Six new tests close the remaining gaps: (1) `_IdempotencyReplay` — same envelope twice → `second.AlreadyProcessed=true`, exactly one prospect + one feed card (load-bearing guarantee against duplicate-prospect pipeline corruption on Brain retry); (2) `_RejectsMissingLeadName` — `ErrInvalidInput` + FULL rollback assertion (zero `a2a_inbound_log`, zero prospect, zero feed_card) so Brain's retry can succeed once the upstream payload is corrected (without rollback the lead would be lost forever); (3) `_RejectsMissingContactName` — symmetric; (4) `_OptionalFieldsMapToNull` — pins the `stringPtrOrNil` contract: empty contact_email/contact_phone/address arrive as SQL NULL not "" (downstream IS NULL semantics + future uniqueness gates); (5) `_DefaultSourceTag` — pins the `localblueSourceTag` boundary: empty source produces `"localblue"` not `"localblue:"` (no dangling colon corrupting analytics buckets); (6) `_NoPipelineStoreReturnsError` — defensive nil-pipelineStore guard returns `ErrInvalidInput` rather than nil-deref panic, with full rollback so retry semantics stay coherent if pipelineStore is wired later. Atomicity assertions share the `assertNoDedupOrOrphans` helper. `make audit` ALL PASSED. CPM80=183µs, CPM200=439µs. **Triggers Gate 2** — owner approval requested on (a) the LocalBlue auto-flow per ADR-001 D14 and (b) ratification of inbound A2A event schemas as cross-repo wire contracts.
 - **2026-05-05** PR #22 [`0fdfac1`] S3 Session 8.1 — A2A receiver idempotency replay + 1 MiB body cap tests (`internal/api/a2a_test.go`). Test-only; no production code touched. (1) `TestA2AHandler_IdempotencyReplaySameFeedCardID` — stateful `idempotencyReplayService` mock mirrors the production `ProcessWebhook` dedup contract: first envelope mints a `feed_card_id` with `already_processed=false`; second delivery with the same `IdempotencyKey` returns the SAME `feed_card_id` with `already_processed=true`. Asserts both 200 responses, both flag values, and `feed_card_id` stability — the user-facing guarantee that Brain's at-least-once retries don't duplicate feed cards. Decode shape now drills the `{data, meta}` response envelope properly. (2) `TestA2AHandler_BodyTooLargeReturns413` — > 1 MiB POST body trips the `mw.A2AInboundMaxBodyBytes` cap. Wraps `r.Body` with `http.MaxBytesReader` directly (the same wrapper `mw.MaxBodySize` middleware installs on the route group at `router.go:176-177`) so the handler-only test exercises the 413 branch without the chi stack; asserts `413 PAYLOAD_TOO_LARGE` rather than the generic 400 the handler emits on JSON decode errors. Unknown `event_type` → `400 UNKNOWN_EVENT` was already covered by `TestA2AHandler_ServiceErrorMaps/unknown_event` (not duplicated). All 8 `TestA2AHandler_*` subtests pass. `make audit` ALL PASSED. CPM80=179µs, CPM200=480µs. Sets up Session 8.2 (LocalBlue `lead.captured` inbound; Gate 2 trigger).
 - **2026-05-05** PR #21 [`e2f2f5f`] Vault SecretSource backend (Tier 2 #4). New `internal/config/vault.go` implements the `SecretSource` interface for HashiCorp Vault KV v2 — the production-default secret store for customer forks. Spec format: `vault://<mount>/data/<path-prefix>` (e.g. `vault://kv/data/buildos/acme`). One Vault secret per logical key with a single `value` field, provisioned by operators via `vault kv put kv/buildos/<fork>/<KEY> value=...`. KV v2 only — KV v1 mounts (no `/data/` segment) rejected at construction with a clear error so the spec format and the underlying HTTP API path agree literally. Address/TLS via SDK `DefaultConfig` (`VAULT_ADDR`, `VAULT_CACERT`, …); auth in priority order: `VAULT_TOKEN_FILE` (BuildOS-specific extension for k8s projected service-account tokens) → `VAULT_TOKEN` env → `~/.vault-token` (SDK default). Empty/expired token at construction permitted — first lookup fails loud rather than refusing to start, the right ergonomic for operators staging a fork. Per the SecretSource contract: hit returns (val, true, nil); 404, empty value, and KV v2 tombstoned versions all return ("", false, nil) (clean miss); transport / auth / 5xx errors propagate so a chain short-circuits ("Vault is down" must NOT silently fall back to env). `LoadSecretSource` gains a `vault://` dispatcher so chain composition works (`chain:vault://kv/data/buildos/acme,env`); the legacy "unknown spec rejected" test case migrated from `vault://prod` (now ambiguous) to `azure-kv://prod`. 11 unit tests using a `httptest` stub of the KV v2 API (spec validation matrix, token-file resolution, hit/404-miss/empty-value-miss/wrong-field/tombstone/non-string-value/empty-key, transport-error propagation, Close clears in-memory token). 1 integration test (build tag: integration) stands up `hashicorp/vault:1.18` dev container, provisions DATABASE_URL + BRAIN_JWKS_URL + BRAIN_ISSUER_URL via SDK `KVv2.Put`, and round-trips through both direct `LookupSecret` and the full `LoadWithSource` path — confirms the spec format maps cleanly to a real Vault. New deps: `github.com/hashicorp/vault/api v1.23.0` (+ transitive hashicorp/* and mitchellh/* utilities, all Apache-2.0 / MPL-2.0). `make audit` ALL PASSED. CPM80=139µs, CPM200=483µs.
 - **2026-05-05** PR #20 [`715af97`] S3 7.2 caller wiring: `ProcurementService.RequestVendorReview` is the first real consumer of the `a2a.Emitter` shipped in PR #19. Opens one tx, verifies item ownership (cross-org isolation via existing `GetProcurementItem`), calls `EmitReviewMaterialQuote` (`InsertTx` on the same tx so enqueue commits/rolls back atomically with audit), records one audit row keyed by `procurement_item_id` (`procurement.vendor_review.requested`), returns the emitter's idempotency key for caller correlation. New `VendorReviewEmitter` consumer interface (defined in procurement package — service doesn't pin the full `*a2a.Emitter` surface). Constructor signature grew to 5 args: pool, items, maestro, emitter, audit. `cmd/server` constructs `*a2a.Emitter` once over the shared River insert client; `cmd/worker` passes nil (daily `RecomputeStatuses` sweep doesn't trigger operator-driven review flows). New `ErrA2AEmitterUnavailable` sentinel mirrors `ErrMaestroUnavailable`. Validation split: service validates org/item/emitter-presence; wire-shape validation (vendor non-empty, total_cents non-negative, currency_code USD/CAD) delegated to emitter, its `ErrInvalidArgs` wrapped as `ErrInvalidInput` so handlers see the uniform service-layer sentinel. Audit metadata captures idempotency_key + structured fields (vendor, total_cents, currency_code, rfq_id, has_reasoning bool — Reasoning text excluded as Confidential narrative). 2 new tests (validation matrix; nil-emitter sentinel); happy-path with real tx deferred to integration suite. **No labor-bid wiring** — BuildOS doesn't have a labor RFQ surface yet (S6 SubLiaisonAgent territory); `EmitReviewLaborBid` stays unused but emitter test coverage from PR #19 keeps it live. `make audit` ALL PASSED. CPM80=182µs, CPM200=423µs.
@@ -42,7 +43,7 @@ Companion docs:
 - **2026-05-01** PR #3 [`29ea6fe`] SecretSource abstraction (env/file/chain) + `LoadWithSource()`.
 - **2026-05-01** PR #2 [`699a64d`] Sprints 1-5 + Phase F core (44 commits — domain endpoints, Brain integration, production hardening, Dockerfile, D8 build-tag hardening).
 
-21 PRs merged under the L8 self-audit gate (PR #9 added the L8 SRE
+22 PRs merged under the L8 self-audit gate (PR #9 added the L8 SRE
 audit gate as a second checklist applied per PR). Every landed
 commit had `make audit` green + integration suite green +
 govulncheck clean. PRs #9 onward also have CI green at merge time
@@ -51,6 +52,33 @@ govulncheck clean. PRs #9 onward also have CI green at merge time
 ## In flight
 
 Nothing on a branch waiting for review right now.
+
+**>>> GATE 2 OWNER APPROVAL REQUESTED (2026-05-05) <<<**
+PR #23 closes the inbound A2A test surface (PR #22 + PR #23 together
+lock the receiver-side and service-side guarantees). Per the 18-week
+plan and ADR-001 D14, owner ratification is requested on:
+
+1. **LocalBlue `localblue.lead.captured` auto-flow (D14)**: Brain
+   captures a lead, BuildOS stages a prospect at LEAD with
+   urgent-priority feed card to the owner. **No human-in-the-loop**
+   between LocalBlue and the contractor's pipeline. Confirmed:
+   prospect.source = `"localblue:<orig>"` for analytics; full atomic
+   rollback on validation failure (no lead loss); idempotent on
+   Brain retry (no duplicate prospects). The implementation has been
+   live since prior work; test surface now locks the contract.
+2. **Inbound A2A event schemas as cross-repo wire contracts**:
+   `EventReviewMaterialQuote`, `EventReviewLaborBid`,
+   `EventUpdateSchedule`, `EventDeliveryConfirmation`,
+   `EventCreateFeedCard`, `EventLocalblueLeadCaptured`. BuildOS's
+   `WebhookEnvelope` and per-event payload structs
+   (`internal/service/a2a.go:35-371`) must mirror Brain's
+   `internal/a2a/types.go` exactly. Cross-repo coordination required
+   before either side renames a field or adds a required key.
+
+S4 Maestro `update_schedule` (Session 9.1) blocks on this gate —
+DailyFocusAgent will dispatch through the typed Maestro envelope
+which then comes back via A2A as `update_schedule`, and we don't
+want the agent layer compounding on un-ratified envelope shapes.
 
 **Gate 1 ratified by owner (2026-05-05).** S1.5 Brain Client
 Foundation is locked in: D5 typed Maestro envelopes
@@ -83,11 +111,15 @@ shipped (PR #22)** — `internal/api/a2a_test.go` gains the
 idempotency-replay test (same `X-Idempotency-Key` twice → second
 returns `already_processed=true` with same `feed_card_id`) and
 the > 1 MiB body cap test (`413 PAYLOAD_TOO_LARGE` rather than
-the generic 400). Inbound A2A receiver guarantees are now under
-test. S2 Session 5.2 was already materially shipped in production
-code (handlers/RBAC/tests); next up: S3 Session 8.2 (LocalBlue
-`lead.captured` inbound — **Gate 2 trigger**) or HTTP handler/RBAC
-for `RequestVendorReview`.
+the generic 400). **S3 Session 8.2 shipped (PR #23)** —
+`internal/service/a2a_integration_test.go` gains 6 LocalBlue
+inbound tests: idempotency replay (no duplicate prospects on Brain
+retry), validation gates with FULL atomic rollback (no lost leads),
+optional-field nullability, source-tag boundary, and the
+nil-pipelineStore guard. Both halves of the A2A inbound surface
+(handler + service) are now under test. S2 Session 5.2 was already
+materially shipped in production code (handlers/RBAC/tests).
+**Awaiting Gate 2 owner approval** before S4 begins.
 
 ## Blocked
 
@@ -106,35 +138,35 @@ See [.agents/handoff/NEXT_STEPS.md](./.agents/handoff/NEXT_STEPS.md)
 for the full prioritized backlog with entry-point file paths.
 
 Top three an L8 PE would queue (S1.5 + S2 5.1 + S3 7.1 + S3 7.2 +
-S3 7.2 caller wiring + Vault SecretSource + S3 8.1 receiver tests
-shipped; S2 5.2 materially complete in prod code; clear to compound
-toward Gate 2 on the inbound A2A surface):
+S3 7.2 caller wiring + Vault SecretSource + S3 8.1 receiver tests +
+S3 8.2 LocalBlue inbound tests shipped; S2 5.2 materially complete
+in prod code; **Gate 2 awaiting owner approval — see "In flight"**):
 
-1. **S3 Session 8.2 — LocalBlue `lead.captured` inbound wiring**
-   (ADR-001 D14; **Gate 2 trigger**). `internal/service/a2a.go`
-   `handleLocalblueLeadCaptured` already exists at line 373 from
-   prior work; this session adds the golden-envelope test path:
-   asserts the canonical LocalBlue lead payload extracts cleanly,
-   a prospect row inserts at `LEAD` stage, a feed-card row inserts,
-   and one audit row writes — all in a single tx. Pairs with PR
-   #22's receiver-side tests to close the inbound A2A surface.
-   Triggers Gate 2 (owner ratifies LocalBlue auto-flow + A2A
-   inbound event schemas before S4 starts compounding on them).
-2. **HTTP handler / RBAC for `RequestVendorReview`** — small
-   follow-up to PR #20. Add a `POST /api/v1/projects/{projectID}/procurement/{itemID}/request-review`
+1. **HTTP handler / RBAC for `RequestVendorReview`** — small
+   follow-up to PR #20 that does NOT block on Gate 2 (procurement,
+   not LocalBlue). Add a
+   `POST /api/v1/projects/{projectID}/procurement/{itemID}/request-review`
    handler that calls `ProcurementService.RequestVendorReview`,
    gated to `superintendent` or higher. Returns `{idempotency_key}`
    on 202. Integration test asserts the river_job row hits with
    the correct event_type and payload. Closes the loop so an
    operator can actually trigger a review request from the API.
-3. **S4 prep — DailyFocusAgent calls Maestro `update_schedule`**
-   (Session 9.1). `internal/service/agents.go` adds
+2. **Phase D — security headers + CSP + dependency updates**
+   (parallel-eligible, doesn't block on Gate 2). Audit
+   `internal/api/middleware/` for missing security headers
+   (HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy,
+   CSP for the JSON API surface); `go list -u -m all` audit and
+   bump direct deps that have non-breaking patches available.
+3. **[BLOCKED on Gate 2] S4 Session 9.1 — DailyFocusAgent calls
+   Maestro `update_schedule`.** `internal/service/agents.go` adds
    `RecommendScheduleAdjustments(ctx, projectID)` calling
    `brain.Maestro.UpdateSchedule` with the current task graph;
    apply recommended deltas through existing
    `ScheduleService.RecalculateSchedule` so CPM physics
    re-validates. Audit every Maestro-driven edit with
-   `Action="schedule.maestro_edit"`. Blocks on Gate 2.
+   `Action="schedule.maestro_edit"`. Resume after Gate 2 ratifies
+   the inbound A2A `update_schedule` envelope shape that this
+   agent will eventually round-trip through.
 
 ## Working agreement (L8 self-audit gate)
 
