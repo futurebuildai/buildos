@@ -5,9 +5,11 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/futurebuildai/buildos/internal/store"
 	"github.com/futurebuildai/buildos/internal/testdb"
@@ -301,6 +303,314 @@ func TestA2AService_ProcessWebhook_LocalblueLeadCaptured_RejectsMissingContracto
 	})
 	if err == nil {
 		t.Fatal("expected error: missing contractor_org_id")
+	}
+}
+
+// TestA2AService_ProcessWebhook_LocalblueLeadCaptured_IdempotencyReplay
+// asserts the LocalBlue path inherits the receiver's dedup contract:
+// Brain redelivers the same envelope (network blip on the first ACK is
+// the canonical case) and the second call short-circuits inside the
+// dedup INSERT — no duplicate prospect, no duplicate feed card. The
+// generic dedup test exercises CreateFeedCard; this one is the
+// load-bearing guarantee for the inbound-lead surface specifically,
+// because a duplicate prospect would corrupt the contractor's
+// pipeline analytics.
+func TestA2AService_ProcessWebhook_LocalblueLeadCaptured_IdempotencyReplay(t *testing.T) {
+	pool := testdb.NewPool(t)
+	ctx := context.Background()
+
+	contractorOrg := uuid.New()
+	testdb.SeedOrg(t, pool, contractorOrg, "Smith Construction")
+
+	payload := map[string]any{
+		"lead_id":           uuid.New().String(),
+		"contractor_org_id": contractorOrg.String(),
+		"lead_name":         "Bath remodel",
+		"contact_name":      "Carlos Diaz",
+		"contact_email":     "carlos@example.com",
+		"source":            "website",
+		"captured_at":       "2026-04-30T09:00:00Z",
+	}
+	body, _ := json.Marshal(payload)
+
+	svc := NewA2AService(pool, store.NewA2AStore(), store.NewFeedCardsStore(), store.NewPipelineStore(), nil)
+	envelope := WebhookEnvelope{
+		EventType:      EventLocalblueLeadCaptured,
+		IdempotencyKey: uuid.New(), // same key on both calls
+		Payload:        body,
+		Issuer:         "fb-brain",
+	}
+
+	first, err := svc.ProcessWebhook(ctx, envelope)
+	if err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if first.AlreadyProcessed {
+		t.Error("first call: already_processed=true, want false")
+	}
+	if first.FeedCardID == nil {
+		t.Fatal("first call: expected feed card created")
+	}
+
+	second, err := svc.ProcessWebhook(ctx, envelope)
+	if err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	if !second.AlreadyProcessed {
+		t.Error("second call: already_processed=false, want true (dedup must short-circuit)")
+	}
+	if second.FeedCardID != nil {
+		t.Errorf("second call: feed_card_id=%v, want nil (dispatch must be skipped on replay)", second.FeedCardID)
+	}
+
+	// Hard guarantee: exactly one prospect + one feed card under the
+	// contractor's org. The dedup row gets a unique key on
+	// idempotency_key so a second INSERT into a2a_inbound_log is the
+	// dedup signal — but the test that matters to the operator is
+	// "did my pipeline get a duplicate lead?" → no.
+	var prospectCount, feedCount int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM pre_construction_prospects WHERE org_id = $1`, contractorOrg).Scan(&prospectCount); err != nil {
+		t.Fatalf("count prospects: %v", err)
+	}
+	if prospectCount != 1 {
+		t.Errorf("prospect count = %d after replay, want 1", prospectCount)
+	}
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM feed_cards WHERE org_id = $1`, contractorOrg).Scan(&feedCount); err != nil {
+		t.Fatalf("count feed cards: %v", err)
+	}
+	if feedCount != 1 {
+		t.Errorf("feed card count = %d after replay, want 1", feedCount)
+	}
+}
+
+// TestA2AService_ProcessWebhook_LocalblueLeadCaptured_RejectsMissingLeadName
+// asserts the validation gate trips on empty lead_name AND that the
+// surrounding tx rolls back cleanly — no orphan dedup row, no orphan
+// prospect. Without atomic rollback the receiver would mark the
+// envelope "processed" while having silently dropped the work, and
+// Brain's retry would correctly skip it (already_processed=true) →
+// the lead would be lost forever. This test guards that contract.
+func TestA2AService_ProcessWebhook_LocalblueLeadCaptured_RejectsMissingLeadName(t *testing.T) {
+	pool := testdb.NewPool(t)
+	ctx := context.Background()
+	contractorOrg := uuid.New()
+	testdb.SeedOrg(t, pool, contractorOrg, "Smith Construction")
+
+	body, _ := json.Marshal(map[string]any{
+		"lead_id":           uuid.New().String(),
+		"contractor_org_id": contractorOrg.String(),
+		"lead_name":         "", // <-- the gate
+		"contact_name":      "Jane Smith",
+		"captured_at":       "2026-04-30T12:00:00Z",
+	})
+
+	svc := NewA2AService(pool, store.NewA2AStore(), store.NewFeedCardsStore(), store.NewPipelineStore(), nil)
+	_, err := svc.ProcessWebhook(ctx, WebhookEnvelope{
+		EventType:      EventLocalblueLeadCaptured,
+		IdempotencyKey: uuid.New(),
+		Payload:        body,
+		Issuer:         "fb-brain",
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("err = %v, want ErrInvalidInput", err)
+	}
+
+	assertNoDedupOrOrphans(t, ctx, pool, contractorOrg)
+}
+
+// TestA2AService_ProcessWebhook_LocalblueLeadCaptured_RejectsMissingContactName
+// is the symmetric case for contact_name. Same atomicity guarantee:
+// validation failure → full rollback → Brain's retry can succeed once
+// the upstream payload is corrected.
+func TestA2AService_ProcessWebhook_LocalblueLeadCaptured_RejectsMissingContactName(t *testing.T) {
+	pool := testdb.NewPool(t)
+	ctx := context.Background()
+	contractorOrg := uuid.New()
+	testdb.SeedOrg(t, pool, contractorOrg, "Smith Construction")
+
+	body, _ := json.Marshal(map[string]any{
+		"lead_id":           uuid.New().String(),
+		"contractor_org_id": contractorOrg.String(),
+		"lead_name":         "Garage build",
+		"contact_name":      "", // <-- the gate
+		"captured_at":       "2026-04-30T12:00:00Z",
+	})
+
+	svc := NewA2AService(pool, store.NewA2AStore(), store.NewFeedCardsStore(), store.NewPipelineStore(), nil)
+	_, err := svc.ProcessWebhook(ctx, WebhookEnvelope{
+		EventType:      EventLocalblueLeadCaptured,
+		IdempotencyKey: uuid.New(),
+		Payload:        body,
+		Issuer:         "fb-brain",
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("err = %v, want ErrInvalidInput", err)
+	}
+
+	assertNoDedupOrOrphans(t, ctx, pool, contractorOrg)
+}
+
+// TestA2AService_ProcessWebhook_LocalblueLeadCaptured_OptionalFieldsMapToNull
+// asserts the stringPtrOrNil contract: empty optional fields
+// (contact_email, contact_phone, address) arrive at the prospect row
+// as SQL NULL, NOT as the empty string "". Reasoning: downstream
+// reporting + email-deliverability checks rely on IS NULL semantics;
+// a stored "" would be a false-positive ("we have an email!") and
+// would also trip Postgres uniqueness gates if any get added later.
+func TestA2AService_ProcessWebhook_LocalblueLeadCaptured_OptionalFieldsMapToNull(t *testing.T) {
+	pool := testdb.NewPool(t)
+	ctx := context.Background()
+	contractorOrg := uuid.New()
+	testdb.SeedOrg(t, pool, contractorOrg, "Smith Construction")
+
+	// Required fields only; everything optional intentionally absent
+	// or empty in the JSON.
+	body, _ := json.Marshal(map[string]any{
+		"lead_id":           uuid.New().String(),
+		"contractor_org_id": contractorOrg.String(),
+		"lead_name":         "Deck install",
+		"contact_name":      "Marcus Lee",
+		"contact_email":     "",
+		"contact_phone":     "",
+		"address":           "",
+		"source":            "website",
+		"captured_at":       "2026-04-30T12:00:00Z",
+	})
+
+	svc := NewA2AService(pool, store.NewA2AStore(), store.NewFeedCardsStore(), store.NewPipelineStore(), nil)
+	_, err := svc.ProcessWebhook(ctx, WebhookEnvelope{
+		EventType:      EventLocalblueLeadCaptured,
+		IdempotencyKey: uuid.New(),
+		Payload:        body,
+		Issuer:         "fb-brain",
+	})
+	if err != nil {
+		t.Fatalf("ProcessWebhook: %v", err)
+	}
+
+	var emailNull, phoneNull, addressNull bool
+	err = pool.QueryRow(ctx, `
+		SELECT client_email IS NULL, client_phone IS NULL, address IS NULL
+		FROM pre_construction_prospects WHERE org_id = $1`, contractorOrg).Scan(
+		&emailNull, &phoneNull, &addressNull)
+	if err != nil {
+		t.Fatalf("fetch prospect nullability: %v", err)
+	}
+	if !emailNull {
+		t.Error("client_email should be NULL when payload contact_email is empty")
+	}
+	if !phoneNull {
+		t.Error("client_phone should be NULL when payload contact_phone is empty")
+	}
+	if !addressNull {
+		t.Error("address should be NULL when payload address is empty")
+	}
+}
+
+// TestA2AService_ProcessWebhook_LocalblueLeadCaptured_DefaultSourceTag
+// pins the localblueSourceTag boundary: when LocalBlue's payload omits
+// source (or sends ""), the prospect's source column lands as plain
+// "localblue" — NOT "localblue:" with a dangling colon. The colon-only
+// variant would corrupt analytics buckets that group on `source`.
+func TestA2AService_ProcessWebhook_LocalblueLeadCaptured_DefaultSourceTag(t *testing.T) {
+	pool := testdb.NewPool(t)
+	ctx := context.Background()
+	contractorOrg := uuid.New()
+	testdb.SeedOrg(t, pool, contractorOrg, "Smith Construction")
+
+	body, _ := json.Marshal(map[string]any{
+		"lead_id":           uuid.New().String(),
+		"contractor_org_id": contractorOrg.String(),
+		"lead_name":         "Window replacement",
+		"contact_name":      "Anil Patel",
+		// source intentionally omitted → empty string after Unmarshal
+		"captured_at": "2026-04-30T12:00:00Z",
+	})
+
+	svc := NewA2AService(pool, store.NewA2AStore(), store.NewFeedCardsStore(), store.NewPipelineStore(), nil)
+	_, err := svc.ProcessWebhook(ctx, WebhookEnvelope{
+		EventType:      EventLocalblueLeadCaptured,
+		IdempotencyKey: uuid.New(),
+		Payload:        body,
+		Issuer:         "fb-brain",
+	})
+	if err != nil {
+		t.Fatalf("ProcessWebhook: %v", err)
+	}
+
+	var source string
+	if err := pool.QueryRow(ctx, `
+		SELECT source FROM pre_construction_prospects WHERE org_id = $1`, contractorOrg).Scan(&source); err != nil {
+		t.Fatalf("fetch source: %v", err)
+	}
+	if source != "localblue" {
+		t.Errorf("source = %q, want %q (no dangling colon when upstream source is empty)", source, "localblue")
+	}
+}
+
+// TestA2AService_ProcessWebhook_LocalblueLeadCaptured_NoPipelineStoreReturnsError
+// asserts the defensive guard at the top of the handler: a service
+// constructed without a pipelineStore (deployment opted out of the
+// LocalBlue inbound surface) refuses the event with ErrInvalidInput
+// rather than panicking on a nil deref. The dedup row from the
+// surrounding tx must also roll back so Brain's retry semantics
+// remain coherent if the operator later wires the pipelineStore in.
+func TestA2AService_ProcessWebhook_LocalblueLeadCaptured_NoPipelineStoreReturnsError(t *testing.T) {
+	pool := testdb.NewPool(t)
+	ctx := context.Background()
+	contractorOrg := uuid.New()
+	testdb.SeedOrg(t, pool, contractorOrg, "Smith Construction")
+
+	body, _ := json.Marshal(map[string]any{
+		"lead_id":           uuid.New().String(),
+		"contractor_org_id": contractorOrg.String(),
+		"lead_name":         "Pool install",
+		"contact_name":      "Priya Rao",
+		"captured_at":       "2026-04-30T12:00:00Z",
+	})
+
+	// pipelineStore explicitly nil — opt-out posture.
+	svc := NewA2AService(pool, store.NewA2AStore(), store.NewFeedCardsStore(), nil, nil)
+	_, err := svc.ProcessWebhook(ctx, WebhookEnvelope{
+		EventType:      EventLocalblueLeadCaptured,
+		IdempotencyKey: uuid.New(),
+		Payload:        body,
+		Issuer:         "fb-brain",
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("err = %v, want ErrInvalidInput (handler must reject when pipelineStore is nil)", err)
+	}
+
+	// Dedup row + prospect + feed card must all be rolled back.
+	assertNoDedupOrOrphans(t, ctx, pool, contractorOrg)
+}
+
+// assertNoDedupOrOrphans is the rollback-atomicity assertion shared by
+// the validation-failure and missing-pipelineStore tests. After a
+// LocalBlue handler error, the tx must roll back fully — no
+// a2a_inbound_log row (which would falsely mark the envelope as
+// "processed" on Brain's retry), no orphan prospect, no orphan feed
+// card.
+func assertNoDedupOrOrphans(t *testing.T, ctx context.Context, pool *pgxpool.Pool, orgID uuid.UUID) {
+	t.Helper()
+	var dedupCount, prospectCount, feedCount int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM a2a_inbound_log`).Scan(&dedupCount); err != nil {
+		t.Fatalf("count dedup rows: %v", err)
+	}
+	if dedupCount != 0 {
+		t.Errorf("a2a_inbound_log count = %d, want 0 (dedup row must roll back on dispatch failure)", dedupCount)
+	}
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM pre_construction_prospects WHERE org_id = $1`, orgID).Scan(&prospectCount); err != nil {
+		t.Fatalf("count prospects: %v", err)
+	}
+	if prospectCount != 0 {
+		t.Errorf("prospect count = %d, want 0 (must roll back with the tx)", prospectCount)
+	}
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM feed_cards WHERE org_id = $1`, orgID).Scan(&feedCount); err != nil {
+		t.Fatalf("count feed cards: %v", err)
+	}
+	if feedCount != 0 {
+		t.Errorf("feed card count = %d, want 0 (must roll back with the tx)", feedCount)
 	}
 }
 
