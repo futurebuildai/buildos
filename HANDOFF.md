@@ -20,7 +20,8 @@ Companion docs:
 
 ## Last shipped (most recent → older)
 
-- **2026-05-05** PR #16 [`6ee6752`] S1.5 part 4 / Session 3.4 (closes S1.5; **triggers Gate 1**): wire typed `Maestro.DailyBriefing` into `agents.GenerateDailyBriefing` + per-call billing-audit row. `MaestroChatter` (free-form `Chat`) replaced with `MaestroDailyBriefer` (typed `DailyBriefing(ctx, brain.DailyBriefingRequest) (*brain.DailyBriefingResponse, error)`). The local `buildDailyBriefingPrompt` helper is deleted — Brain's `daily_briefing` task owns the prompt template per ADR-001 D5; BuildOS only assembles the structured context (`Tasks`, `Alerts`, `UserRole`). After a successful Maestro call, a short standalone tx writes one audit row with `action="ai.daily_briefing.invoked"`, `resource_type="ai_run"` (new `AuditResourceAIRun` constant), `resource_id=resp.RunID`, and metadata JSON `{run_id, session_id, tokens_used, cost_cents, currency_code, task_count, alert_count, task}`. This is the per-call meter that rolls into the org's monthly AI usage line. Audit is best-effort — `AuditService.Record` log-and-swallow path keeps the briefing from being held back if the audit insert fails. `NewAgentsService` constructor takes `AuditRecorder` (nil → `NoopAuditRecorder`); `cmd/server/main.go` wired. Tests: typed `fakeBriefer` for the new interface, nil-audit-fallback regression, validation-only paths (the three pre-existing `buildDailyBriefingPrompt` tests dropped — function gone). `make audit` ALL PASSED. CPM80=184µs, CPM200=438µs.
+- **2026-05-05** PR #17 [`62bf293`] S2 Session 5.1: outbound `buildos.prospect_promoted` A2A event on PROSPECT → PROJECT atomic promotion. Extends `transitionToPermitIssued` to enqueue an `A2AWebhookDispatch` River job inside the same tx as the project insert + prospect update + HydrateProject job — Brain only ever receives the announcement for a project that committed. Payload is feed-card-shaped per ADR-001 D14 (`card_type=pipeline.prospect_promoted`, title, body, priority, empty actions, metadata{prospect_id, project_id, org_id, gsf, permit_issued_date RFC3339, optional address}). `address` is omitted when nil so Brain's dedup/ETL distinguishes absent from empty. `EventTypeProspectPromoted` is exported as the cross-repo event_type identifier. New helper + struct are package-private. Tests assert explicit envelope shape (renamed JSON key fails loud) plus the nil-address omission contract. Full transition path stays deferred to integration suite. `make audit` ALL PASSED. CPM80=187µs, CPM200=425µs.
+- **2026-05-05** PR #16 [`6ee6752`] S1.5 part 4 / Session 3.4 (closes S1.5; **triggered Gate 1; ratified by owner 2026-05-05**): wire typed `Maestro.DailyBriefing` into `agents.GenerateDailyBriefing` + per-call billing-audit row. `MaestroChatter` (free-form `Chat`) replaced with `MaestroDailyBriefer` (typed `DailyBriefing(ctx, brain.DailyBriefingRequest) (*brain.DailyBriefingResponse, error)`). The local `buildDailyBriefingPrompt` helper is deleted — Brain's `daily_briefing` task owns the prompt template per ADR-001 D5; BuildOS only assembles the structured context (`Tasks`, `Alerts`, `UserRole`). After a successful Maestro call, a short standalone tx writes one audit row with `action="ai.daily_briefing.invoked"`, `resource_type="ai_run"` (new `AuditResourceAIRun` constant), `resource_id=resp.RunID`, and metadata JSON `{run_id, session_id, tokens_used, cost_cents, currency_code, task_count, alert_count, task}`. This is the per-call meter that rolls into the org's monthly AI usage line. Audit is best-effort — `AuditService.Record` log-and-swallow path keeps the briefing from being held back if the audit insert fails. `NewAgentsService` constructor takes `AuditRecorder` (nil → `NoopAuditRecorder`); `cmd/server/main.go` wired. Tests: typed `fakeBriefer` for the new interface, nil-audit-fallback regression, validation-only paths (the three pre-existing `buildDailyBriefingPrompt` tests dropped — function gone). `make audit` ALL PASSED. CPM80=184µs, CPM200=438µs.
 - **2026-05-05** PR #15 [`543eac6`] S1.5 part 3 / Session 3.3: Brain Hub credential proxy stubs (ADR-001 D6). New `internal/brain/hub.go` adds `HubClient.GetCredential(ctx, GetCredentialRequest) (*Credential, error)` and `HubClient.RefreshIfExpired(ctx, credentialID) error`. Mode is fork-static via `Config.HubDirectMode` (driven by `BRAIN_HUB_DIRECT` env): proxy mode (default) returns `Credential.ProxyHandle` only — raw secret never enters the fork; direct mode appends `?mode=direct` and Brain returns `Credential.Secret` if its policy gate authorizes the fork. Wired into `Client.Hub` alongside `Maestro` / `Billing` so it inherits S1.5 part 1 retry + breaker + per-method timeouts. `Credential.Secret` is Restricted-class — slog (PR #11) + audit (PR #10) scrubbers already mask it on egress. Validation rejects empty provider / `uuid.Nil` credentialID client-side. Empty Scope auto-defaults to `"default"`. 11 new tests cover both modes, empty-scope default, custom-scope path-escape, 404 → ErrNotFound, 502 → ErrTransient, fork-static mode independence. Sets up Session 3.4 (DailyBriefing wiring + Gate 1 trigger).
 - **2026-05-04** PR #14 [`55325d0`] S1.5 part 2 / Session 3.2: typed Maestro task envelopes (ADR-001 D5). New `internal/brain/maestro_tasks.go` adds the typed `/v1/ai/tasks` surface alongside the existing session-based `Chat`. Five typed methods (`DailyBriefing`, `IntentClassify`, `InvoiceExtract`, `ProcurementRecommend`, `TribunalReview`) each route through one shared `runTask()` helper that handles the discriminated `{task, input}` envelope. Every response carries an embedded `CostMetadata{run_id, tokens_used, cost_cents, currency_code}` per ADR-001 D5 cost-tracking shape so callers can write a per-call billing-audit row. Composite Currency Pattern preserved everywhere monetary fields appear (invoice total, line items, vendor predicted-spend, AI run cost). Client-side validation matches existing pattern (utterance/dispute_id/material_request_id required; either document_url or text). 11 new tests cover round-trip envelope encoding, cost metadata propagation, validation rejection without server hit, and `*HTTPError` chain through the typed wrapper. Cross-repo blocking edge: Brain-side OpenAPI fixture for `/v1/ai/tasks` not yet published — contract tests deferred. Sets up Sessions 3.3 (Hub stubs / D6) and 3.4 (DailyBriefing wiring + Gate 1).
 - **2026-05-04** PR #13 [`89b671e`] S1.5 part 1 / Session 3.1: brain-client resilience layer. (a) In-house circuit breaker (`internal/brain/resilience.go`, ~80 LOC) with closed→open→half-open state machine, generation-counter for stale-outcome safety, defaults 5 failures / 60s window, 30s open. No external `gobreaker` dep per `.agents/TECH_STACK.md` policy. (b) Per-method timeouts via `Config.Timeouts` (Maestro 30s, Billing 5s); caller's tighter ctx deadline wins. (c) Retry defaults retuned to plan spec: 3 attempts, 200ms base, 4× multiplier (200→800→3.2s spacing). 4xx (client error) does NOT count toward breaker threshold. New `ErrCircuitOpen` sentinel for service-layer 503 mapping. 8 new resilience tests; race-clean. Sets up Sessions 3.2 (Maestro typed envelopes / D5), 3.3 (Hub proxy stubs / D6), 3.4 (Daily Briefing wiring + Gate 1).
@@ -36,7 +37,7 @@ Companion docs:
 - **2026-05-01** PR #3 [`29ea6fe`] SecretSource abstraction (env/file/chain) + `LoadWithSource()`.
 - **2026-05-01** PR #2 [`699a64d`] Sprints 1-5 + Phase F core (44 commits — domain endpoints, Brain integration, production hardening, Dockerfile, D8 build-tag hardening).
 
-15 PRs merged under the L8 self-audit gate (PR #9 added the L8 SRE
+16 PRs merged under the L8 self-audit gate (PR #9 added the L8 SRE
 audit gate as a second checklist applied per PR). Every landed
 commit had `make audit` green + integration suite green +
 govulncheck clean. PRs #9 onward also have CI green at merge time
@@ -46,28 +47,13 @@ govulncheck clean. PRs #9 onward also have CI green at merge time
 
 Nothing on a branch waiting for review right now.
 
-**Gate 1 reached (2026-05-05).** S1.5 Brain Client Foundation is
-end-to-end: PR #13 (resilience) + PR #14 (typed Maestro envelopes,
-D5) + PR #15 (Hub proxy/direct, D6) + PR #16 (DailyBriefing wiring +
-billing audit). Per the 18-week roadmap, **owner approval is
-required** before S2 (pre-construction pipeline) and S3 (procurement
-Maestro) start compounding on this contract:
-
-1. **D5 typed-envelope shapes** — locked per-task Request/Response
-   field sets in `internal/brain/maestro_tasks.go` (DailyBriefing,
-   IntentClassify, InvoiceExtract, ProcurementRecommend,
-   TribunalReview), each carrying `CostMetadata{run_id, tokens_used,
-   cost_cents, currency_code}`. Renaming/restructuring later is a
-   cross-PR breaking change.
-2. **D6 Hub proxy vs direct mode** — default proxy mode (Brain holds
-   the secret, returns `ProxyHandle`); `BRAIN_HUB_DIRECT=true`
-   per-fork to receive decrypted credentials. Mode is fork-static,
-   not per-request, so audit traces deployment posture rather than a
-   runtime path.
-
-Until owner ratifies these, work pauses on Maestro-touching sprints
-(S2-S6). Non-Maestro tracks (Vault SecretSource T2 #4, `make audit`
-harden-up) remain available.
+**Gate 1 ratified by owner (2026-05-05).** S1.5 Brain Client
+Foundation is locked in: D5 typed Maestro envelopes
+(`internal/brain/maestro_tasks.go`) and D6 Hub proxy/direct mode
+(`internal/brain/hub.go`) are now stable cross-repo contracts.
+Maestro-touching sprints (S2-S6) cleared to proceed. **S2 Session
+5.1 shipped (PR #17)** — PROSPECT → PROJECT atomic promotion now
+emits `buildos.prospect_promoted` A2A event for Brain to disseminate.
 
 ## Blocked
 
@@ -85,21 +71,25 @@ Known follow-up surfaced by PR #9 (not blocking, queued):
 See [.agents/handoff/NEXT_STEPS.md](./.agents/handoff/NEXT_STEPS.md)
 for the full prioritized backlog with entry-point file paths.
 
-Top three an L8 PE would queue (Tier 1 trio + S1.5 done; **Gate 1
-reached, paused for owner approval on Maestro-touching tracks**):
+Top three an L8 PE would queue (Tier 1 trio + S1.5 done + Gate 1
+ratified + S2 Session 5.1 shipped; clear to compound on Maestro
+contract):
 
-1. **Owner approval at Gate 1** (blocking S2-S6) — ratify D5 typed
-   envelope shapes (`internal/brain/maestro_tasks.go`) and D6 Hub
-   proxy/direct mode (`internal/brain/hub.go`) before S2 (PROSPECT
-   → PROJECT atomic) and S3 (procurement Maestro) start.
+1. **S2 Session 5.2 / S2 finish** — pipeline UI affordance + handler
+   contract tests. New file: `internal/api/pipeline.go` (verify
+   list-prospects, transition-stage, promote endpoints exist; add
+   OpenAPI annotations). Permission test (only `role=PM` or higher
+   can promote). Continues the pre-construction pipeline track.
 2. **Vault SecretSource backend** (Tier 2 #4) — `internal/config/vault.go`
    implementing the `SecretSource` interface for HashiCorp Vault.
-   Required before first-fork cutover (Phase H). Doesn't touch
-   Maestro contract; can proceed during Gate 1 hold.
-3. **`make audit` harden-up** — add strict `gofmt -l` and Dockerfile
-   smoke-build to local audit so CI parity is restored (surfaced
-   by PR #9 follow-ups). Doesn't touch Maestro contract; can
-   proceed during Gate 1 hold.
+   Required before first-fork cutover (Phase H). Independent of
+   Maestro track — can run in parallel with S2/S3.
+3. **S3 Session 7.1 — Procurement Maestro calls** — `RecommendVendors`
+   in `internal/service/procurement.go` calling
+   `brain.Maestro.ProcurementRecommend`. New migration
+   `009_procurement_recommendations.up.sql` (composite-currency for
+   predicted-spend). Audit row per recommendation. Sets up Session
+   7.2 (outbound A2A `review_material_quote` / `review_labor_bid`).
 
 ## Working agreement (L8 self-audit gate)
 
