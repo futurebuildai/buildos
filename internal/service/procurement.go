@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/futurebuildai/buildos/internal/a2a"
 	"github.com/futurebuildai/buildos/internal/brain"
 	"github.com/futurebuildai/buildos/internal/currency"
 	"github.com/futurebuildai/buildos/internal/models"
@@ -39,6 +40,12 @@ var (
 	// (e.g. the worker binary that only runs RecomputeStatuses). Lets
 	// handlers surface a clean 503 rather than panicking on a nil call.
 	ErrMaestroUnavailable = errors.New("procurement: maestro client not configured")
+
+	// ErrA2AEmitterUnavailable is returned by RequestVendorReview when
+	// the service was constructed without a VendorReviewEmitter. Same
+	// "worker binary doesn't need it" rationale as ErrMaestroUnavailable
+	// — only the API server triggers operator-driven review flows.
+	ErrA2AEmitterUnavailable = errors.New("procurement: a2a emitter not configured")
 )
 
 // MaestroProcurementRecommender is the consumer-side interface
@@ -52,6 +59,15 @@ var (
 // {run_id, tokens_used, cost_cents, currency_code} for billing.
 type MaestroProcurementRecommender interface {
 	ProcurementRecommend(ctx context.Context, req brain.ProcurementRecommendRequest) (*brain.ProcurementRecommendResponse, error)
+}
+
+// VendorReviewEmitter is the consumer-side interface
+// ProcurementService needs from the a2a emitter. *a2a.Emitter
+// satisfies it; tests substitute a fake. Defined here (rather than
+// taking *a2a.Emitter directly) so this package isn't pinned to the
+// emitter struct's full surface.
+type VendorReviewEmitter interface {
+	EmitReviewMaterialQuote(ctx context.Context, tx pgx.Tx, args a2a.ReviewMaterialQuoteArgs) (uuid.UUID, error)
 }
 
 // CreateProcurementItemInput is the validated input for Create. The
@@ -89,18 +105,21 @@ type ProcurementService struct {
 	pool    *pgxpool.Pool
 	store   *store.ProcurementStore
 	maestro MaestroProcurementRecommender
+	emitter VendorReviewEmitter
 	audit   AuditRecorder
 }
 
 // NewProcurementService creates a service bound to a pool + store.
 // maestro may be nil — RecommendVendors then returns
 // ErrMaestroUnavailable (worker-only deployments don't need it).
+// emitter may be nil — RequestVendorReview then returns
+// ErrA2AEmitterUnavailable (same worker-only rationale).
 // audit may be nil; nil falls back to a no-op recorder.
-func NewProcurementService(pool *pgxpool.Pool, items *store.ProcurementStore, maestro MaestroProcurementRecommender, audit AuditRecorder) *ProcurementService {
+func NewProcurementService(pool *pgxpool.Pool, items *store.ProcurementStore, maestro MaestroProcurementRecommender, emitter VendorReviewEmitter, audit AuditRecorder) *ProcurementService {
 	if audit == nil {
 		audit = NewNoopAuditRecorder()
 	}
-	return &ProcurementService{pool: pool, store: items, maestro: maestro, audit: audit}
+	return &ProcurementService{pool: pool, store: items, maestro: maestro, emitter: emitter, audit: audit}
 }
 
 // ListProcurement returns all items on a project visible to the caller's
@@ -467,6 +486,105 @@ func (s *ProcurementService) RecommendVendors(ctx context.Context, callerOrgID u
 		return ProcurementRecommendationSet{}, fmt.Errorf("recommend vendors: %w", err)
 	}
 	return result, nil
+}
+
+// RequestVendorReviewInput is the validated input for
+// RequestVendorReview. RFQID and Reasoning are optional (uuid.Nil /
+// empty string omit them on the wire — see emitter docs).
+type RequestVendorReviewInput struct {
+	ProcurementItemID uuid.UUID
+	RFQID             uuid.UUID // optional — uuid.Nil for Maestro-driven (no formal RFQ)
+	Vendor            string
+	TotalCents        int64
+	CurrencyCode      string
+	Reasoning         string // optional Maestro narrative
+}
+
+// RequestVendorReview enqueues an outbound A2A `review_material_quote`
+// event so Brain can dispatch the quote to the org's review queue.
+// The whole flow runs in one tx: ownership check, emit (River
+// InsertTx on the same tx), audit row. Returns the idempotency key
+// minted by the emitter so the caller can correlate enqueue →
+// delivery via the river_job table.
+//
+// Validates:
+//   - callerOrgID + ProcurementItemID non-zero.
+//   - The item belongs to callerOrgID (cross-org isolation via store.GetProcurementItem).
+//   - The service was constructed with a non-nil VendorReviewEmitter.
+//
+// Wire-shape validation (vendor non-empty, total_cents non-negative,
+// currency_code in USD/CAD) is delegated to the emitter — its
+// ErrInvalidArgs is wrapped as ErrInvalidInput so handlers see the
+// uniform service-layer sentinel.
+//
+// callerUserSub is recorded on the audit row.
+func (s *ProcurementService) RequestVendorReview(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, in RequestVendorReviewInput) (uuid.UUID, error) {
+	if callerOrgID == uuid.Nil {
+		return uuid.Nil, fmt.Errorf("%w: caller org_id is required", ErrInvalidInput)
+	}
+	if in.ProcurementItemID == uuid.Nil {
+		return uuid.Nil, fmt.Errorf("%w: procurement_item_id is required", ErrInvalidInput)
+	}
+	if s.emitter == nil {
+		return uuid.Nil, ErrA2AEmitterUnavailable
+	}
+
+	var idempotencyKey uuid.UUID
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		// Ownership check + cross-org isolation. Returns
+		// ErrProcurementItemNotFound if the item doesn't exist or
+		// belongs to a different org.
+		if _, err := s.store.GetProcurementItem(ctx, tx, in.ProcurementItemID, callerOrgID); err != nil {
+			return err
+		}
+
+		idem, err := s.emitter.EmitReviewMaterialQuote(ctx, tx, a2a.ReviewMaterialQuoteArgs{
+			OrgID:             callerOrgID,
+			ProcurementItemID: in.ProcurementItemID,
+			RFQID:             in.RFQID,
+			Vendor:            in.Vendor,
+			TotalCents:        in.TotalCents,
+			CurrencyCode:      in.CurrencyCode,
+			Reasoning:         in.Reasoning,
+		})
+		if err != nil {
+			return err
+		}
+		idempotencyKey = idem
+
+		s.audit.Record(ctx, tx, AuditEntry{
+			OrgID:        callerOrgID,
+			UserSub:      callerUserSub,
+			Action:       "procurement.vendor_review.requested",
+			ResourceType: AuditResourceProcurementItem,
+			ResourceID:   in.ProcurementItemID,
+			Metadata: marshalAudit(map[string]any{
+				"idempotency_key": idem,
+				"vendor":          in.Vendor,
+				"total_cents":     in.TotalCents,
+				"currency_code":   in.CurrencyCode,
+				"rfq_id":          in.RFQID,
+				"has_reasoning":   strings.TrimSpace(in.Reasoning) != "",
+			}),
+		})
+		return nil
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrProcurementItemNotFound):
+			return uuid.Nil, ErrProcurementItemNotFound
+		case errors.Is(err, store.ErrNotFound):
+			return uuid.Nil, ErrNotFound
+		case errors.Is(err, a2a.ErrInvalidArgs):
+			// Wire-shape validation from the emitter (vendor empty,
+			// total_cents negative, unsupported currency). Surface
+			// as the uniform service-layer sentinel so handlers
+			// don't have to know about the emitter's error type.
+			return uuid.Nil, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+		}
+		return uuid.Nil, fmt.Errorf("request vendor review: %w", err)
+	}
+	return idempotencyKey, nil
 }
 
 // confidenceToPct converts Maestro's float64 confidence (0.0–1.0) to
