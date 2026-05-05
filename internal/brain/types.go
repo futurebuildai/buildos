@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // Sentinel errors returned by the Brain client. Service-layer callers
@@ -21,6 +22,13 @@ var (
 	// the client exhausted its retry budget. Surface as 502/503 in the
 	// caller's API.
 	ErrTransient = errors.New("brain: upstream transient failure")
+
+	// ErrCircuitOpen is returned when the brain client's circuit
+	// breaker is open and refusing to forward calls. Surface as 503
+	// (service unavailable) in the caller's API. Distinct from
+	// ErrTransient so service-layer code can choose to skip the
+	// fallback retry loop entirely while the breaker is tripped.
+	ErrCircuitOpen = errors.New("brain: circuit breaker open")
 )
 
 // HTTPError captures a non-2xx response from Brain in a typed way.
@@ -75,10 +83,15 @@ type metaBlock struct {
 
 // RetryConfig controls the exponential-backoff policy used by doRequest.
 // Zero values are treated as "use default".
+//
+// Defaults are tuned to S1.5 spec: 3 attempts with 200ms→800ms→3.2s
+// inter-attempt delays. Multiplier=4 spaces probes far enough apart
+// that a brain restart (typical 1–3s) is bridged without exhausting
+// the budget on a single request.
 type RetryConfig struct {
 	MaxAttempts int     // default 3
-	BaseDelayMs int     // default 100
-	Multiplier  float64 // default 2.0
+	BaseDelayMs int     // default 200
+	Multiplier  float64 // default 4.0
 }
 
 func (rc RetryConfig) withDefaults() RetryConfig {
@@ -86,10 +99,36 @@ func (rc RetryConfig) withDefaults() RetryConfig {
 		rc.MaxAttempts = 3
 	}
 	if rc.BaseDelayMs <= 0 {
-		rc.BaseDelayMs = 100
+		rc.BaseDelayMs = 200
 	}
 	if rc.Multiplier <= 0 {
-		rc.Multiplier = 2.0
+		rc.Multiplier = 4.0
 	}
 	return rc
+}
+
+// Timeouts configures per-method context deadlines. Each sub-client
+// wraps the caller's ctx with WithTimeout(ctx, <timeout>) before
+// invoking doRequest. Zero values fall back to defaults.
+//
+// Why per-method rather than a single client-wide timeout: Maestro
+// LLM round-trips are long (5–30s typical, 60s tail) while billing
+// reads are sub-second; binding both to a single ceiling either
+// strangles long calls or wastes user time on short ones that have
+// hung.
+type Timeouts struct {
+	// Maestro applies to MaestroClient methods (chat, sessions). Default 30s.
+	Maestro time.Duration
+	// Billing applies to BillingClient methods (usage). Default 5s.
+	Billing time.Duration
+}
+
+func (t Timeouts) withDefaults() Timeouts {
+	if t.Maestro <= 0 {
+		t.Maestro = 30 * time.Second
+	}
+	if t.Billing <= 0 {
+		t.Billing = 5 * time.Second
+	}
+	return t
 }

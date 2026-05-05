@@ -81,6 +81,8 @@ func (r UsageRange) query() string {
 // GetUsageSummary returns aggregated AI-token usage for the caller's
 // org over the given window. Org is implicit from the JWT.
 func (b *BillingClient) GetUsageSummary(ctx context.Context, r UsageRange) (*UsageSummary, error) {
+	ctx, cancel := b.withTimeout(ctx)
+	defer cancel()
 	raw, err := b.c.doRequest(ctx, "GET", "/api/billing/usage"+r.query(), nil)
 	if err != nil {
 		return nil, err
@@ -94,6 +96,8 @@ func (b *BillingClient) GetUsageSummary(ctx context.Context, r UsageRange) (*Usa
 
 // GetDailyUsage returns per-day usage rows for chart rendering.
 func (b *BillingClient) GetDailyUsage(ctx context.Context, r UsageRange) (*DailyUsageResponse, error) {
+	ctx, cancel := b.withTimeout(ctx)
+	defer cancel()
 	raw, err := b.c.doRequest(ctx, "GET", "/api/billing/usage/daily"+r.query(), nil)
 	if err != nil {
 		return nil, err
@@ -103,4 +107,18 @@ func (b *BillingClient) GetDailyUsage(ctx context.Context, r UsageRange) (*Daily
 		return nil, fmt.Errorf("brain.Billing.GetDailyUsage: decode response: %w", err)
 	}
 	return &resp, nil
+}
+
+// withTimeout wraps ctx with the configured Billing timeout, deferring
+// to a tighter caller deadline if one is already set. See the matching
+// function on MaestroClient for the rationale on per-method timeouts.
+func (b *BillingClient) withTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	t := b.c.timeouts.Billing
+	if t <= 0 {
+		return ctx, func() {}
+	}
+	if d, ok := ctx.Deadline(); ok && time.Until(d) < t {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, t)
 }
