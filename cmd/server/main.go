@@ -14,6 +14,7 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
+	"github.com/futurebuildai/buildos/internal/a2a"
 	"github.com/futurebuildai/buildos/internal/api"
 	"github.com/futurebuildai/buildos/internal/api/middleware"
 	"github.com/futurebuildai/buildos/internal/brain"
@@ -148,8 +149,14 @@ func run(logger *slog.Logger) error {
 	a2aStore := store.NewA2AStore()
 	feedCardsStore := store.NewFeedCardsStore()
 	feedService := service.NewFeedService(pool, feedCardsStore, logger, riverClient, auditService)
+	// Outbound A2A emitter — typed-payload surface for queueing
+	// review_material_quote / review_labor_bid events on a pgx.Tx.
+	// Backed by the same River insert client; signing + delivery
+	// happen later in the worker via service.A2AOutboundService.
+	a2aEmitter := a2a.NewEmitter(riverClient)
+
 	procurementStore := store.NewProcurementStore()
-	procurementService := service.NewProcurementService(pool, procurementStore, brainClient.Maestro, auditService)
+	procurementService := service.NewProcurementService(pool, procurementStore, brainClient.Maestro, a2aEmitter, auditService)
 	fleetStore := store.NewFleetStore()
 	fleetService := service.NewFleetService(pool, fleetStore, auditService)
 	hrStore := store.NewHRStore()

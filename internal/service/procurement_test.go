@@ -39,10 +39,10 @@ func newProcurementSvcForValidationTests() *ProcurementService {
 	// nil audit falls back to a no-op recorder; nil pool/store
 	// causes any post-validation path to panic, which proves the
 	// validation gates short-circuit before touching either.
-	// nil maestro is intentional — only RecommendVendors uses it,
-	// and it short-circuits with ErrMaestroUnavailable rather than
-	// panicking, so we get a clean error in those tests too.
-	return NewProcurementService(nil, nil, nil, nil)
+	// nil maestro / nil emitter are intentional — RecommendVendors
+	// and RequestVendorReview short-circuit with their respective
+	// "unavailable" sentinels rather than panicking.
+	return NewProcurementService(nil, nil, nil, nil, nil)
 }
 
 func ptrString(s string) *string { return &s }
@@ -135,10 +135,56 @@ func TestProcurementService_RecommendVendors_NoMaestroReturnsUnavailable(t *test
 	// rather than panicking on the nil call. Validation has already
 	// passed here (non-nil ids), so we know the path reached the
 	// nil-Maestro gate.
-	svc := NewProcurementService(nil, nil, nil, nil)
+	svc := NewProcurementService(nil, nil, nil, nil, nil)
 	_, err := svc.RecommendVendors(context.Background(), uuid.New(), "sub-1", uuid.New())
 	if !errors.Is(err, ErrMaestroUnavailable) {
 		t.Errorf("err = %v, want ErrMaestroUnavailable", err)
+	}
+}
+
+func TestProcurementService_RequestVendorReview_RejectsBadInput(t *testing.T) {
+	svc := newProcurementSvcForValidationTests()
+	good := RequestVendorReviewInput{
+		ProcurementItemID: uuid.New(),
+		Vendor:            "Acme Materials",
+		TotalCents:        125000,
+		CurrencyCode:      "USD",
+	}
+	cases := []struct {
+		name string
+		org  uuid.UUID
+		mut  func(*RequestVendorReviewInput)
+	}{
+		{"nil org", uuid.Nil, func(*RequestVendorReviewInput) {}},
+		{"nil item", uuid.New(), func(in *RequestVendorReviewInput) { in.ProcurementItemID = uuid.Nil }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			in := good
+			c.mut(&in)
+			_, err := svc.RequestVendorReview(context.Background(), c.org, "sub-1", in)
+			if !errors.Is(err, ErrInvalidInput) {
+				t.Errorf("err = %v, want ErrInvalidInput", err)
+			}
+		})
+	}
+}
+
+func TestProcurementService_RequestVendorReview_NoEmitterReturnsUnavailable(t *testing.T) {
+	// Constructed with nil emitter: worker binary or any path that
+	// never wires the a2a emitter. RequestVendorReview must surface
+	// a sentinel rather than panicking on the nil call. Validation
+	// has passed (non-nil ids), so we know the path reached the
+	// nil-emitter gate.
+	svc := NewProcurementService(nil, nil, nil, nil, nil)
+	_, err := svc.RequestVendorReview(context.Background(), uuid.New(), "sub-1", RequestVendorReviewInput{
+		ProcurementItemID: uuid.New(),
+		Vendor:            "Acme",
+		TotalCents:        1,
+		CurrencyCode:      "USD",
+	})
+	if !errors.Is(err, ErrA2AEmitterUnavailable) {
+		t.Errorf("err = %v, want ErrA2AEmitterUnavailable", err)
 	}
 }
 
