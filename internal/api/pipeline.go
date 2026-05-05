@@ -22,8 +22,8 @@ type PipelineServicer interface {
 	GetProspectWithDetails(ctx context.Context, prospectID, callerOrgID uuid.UUID) (models.ProspectWithDetails, error)
 	CreateProspect(ctx context.Context, in service.CreateProspectInput) (models.Prospect, error)
 	UpdateProspect(ctx context.Context, in service.UpdateProspectInput) (models.Prospect, error)
-	AdvanceProspect(ctx context.Context, in service.AdvanceProspectInput) (models.Prospect, error)
-	LoseProspect(ctx context.Context, in service.LoseProspectInput) (models.Prospect, error)
+	AdvanceProspect(ctx context.Context, callerUserSub string, in service.AdvanceProspectInput) (models.Prospect, error)
+	LoseProspect(ctx context.Context, callerUserSub string, in service.LoseProspectInput) (models.Prospect, error)
 	CreateEstimate(ctx context.Context, in service.CreateEstimateInput) (models.PipelineEstimate, error)
 	UpdateEstimateStatus(ctx context.Context, in service.UpdateEstimateStatusInput) (models.PipelineEstimate, error)
 	CreatePermit(ctx context.Context, in service.CreatePermitInput) (models.Permit, error)
@@ -214,7 +214,8 @@ func (h *PipelineHandler) AdvanceProspect(w http.ResponseWriter, r *http.Request
 		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "permit_issued_date must be RFC3339 or YYYY-MM-DD")
 		return
 	}
-	prospect, err := h.svc.AdvanceProspect(r.Context(), service.AdvanceProspectInput{
+	claims := mw.MustClaimsFromContext(r.Context())
+	prospect, err := h.svc.AdvanceProspect(r.Context(), claims.Sub, service.AdvanceProspectInput{
 		ProspectID:       prospectID,
 		OrgID:            callerOrg,
 		Target:           models.PipelineStage(body.TargetStage),
@@ -250,7 +251,8 @@ func (h *PipelineHandler) LoseProspect(w http.ResponseWriter, r *http.Request) {
 		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid JSON body")
 		return
 	}
-	prospect, err := h.svc.LoseProspect(r.Context(), service.LoseProspectInput{
+	claims := mw.MustClaimsFromContext(r.Context())
+	prospect, err := h.svc.LoseProspect(r.Context(), claims.Sub, service.LoseProspectInput{
 		ProspectID: prospectID,
 		OrgID:      callerOrg,
 		Reason:     body.Reason,

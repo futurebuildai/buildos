@@ -46,7 +46,9 @@ type mockPipelineService struct {
 	lastCreateInput         service.CreateProspectInput
 	lastUpdateInput         service.UpdateProspectInput
 	lastAdvanceInput        service.AdvanceProspectInput
+	lastAdvanceUserSub      string
 	lastLoseInput           service.LoseProspectInput
+	lastLoseUserSub         string
 	lastCreateEstimateInput service.CreateEstimateInput
 	lastUpdateEstimateInput service.UpdateEstimateStatusInput
 	lastCreatePermitInput   service.CreatePermitInput
@@ -73,11 +75,13 @@ func (m *mockPipelineService) UpdateProspect(_ context.Context, in service.Updat
 	m.lastUpdateInput = in
 	return m.updateResult, m.updateErr
 }
-func (m *mockPipelineService) AdvanceProspect(_ context.Context, in service.AdvanceProspectInput) (models.Prospect, error) {
+func (m *mockPipelineService) AdvanceProspect(_ context.Context, callerUserSub string, in service.AdvanceProspectInput) (models.Prospect, error) {
+	m.lastAdvanceUserSub = callerUserSub
 	m.lastAdvanceInput = in
 	return m.advanceResult, m.advanceErr
 }
-func (m *mockPipelineService) LoseProspect(_ context.Context, in service.LoseProspectInput) (models.Prospect, error) {
+func (m *mockPipelineService) LoseProspect(_ context.Context, callerUserSub string, in service.LoseProspectInput) (models.Prospect, error) {
+	m.lastLoseUserSub = callerUserSub
 	m.lastLoseInput = in
 	return m.loseResult, m.loseErr
 }
@@ -218,6 +222,9 @@ func TestAdvanceProspect_HappyPath(t *testing.T) {
 	if svc.lastAdvanceInput.Target != models.StageQualified {
 		t.Errorf("advance target = %s, want QUALIFIED", svc.lastAdvanceInput.Target)
 	}
+	if svc.lastAdvanceUserSub != "test-sub" {
+		t.Errorf("service got user_sub=%q, want test-sub", svc.lastAdvanceUserSub)
+	}
 }
 
 func TestAdvanceProspect_InvalidTransitionReturns409(t *testing.T) {
@@ -295,6 +302,9 @@ func TestLoseProspect_HappyPath(t *testing.T) {
 	}
 	if svc.lastLoseInput.Reason != "client chose another GC" {
 		t.Errorf("reason captured = %q", svc.lastLoseInput.Reason)
+	}
+	if svc.lastLoseUserSub != "test-sub" {
+		t.Errorf("service got user_sub=%q, want test-sub", svc.lastLoseUserSub)
 	}
 }
 

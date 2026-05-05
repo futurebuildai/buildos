@@ -19,7 +19,7 @@ import (
 
 func TestAdvanceProspect_RejectsUnknownTarget(t *testing.T) {
 	svc := &PipelineService{} // pool/store/riverClient unused by this path
-	_, err := svc.AdvanceProspect(context.Background(), AdvanceProspectInput{
+	_, err := svc.AdvanceProspect(context.Background(), "test-sub", AdvanceProspectInput{
 		ProspectID: uuid.New(),
 		OrgID:      uuid.New(),
 		Target:     models.PipelineStage("BOGUS_STAGE"),
@@ -34,7 +34,7 @@ func TestAdvanceProspect_RejectsUnknownTarget(t *testing.T) {
 // for this test — the validation short-circuits.
 func TestAdvanceProspect_PermitIssuedRequiresDate(t *testing.T) {
 	svc := &PipelineService{} // pool/store/riverClient unused by this path
-	_, err := svc.AdvanceProspect(context.Background(), AdvanceProspectInput{
+	_, err := svc.AdvanceProspect(context.Background(), "test-sub", AdvanceProspectInput{
 		ProspectID:       uuid.New(),
 		OrgID:            uuid.New(),
 		Target:           models.StagePermitIssued,
@@ -53,7 +53,7 @@ func TestAdvanceProspect_PermitIssuedRequiresDate(t *testing.T) {
 func TestAdvanceProspect_PermitIssuedRequiresRiverClient(t *testing.T) {
 	svc := &PipelineService{} // riverClient nil; pool/store unused
 	d := time.Now()
-	_, err := svc.AdvanceProspect(context.Background(), AdvanceProspectInput{
+	_, err := svc.AdvanceProspect(context.Background(), "test-sub", AdvanceProspectInput{
 		ProspectID:       uuid.New(),
 		OrgID:            uuid.New(),
 		Target:           models.StagePermitIssued,

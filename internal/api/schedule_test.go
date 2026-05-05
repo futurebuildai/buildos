@@ -31,14 +31,16 @@ type mockScheduleService struct {
 	updateErr    error
 
 	// Captured args
-	lastListInput   service.ListProjectTasksInput
-	lastUpdateInput service.UpdateTaskInput
-	lastRecalcOrg   uuid.UUID
-	lastGanttOrg    uuid.UUID
+	lastListInput     service.ListProjectTasksInput
+	lastUpdateInput   service.UpdateTaskInput
+	lastRecalcOrg     uuid.UUID
+	lastRecalcUserSub string
+	lastGanttOrg      uuid.UUID
 }
 
-func (m *mockScheduleService) RecalculateSchedule(_ context.Context, _, callerOrgID uuid.UUID) (*physics.CPMResult, time.Duration, error) {
+func (m *mockScheduleService) RecalculateSchedule(_ context.Context, _, callerOrgID uuid.UUID, callerUserSub string) (*physics.CPMResult, time.Duration, error) {
 	m.lastRecalcOrg = callerOrgID
+	m.lastRecalcUserSub = callerUserSub
 	return m.recalcResult, m.recalcTook, m.recalcErr
 }
 func (m *mockScheduleService) GetGantt(_ context.Context, _, callerOrgID uuid.UUID) (service.GanttView, error) {
@@ -76,6 +78,9 @@ func TestRecalculate_HappyPath(t *testing.T) {
 	}
 	if svc.lastRecalcOrg.String() != testOrgID {
 		t.Errorf("service got org=%s, want %s", svc.lastRecalcOrg, testOrgID)
+	}
+	if svc.lastRecalcUserSub != "test-sub" {
+		t.Errorf("service got user_sub=%q, want test-sub", svc.lastRecalcUserSub)
 	}
 	if !strings.Contains(w.Body.String(), `"recalculation_ms":187`) {
 		t.Errorf("response missing recalculation_ms: %s", w.Body.String())

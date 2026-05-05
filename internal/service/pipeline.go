@@ -43,13 +43,18 @@ type PipelineService struct {
 	pool        *pgxpool.Pool
 	store       *store.PipelineStore
 	riverClient *river.Client[pgx.Tx]
+	audit       AuditRecorder
 }
 
 // NewPipelineService creates a new PipelineService. riverClient may be
 // nil for read-only deployments (no Kanban→CPM transitions); the service
 // will return ErrNotImplemented when transition is attempted without one.
-func NewPipelineService(pool *pgxpool.Pool, ps *store.PipelineStore, riverClient *river.Client[pgx.Tx]) *PipelineService {
-	return &PipelineService{pool: pool, store: ps, riverClient: riverClient}
+// audit may be nil; nil falls back to a no-op recorder.
+func NewPipelineService(pool *pgxpool.Pool, ps *store.PipelineStore, riverClient *river.Client[pgx.Tx], audit AuditRecorder) *PipelineService {
+	if audit == nil {
+		audit = NewNoopAuditRecorder()
+	}
+	return &PipelineService{pool: pool, store: ps, riverClient: riverClient, audit: audit}
 }
 
 // ---------- Reads ----------
@@ -232,14 +237,17 @@ type AdvanceProspectInput struct {
 //	ErrTerminalStage     → source is PERMIT_ISSUED or LOST
 //	ErrNotImplemented    → target is PERMIT_ISSUED (atomic CPM transition lands in PR 3)
 //	ErrInvalidInput      → target is not a known PipelineStage
-func (s *PipelineService) AdvanceProspect(ctx context.Context, in AdvanceProspectInput) (models.Prospect, error) {
+//
+// callerUserSub is the OIDC subject of the user driving the transition;
+// recorded on the audit row.
+func (s *PipelineService) AdvanceProspect(ctx context.Context, callerUserSub string, in AdvanceProspectInput) (models.Prospect, error) {
 	// Reject unknown targets up front.
 	if in.Target != models.StageLost && in.Target.Probability() == 0 {
 		return models.Prospect{}, fmt.Errorf("%w: target_stage %q is not a known PipelineStage", ErrInvalidInput, in.Target)
 	}
 
 	if in.Target == models.StagePermitIssued {
-		return s.transitionToPermitIssued(ctx, in)
+		return s.transitionToPermitIssued(ctx, callerUserSub, in)
 	}
 
 	var prospect models.Prospect
@@ -260,6 +268,25 @@ func (s *PipelineService) AdvanceProspect(ctx context.Context, in AdvanceProspec
 			return err
 		}
 		prospect = updated
+
+		s.audit.Record(ctx, tx, AuditEntry{
+			OrgID:        in.OrgID,
+			UserSub:      callerUserSub,
+			Action:       "pipeline.stage_transitioned",
+			ResourceType: AuditResourceProspect,
+			ResourceID:   in.ProspectID,
+			Before: marshalAudit(map[string]any{
+				"stage":           current.PipelineStage,
+				"probability_pct": current.ProbabilityPct,
+			}),
+			After: marshalAudit(map[string]any{
+				"stage":           updated.PipelineStage,
+				"probability_pct": updated.ProbabilityPct,
+			}),
+			Metadata: marshalAudit(map[string]any{
+				"prospect_name": updated.Name,
+			}),
+		})
 		return nil
 	})
 	if err != nil {
@@ -291,7 +318,7 @@ func (s *PipelineService) AdvanceProspect(ctx context.Context, in AdvanceProspec
 // If the RiverClient is nil (read-only deployments / partial wiring),
 // returns ErrNotImplemented so callers see a clear failure rather than
 // a silent missing-job-enqueue.
-func (s *PipelineService) transitionToPermitIssued(ctx context.Context, in AdvanceProspectInput) (models.Prospect, error) {
+func (s *PipelineService) transitionToPermitIssued(ctx context.Context, callerUserSub string, in AdvanceProspectInput) (models.Prospect, error) {
 	// Validate caller input before checking system state — keeps 400 vs
 	// 501 ordering consistent with the rest of the API.
 	if in.PermitIssuedDate == nil {
@@ -335,6 +362,31 @@ func (s *PipelineService) transitionToPermitIssued(ctx context.Context, in Advan
 		}
 
 		prospect = updated
+
+		// Audit the Kanban→CPM promotion. Same tx, so any later
+		// failure rolls the audit row back with the prospect/project
+		// writes — no orphaned "promoted" records.
+		s.audit.Record(ctx, tx, AuditEntry{
+			OrgID:        in.OrgID,
+			UserSub:      callerUserSub,
+			Action:       "pipeline.stage_transitioned",
+			ResourceType: AuditResourceProspect,
+			ResourceID:   in.ProspectID,
+			Before: marshalAudit(map[string]any{
+				"stage":           current.PipelineStage,
+				"probability_pct": current.ProbabilityPct,
+			}),
+			After: marshalAudit(map[string]any{
+				"stage":           updated.PipelineStage,
+				"probability_pct": updated.ProbabilityPct,
+				"project_id":      projectID,
+			}),
+			Metadata: marshalAudit(map[string]any{
+				"prospect_name":      updated.Name,
+				"permit_issued_date": *in.PermitIssuedDate,
+				"gsf":                *current.GSF,
+			}),
+		})
 		return nil
 	})
 	if err != nil {
@@ -605,7 +657,9 @@ func (s *PipelineService) GetPipelineAnalytics(ctx context.Context, orgID uuid.U
 // Returns ErrTerminalStage if the prospect is already in PERMIT_ISSUED
 // (LOST is the failure terminal — once a prospect ships into CPM, marking
 // it lost would orphan the project).
-func (s *PipelineService) LoseProspect(ctx context.Context, in LoseProspectInput) (models.Prospect, error) {
+//
+// callerUserSub is recorded on the audit row.
+func (s *PipelineService) LoseProspect(ctx context.Context, callerUserSub string, in LoseProspectInput) (models.Prospect, error) {
 	if in.Reason == "" {
 		return models.Prospect{}, fmt.Errorf("%w: reason is required", ErrInvalidInput)
 	}
@@ -626,6 +680,29 @@ func (s *PipelineService) LoseProspect(ctx context.Context, in LoseProspectInput
 			return err
 		}
 		prospect = updated
+
+		s.audit.Record(ctx, tx, AuditEntry{
+			OrgID:        in.OrgID,
+			UserSub:      callerUserSub,
+			Action:       "pipeline.stage_transitioned",
+			ResourceType: AuditResourceProspect,
+			ResourceID:   in.ProspectID,
+			Before: marshalAudit(map[string]any{
+				"stage":           current.PipelineStage,
+				"probability_pct": current.ProbabilityPct,
+			}),
+			After: marshalAudit(map[string]any{
+				"stage":           updated.PipelineStage,
+				"probability_pct": updated.ProbabilityPct,
+			}),
+			// Reason can be free-form prose. The audit-JSONB scrub
+			// (PR #10) masks any Restricted PII the user may have
+			// included; vendor names / numeric figures stay readable.
+			Metadata: marshalAudit(map[string]any{
+				"reason":        in.Reason,
+				"prospect_name": updated.Name,
+			}),
+		})
 		return nil
 	})
 	if err != nil {
