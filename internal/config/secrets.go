@@ -196,16 +196,20 @@ func (s *ChainSecretSource) Close() error {
 //	"chain:<a>,<b>"    → ChainSecretSource with sub-sources resolved
 //	                    recursively (e.g. "chain:file:/run/secrets,env")
 //
-// Vault / AWS-SM / GCP-SM implementations land in follow-up PRs;
-// they'll register against the same prefix scheme ("vault:...",
-// "aws-sm:...", "gcp-sm:...") so adding a backend is additive without
-// changing the operator interface.
+// "vault://<mount>/data/<path-prefix>" → VaultSecretSource (KV v2).
+// AWS-SM / GCP-SM implementations land in follow-up PRs; they'll
+// register against the same prefix scheme ("aws-sm:...", "gcp-sm:...")
+// so adding a backend is additive without changing the operator
+// interface.
 func LoadSecretSource(ctx context.Context, spec string) (SecretSource, error) {
 	if spec == "" || spec == "env" {
 		return NewEnvSecretSource(), nil
 	}
 	if strings.HasPrefix(spec, "file:") {
 		return NewFileSecretSource(strings.TrimPrefix(spec, "file:"))
+	}
+	if strings.HasPrefix(spec, "vault://") {
+		return NewVaultSecretSource(spec)
 	}
 	if strings.HasPrefix(spec, "chain:") {
 		parts := strings.Split(strings.TrimPrefix(spec, "chain:"), ",")
@@ -219,5 +223,5 @@ func LoadSecretSource(ctx context.Context, spec string) (SecretSource, error) {
 		}
 		return NewChainSecretSource(sources...), nil
 	}
-	return nil, fmt.Errorf("unknown CONFIG_SOURCE spec %q (want \"\", \"env\", \"file:/path\", or \"chain:...\")", spec)
+	return nil, fmt.Errorf("unknown CONFIG_SOURCE spec %q (want \"\", \"env\", \"file:/path\", \"vault://<mount>/data/<path>\", or \"chain:...\")", spec)
 }

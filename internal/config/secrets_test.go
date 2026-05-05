@@ -290,7 +290,10 @@ func TestLoadSecretSource_FactorySpecs(t *testing.T) {
 		{"explicit env", "env", "env", false},
 		{"file source", "file:" + dir, "file", false},
 		{"chain of file+env", "chain:file:" + dir + ",env", "chain(file,env)", false},
-		{"unknown spec rejected", "vault://prod", "", true},
+		{"vault source", "vault://kv/data/buildos/test", "vault", false},
+		{"chain of vault+env", "chain:vault://kv/data/buildos/test,env", "chain(vault,env)", false},
+		{"unknown spec rejected", "azure-kv://prod", "", true},
+		{"vault missing /data/ rejected", "vault://kv/buildos", "", true},
 		{"file with bad path", "file:/nonexistent-test-path-xyz", "", true},
 	}
 	for _, c := range cases {
