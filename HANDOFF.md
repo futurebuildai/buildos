@@ -20,6 +20,7 @@ Companion docs:
 
 ## Last shipped (most recent → older)
 
+- **2026-05-05** PR #18 [`c6c86c1`] S3 Session 7.1: Procurement Maestro `RecommendVendors` + migration 009. New `MaestroProcurementRecommender` interface (typed `procurement_recommend` task surface) wired into `ProcurementService` via a nil-tolerant constructor — `cmd/server` passes `brainClient.Maestro`; `cmd/worker` passes `nil` (daily `RecomputeStatuses` tick has no recommendation surface, so `RecommendVendors` short-circuits with `ErrMaestroUnavailable`). `RecommendVendors` opens one tx, verifies item ownership via new `GetProcurementItem` store method, calls Maestro with the item's `estimated_cost_cents` as budget context, persists each ranked vendor via new `CreateProcurementRecommendation` store method (all share `resp.RunID`), and writes one batch audit row keyed by `procurement_item_id` with metadata `{run_id, recommendation_count, tokens_used, cost_cents, currency_code}`. New migration `009_procurement_recommendations` follows Composite Currency Pattern (`predicted_spend_cents` + `predicted_spend_currency_code`); `confidence_pct SMALLINT` (0..100) instead of float per no-floats culture — Maestro's float64 `Confidence` is rounded * 100 with NaN/negative/>1 clamping (defends against a buggy Brain response violating CHECK + rolling back the tx). `vendor_id` is nullable, no FK (vendors table not yet modeled). 3 indexes (item+created_at DESC, run_id, org+created_at DESC) all single-line + `-- buildos:lock-ok:` (fresh table). New audit constant `AuditResourceProcurementRecommendation`, model struct `models.ProcurementRecommendation`, sentinel `ErrMaestroUnavailable`. `fakeProcurementRecommender` test double + 3 new tests (validation gate, nil-Maestro path, `confidenceToPct` table test covering edges). `make audit` ALL PASSED. CPM80=183µs, CPM200=431µs.
 - **2026-05-05** PR #17 [`62bf293`] S2 Session 5.1: outbound `buildos.prospect_promoted` A2A event on PROSPECT → PROJECT atomic promotion. Extends `transitionToPermitIssued` to enqueue an `A2AWebhookDispatch` River job inside the same tx as the project insert + prospect update + HydrateProject job — Brain only ever receives the announcement for a project that committed. Payload is feed-card-shaped per ADR-001 D14 (`card_type=pipeline.prospect_promoted`, title, body, priority, empty actions, metadata{prospect_id, project_id, org_id, gsf, permit_issued_date RFC3339, optional address}). `address` is omitted when nil so Brain's dedup/ETL distinguishes absent from empty. `EventTypeProspectPromoted` is exported as the cross-repo event_type identifier. New helper + struct are package-private. Tests assert explicit envelope shape (renamed JSON key fails loud) plus the nil-address omission contract. Full transition path stays deferred to integration suite. `make audit` ALL PASSED. CPM80=187µs, CPM200=425µs.
 - **2026-05-05** PR #16 [`6ee6752`] S1.5 part 4 / Session 3.4 (closes S1.5; **triggered Gate 1; ratified by owner 2026-05-05**): wire typed `Maestro.DailyBriefing` into `agents.GenerateDailyBriefing` + per-call billing-audit row. `MaestroChatter` (free-form `Chat`) replaced with `MaestroDailyBriefer` (typed `DailyBriefing(ctx, brain.DailyBriefingRequest) (*brain.DailyBriefingResponse, error)`). The local `buildDailyBriefingPrompt` helper is deleted — Brain's `daily_briefing` task owns the prompt template per ADR-001 D5; BuildOS only assembles the structured context (`Tasks`, `Alerts`, `UserRole`). After a successful Maestro call, a short standalone tx writes one audit row with `action="ai.daily_briefing.invoked"`, `resource_type="ai_run"` (new `AuditResourceAIRun` constant), `resource_id=resp.RunID`, and metadata JSON `{run_id, session_id, tokens_used, cost_cents, currency_code, task_count, alert_count, task}`. This is the per-call meter that rolls into the org's monthly AI usage line. Audit is best-effort — `AuditService.Record` log-and-swallow path keeps the briefing from being held back if the audit insert fails. `NewAgentsService` constructor takes `AuditRecorder` (nil → `NoopAuditRecorder`); `cmd/server/main.go` wired. Tests: typed `fakeBriefer` for the new interface, nil-audit-fallback regression, validation-only paths (the three pre-existing `buildDailyBriefingPrompt` tests dropped — function gone). `make audit` ALL PASSED. CPM80=184µs, CPM200=438µs.
 - **2026-05-05** PR #15 [`543eac6`] S1.5 part 3 / Session 3.3: Brain Hub credential proxy stubs (ADR-001 D6). New `internal/brain/hub.go` adds `HubClient.GetCredential(ctx, GetCredentialRequest) (*Credential, error)` and `HubClient.RefreshIfExpired(ctx, credentialID) error`. Mode is fork-static via `Config.HubDirectMode` (driven by `BRAIN_HUB_DIRECT` env): proxy mode (default) returns `Credential.ProxyHandle` only — raw secret never enters the fork; direct mode appends `?mode=direct` and Brain returns `Credential.Secret` if its policy gate authorizes the fork. Wired into `Client.Hub` alongside `Maestro` / `Billing` so it inherits S1.5 part 1 retry + breaker + per-method timeouts. `Credential.Secret` is Restricted-class — slog (PR #11) + audit (PR #10) scrubbers already mask it on egress. Validation rejects empty provider / `uuid.Nil` credentialID client-side. Empty Scope auto-defaults to `"default"`. 11 new tests cover both modes, empty-scope default, custom-scope path-escape, 404 → ErrNotFound, 502 → ErrTransient, fork-static mode independence. Sets up Session 3.4 (DailyBriefing wiring + Gate 1 trigger).
@@ -37,7 +38,7 @@ Companion docs:
 - **2026-05-01** PR #3 [`29ea6fe`] SecretSource abstraction (env/file/chain) + `LoadWithSource()`.
 - **2026-05-01** PR #2 [`699a64d`] Sprints 1-5 + Phase F core (44 commits — domain endpoints, Brain integration, production hardening, Dockerfile, D8 build-tag hardening).
 
-16 PRs merged under the L8 self-audit gate (PR #9 added the L8 SRE
+17 PRs merged under the L8 self-audit gate (PR #9 added the L8 SRE
 audit gate as a second checklist applied per PR). Every landed
 commit had `make audit` green + integration suite green +
 govulncheck clean. PRs #9 onward also have CI green at merge time
@@ -54,6 +55,14 @@ Foundation is locked in: D5 typed Maestro envelopes
 Maestro-touching sprints (S2-S6) cleared to proceed. **S2 Session
 5.1 shipped (PR #17)** — PROSPECT → PROJECT atomic promotion now
 emits `buildos.prospect_promoted` A2A event for Brain to disseminate.
+**S3 Session 7.1 shipped (PR #18)** — `ProcurementService.RecommendVendors`
+calls Brain Maestro `procurement_recommend` and persists each
+ranked vendor + a batch audit row (run_id, cost_cents, tokens_used)
+inside one tx; migration 009 lands the `procurement_recommendations`
+table per Composite Currency Pattern. S2 Session 5.2 was already
+materially shipped in production code (handlers/RBAC/tests); next
+up: S3 Session 7.2 (outbound A2A `review_material_quote` /
+`review_labor_bid` emitter).
 
 ## Blocked
 
@@ -71,25 +80,30 @@ Known follow-up surfaced by PR #9 (not blocking, queued):
 See [.agents/handoff/NEXT_STEPS.md](./.agents/handoff/NEXT_STEPS.md)
 for the full prioritized backlog with entry-point file paths.
 
-Top three an L8 PE would queue (Tier 1 trio + S1.5 done + Gate 1
-ratified + S2 Session 5.1 shipped; clear to compound on Maestro
-contract):
+Top three an L8 PE would queue (S1.5 + S2 5.1 + S3 7.1 shipped;
+S2 5.2 materially complete in prod code; clear to compound on the
+Maestro/A2A track):
 
-1. **S2 Session 5.2 / S2 finish** — pipeline UI affordance + handler
-   contract tests. New file: `internal/api/pipeline.go` (verify
-   list-prospects, transition-stage, promote endpoints exist; add
-   OpenAPI annotations). Permission test (only `role=PM` or higher
-   can promote). Continues the pre-construction pipeline track.
+1. **S3 Session 7.2 — outbound A2A `review_material_quote` /
+   `review_labor_bid` emitter.** `internal/a2a/emitter.go` (verify
+   exists; if not, create). Methods: `EmitReviewMaterialQuote(ctx, payload)`,
+   `EmitReviewLaborBid(ctx, payload)`. Per-fork RSA-2048 private key
+   from `SecretSource`, detached JWS via `go-jose/v4`, POST to
+   Brain `/api/v1/a2a/webhook` with valid `X-JWS-Signature`. Tests:
+   emit → assert HTTP request shape + signature verifies under the
+   matching public key. Cross-repo edge: Brain-side ingress must
+   accept these two event_type values; coordinate before contract
+   tests (already part of the inbound surface).
 2. **Vault SecretSource backend** (Tier 2 #4) — `internal/config/vault.go`
    implementing the `SecretSource` interface for HashiCorp Vault.
    Required before first-fork cutover (Phase H). Independent of
-   Maestro track — can run in parallel with S2/S3.
-3. **S3 Session 7.1 — Procurement Maestro calls** — `RecommendVendors`
-   in `internal/service/procurement.go` calling
-   `brain.Maestro.ProcurementRecommend`. New migration
-   `009_procurement_recommendations.up.sql` (composite-currency for
-   predicted-spend). Audit row per recommendation. Sets up Session
-   7.2 (outbound A2A `review_material_quote` / `review_labor_bid`).
+   Maestro/A2A track — can run in parallel.
+3. **S3 Session 8.1 — A2A receiver idempotency replay tests.**
+   `internal/api/a2a_test.go`. Same envelope twice with same
+   `X-Idempotency-Key` → second returns `already_processed: true`
+   with same `feed_card_id`. Unknown `event_type` → `400 UNKNOWN_EVENT`.
+   Body > 1 MiB → `413 PAYLOAD_TOO_LARGE`. Sets up Session 8.2
+   (LocalBlue lead-captured wiring; Gate 2 trigger).
 
 ## Working agreement (L8 self-audit gate)
 
