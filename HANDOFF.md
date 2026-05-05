@@ -20,6 +20,7 @@ Companion docs:
 
 ## Last shipped (most recent → older)
 
+- **2026-05-05** PR #21 [`e2f2f5f`] Vault SecretSource backend (Tier 2 #4). New `internal/config/vault.go` implements the `SecretSource` interface for HashiCorp Vault KV v2 — the production-default secret store for customer forks. Spec format: `vault://<mount>/data/<path-prefix>` (e.g. `vault://kv/data/buildos/acme`). One Vault secret per logical key with a single `value` field, provisioned by operators via `vault kv put kv/buildos/<fork>/<KEY> value=...`. KV v2 only — KV v1 mounts (no `/data/` segment) rejected at construction with a clear error so the spec format and the underlying HTTP API path agree literally. Address/TLS via SDK `DefaultConfig` (`VAULT_ADDR`, `VAULT_CACERT`, …); auth in priority order: `VAULT_TOKEN_FILE` (BuildOS-specific extension for k8s projected service-account tokens) → `VAULT_TOKEN` env → `~/.vault-token` (SDK default). Empty/expired token at construction permitted — first lookup fails loud rather than refusing to start, the right ergonomic for operators staging a fork. Per the SecretSource contract: hit returns (val, true, nil); 404, empty value, and KV v2 tombstoned versions all return ("", false, nil) (clean miss); transport / auth / 5xx errors propagate so a chain short-circuits ("Vault is down" must NOT silently fall back to env). `LoadSecretSource` gains a `vault://` dispatcher so chain composition works (`chain:vault://kv/data/buildos/acme,env`); the legacy "unknown spec rejected" test case migrated from `vault://prod` (now ambiguous) to `azure-kv://prod`. 11 unit tests using a `httptest` stub of the KV v2 API (spec validation matrix, token-file resolution, hit/404-miss/empty-value-miss/wrong-field/tombstone/non-string-value/empty-key, transport-error propagation, Close clears in-memory token). 1 integration test (build tag: integration) stands up `hashicorp/vault:1.18` dev container, provisions DATABASE_URL + BRAIN_JWKS_URL + BRAIN_ISSUER_URL via SDK `KVv2.Put`, and round-trips through both direct `LookupSecret` and the full `LoadWithSource` path — confirms the spec format maps cleanly to a real Vault. New deps: `github.com/hashicorp/vault/api v1.23.0` (+ transitive hashicorp/* and mitchellh/* utilities, all Apache-2.0 / MPL-2.0). `make audit` ALL PASSED. CPM80=139µs, CPM200=483µs.
 - **2026-05-05** PR #20 [`715af97`] S3 7.2 caller wiring: `ProcurementService.RequestVendorReview` is the first real consumer of the `a2a.Emitter` shipped in PR #19. Opens one tx, verifies item ownership (cross-org isolation via existing `GetProcurementItem`), calls `EmitReviewMaterialQuote` (`InsertTx` on the same tx so enqueue commits/rolls back atomically with audit), records one audit row keyed by `procurement_item_id` (`procurement.vendor_review.requested`), returns the emitter's idempotency key for caller correlation. New `VendorReviewEmitter` consumer interface (defined in procurement package — service doesn't pin the full `*a2a.Emitter` surface). Constructor signature grew to 5 args: pool, items, maestro, emitter, audit. `cmd/server` constructs `*a2a.Emitter` once over the shared River insert client; `cmd/worker` passes nil (daily `RecomputeStatuses` sweep doesn't trigger operator-driven review flows). New `ErrA2AEmitterUnavailable` sentinel mirrors `ErrMaestroUnavailable`. Validation split: service validates org/item/emitter-presence; wire-shape validation (vendor non-empty, total_cents non-negative, currency_code USD/CAD) delegated to emitter, its `ErrInvalidArgs` wrapped as `ErrInvalidInput` so handlers see the uniform service-layer sentinel. Audit metadata captures idempotency_key + structured fields (vendor, total_cents, currency_code, rfq_id, has_reasoning bool — Reasoning text excluded as Confidential narrative). 2 new tests (validation matrix; nil-emitter sentinel); happy-path with real tx deferred to integration suite. **No labor-bid wiring** — BuildOS doesn't have a labor RFQ surface yet (S6 SubLiaisonAgent territory); `EmitReviewLaborBid` stays unused but emitter test coverage from PR #19 keeps it live. `make audit` ALL PASSED. CPM80=182µs, CPM200=423µs.
 - **2026-05-05** PR #19 [`9dc9eae`] S3 Session 7.2: outbound A2A emitter package. New `internal/a2a` package (depends on `worker` + `river` only — pointedly NOT `internal/service`, to avoid the import cycle that would form when domain services and `service/a2a.go` both want to call into the emitter). `Emitter.EmitReviewMaterialQuote(ctx, tx, args) (uuid.UUID, error)` and `Emitter.EmitReviewLaborBid(ctx, tx, args) (uuid.UUID, error)` validate inputs, marshal a typed JSON payload, and `InsertTx` a `worker.A2AWebhookDispatchArgs` on the supplied `pgx.Tx` so enqueue commits / rolls back atomically with the surrounding domain mutation. Returns the freshly-minted idempotency key for caller correlation. The actual JWS signing + HTTPS POST happens later in the River worker via the already-shipped `service.A2AOutboundService.DeliverA2AWebhook`. `Enqueuer` interface decouples tests (`fakeEnqueuer` captures the dispatch args) from a real River client; compile-time assertion `var _ Enqueuer = (*river.Client[pgx.Tx])(nil)` keeps the prod-side wiring honest. Wire-shape detail: `rfq_id` is `*uuid.UUID` (not `uuid.UUID`) in the JSON payload so `omitempty` actually drops the field when `uuid.Nil` is passed — Brain's ETL/dedup needs to distinguish "absent" from "nil-uuid". Event-type constants (`review_material_quote`, `review_labor_bid`) duplicated from `service/a2a.go` by design (zero coupling). Validation up-front and pure: nil `org_id`, empty `vendor`/`bidder`, negative amounts, unsupported `currency_code` all return `ErrInvalidArgs` with no tx interaction. 9 test functions: nil-`Enqueuer` panic, validation matrix (table tests, both events), envelope shape, omitempty contract for rfq_id/reasoning/timeline, enqueue-error propagation. `make audit` ALL PASSED. CPM80=181µs, CPM200=440µs. Caller wiring (procurement service → emitter; pipeline service → emitter) lands in a follow-up.
 - **2026-05-05** PR #18 [`c6c86c1`] S3 Session 7.1: Procurement Maestro `RecommendVendors` + migration 009. New `MaestroProcurementRecommender` interface (typed `procurement_recommend` task surface) wired into `ProcurementService` via a nil-tolerant constructor — `cmd/server` passes `brainClient.Maestro`; `cmd/worker` passes `nil` (daily `RecomputeStatuses` tick has no recommendation surface, so `RecommendVendors` short-circuits with `ErrMaestroUnavailable`). `RecommendVendors` opens one tx, verifies item ownership via new `GetProcurementItem` store method, calls Maestro with the item's `estimated_cost_cents` as budget context, persists each ranked vendor via new `CreateProcurementRecommendation` store method (all share `resp.RunID`), and writes one batch audit row keyed by `procurement_item_id` with metadata `{run_id, recommendation_count, tokens_used, cost_cents, currency_code}`. New migration `009_procurement_recommendations` follows Composite Currency Pattern (`predicted_spend_cents` + `predicted_spend_currency_code`); `confidence_pct SMALLINT` (0..100) instead of float per no-floats culture — Maestro's float64 `Confidence` is rounded * 100 with NaN/negative/>1 clamping (defends against a buggy Brain response violating CHECK + rolling back the tx). `vendor_id` is nullable, no FK (vendors table not yet modeled). 3 indexes (item+created_at DESC, run_id, org+created_at DESC) all single-line + `-- buildos:lock-ok:` (fresh table). New audit constant `AuditResourceProcurementRecommendation`, model struct `models.ProcurementRecommendation`, sentinel `ErrMaestroUnavailable`. `fakeProcurementRecommender` test double + 3 new tests (validation gate, nil-Maestro path, `confidenceToPct` table test covering edges). `make audit` ALL PASSED. CPM80=183µs, CPM200=431µs.
@@ -40,7 +41,7 @@ Companion docs:
 - **2026-05-01** PR #3 [`29ea6fe`] SecretSource abstraction (env/file/chain) + `LoadWithSource()`.
 - **2026-05-01** PR #2 [`699a64d`] Sprints 1-5 + Phase F core (44 commits — domain endpoints, Brain integration, production hardening, Dockerfile, D8 build-tag hardening).
 
-19 PRs merged under the L8 self-audit gate (PR #9 added the L8 SRE
+20 PRs merged under the L8 self-audit gate (PR #9 added the L8 SRE
 audit gate as a second checklist applied per PR). Every landed
 commit had `make audit` green + integration suite green +
 govulncheck clean. PRs #9 onward also have CI green at merge time
@@ -71,10 +72,15 @@ is the first real consumer; opens one tx, ownership-checks, emits,
 audits, returns idempotency key. `cmd/server` constructs the
 `*a2a.Emitter` over the shared River insert client and threads it
 through. Labor-bid wiring deferred to S6 (no labor RFQ surface
-exists yet). S2 Session 5.2 was already materially shipped in
-production code (handlers/RBAC/tests); next up: Vault SecretSource
-backend (Tier 2 #4) or S3 Session 8.1 (A2A receiver idempotency
-replay tests).
+exists yet). **Vault SecretSource shipped (PR #21)** — `internal/config/vault.go`
+implements the `SecretSource` interface for HashiCorp Vault KV v2;
+spec format `vault://<mount>/data/<path-prefix>`; one secret per
+key with `value` field; integration test round-trips against a
+real `hashicorp/vault:1.18` container. First-fork cutover (Phase H)
+no longer blocked on the secret-store side. S2 Session 5.2 was
+already materially shipped in production code (handlers/RBAC/tests);
+next up: S3 Session 8.1 (A2A receiver idempotency replay tests)
+or HTTP handler/RBAC for `RequestVendorReview`.
 
 ## Blocked
 
@@ -93,29 +99,28 @@ See [.agents/handoff/NEXT_STEPS.md](./.agents/handoff/NEXT_STEPS.md)
 for the full prioritized backlog with entry-point file paths.
 
 Top three an L8 PE would queue (S1.5 + S2 5.1 + S3 7.1 + S3 7.2 +
-S3 7.2 caller wiring shipped; S2 5.2 materially complete in prod
-code; clear to compound on the Maestro/A2A track):
+S3 7.2 caller wiring + Vault SecretSource shipped; S2 5.2 materially
+complete in prod code; clear to compound on the Maestro/A2A track):
 
-1. **Vault SecretSource backend** (Tier 2 #4) — `internal/config/vault.go`
-   implementing the `SecretSource` interface for HashiCorp Vault.
-   Required before first-fork cutover (Phase H). Independent of
-   Maestro/A2A track — can run in parallel. Use `hashicorp/vault/api`;
-   path scheme `vault://kv/data/buildos/<fork>/<key>`. Wire into
-   `LoadWithSource` chain. Tests: spin up Vault dev mode in a
-   testcontainer; round-trip a secret.
-2. **S3 Session 8.1 — A2A receiver idempotency replay tests.**
+1. **S3 Session 8.1 — A2A receiver idempotency replay tests.**
    `internal/api/a2a_test.go`. Same envelope twice with same
    `X-Idempotency-Key` → second returns `already_processed: true`
    with same `feed_card_id`. Unknown `event_type` → `400 UNKNOWN_EVENT`.
    Body > 1 MiB → `413 PAYLOAD_TOO_LARGE`. Sets up Session 8.2
    (LocalBlue lead-captured wiring; Gate 2 trigger).
-3. **HTTP handler / RBAC for `RequestVendorReview`** — small
+2. **HTTP handler / RBAC for `RequestVendorReview`** — small
    follow-up to PR #20. Add a `POST /api/v1/projects/{projectID}/procurement/{itemID}/request-review`
    handler that calls `ProcurementService.RequestVendorReview`,
    gated to `superintendent` or higher. Returns `{idempotency_key}`
    on 202. Integration test asserts the river_job row hits with
    the correct event_type and payload. Closes the loop so an
    operator can actually trigger a review request from the API.
+3. **S3 Session 8.2 — LocalBlue `lead.captured` inbound wiring**
+   (ADR-001 D14; Gate 2 trigger). `internal/service/a2a.go`
+   `handleLocalblueLeadCaptured` extracts the lead payload, inserts
+   a prospect at `LEAD` stage, creates a feed-card, writes audit.
+   Golden-envelope test asserts the prospect/feed-card/audit triple.
+   Pairs with Session 8.1 to close the inbound A2A surface.
 
 ## Working agreement (L8 self-audit gate)
 
