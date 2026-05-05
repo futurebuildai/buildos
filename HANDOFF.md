@@ -20,6 +20,7 @@ Companion docs:
 
 ## Last shipped (most recent → older)
 
+- **2026-05-05** PR #20 [`715af97`] S3 7.2 caller wiring: `ProcurementService.RequestVendorReview` is the first real consumer of the `a2a.Emitter` shipped in PR #19. Opens one tx, verifies item ownership (cross-org isolation via existing `GetProcurementItem`), calls `EmitReviewMaterialQuote` (`InsertTx` on the same tx so enqueue commits/rolls back atomically with audit), records one audit row keyed by `procurement_item_id` (`procurement.vendor_review.requested`), returns the emitter's idempotency key for caller correlation. New `VendorReviewEmitter` consumer interface (defined in procurement package — service doesn't pin the full `*a2a.Emitter` surface). Constructor signature grew to 5 args: pool, items, maestro, emitter, audit. `cmd/server` constructs `*a2a.Emitter` once over the shared River insert client; `cmd/worker` passes nil (daily `RecomputeStatuses` sweep doesn't trigger operator-driven review flows). New `ErrA2AEmitterUnavailable` sentinel mirrors `ErrMaestroUnavailable`. Validation split: service validates org/item/emitter-presence; wire-shape validation (vendor non-empty, total_cents non-negative, currency_code USD/CAD) delegated to emitter, its `ErrInvalidArgs` wrapped as `ErrInvalidInput` so handlers see the uniform service-layer sentinel. Audit metadata captures idempotency_key + structured fields (vendor, total_cents, currency_code, rfq_id, has_reasoning bool — Reasoning text excluded as Confidential narrative). 2 new tests (validation matrix; nil-emitter sentinel); happy-path with real tx deferred to integration suite. **No labor-bid wiring** — BuildOS doesn't have a labor RFQ surface yet (S6 SubLiaisonAgent territory); `EmitReviewLaborBid` stays unused but emitter test coverage from PR #19 keeps it live. `make audit` ALL PASSED. CPM80=182µs, CPM200=423µs.
 - **2026-05-05** PR #19 [`9dc9eae`] S3 Session 7.2: outbound A2A emitter package. New `internal/a2a` package (depends on `worker` + `river` only — pointedly NOT `internal/service`, to avoid the import cycle that would form when domain services and `service/a2a.go` both want to call into the emitter). `Emitter.EmitReviewMaterialQuote(ctx, tx, args) (uuid.UUID, error)` and `Emitter.EmitReviewLaborBid(ctx, tx, args) (uuid.UUID, error)` validate inputs, marshal a typed JSON payload, and `InsertTx` a `worker.A2AWebhookDispatchArgs` on the supplied `pgx.Tx` so enqueue commits / rolls back atomically with the surrounding domain mutation. Returns the freshly-minted idempotency key for caller correlation. The actual JWS signing + HTTPS POST happens later in the River worker via the already-shipped `service.A2AOutboundService.DeliverA2AWebhook`. `Enqueuer` interface decouples tests (`fakeEnqueuer` captures the dispatch args) from a real River client; compile-time assertion `var _ Enqueuer = (*river.Client[pgx.Tx])(nil)` keeps the prod-side wiring honest. Wire-shape detail: `rfq_id` is `*uuid.UUID` (not `uuid.UUID`) in the JSON payload so `omitempty` actually drops the field when `uuid.Nil` is passed — Brain's ETL/dedup needs to distinguish "absent" from "nil-uuid". Event-type constants (`review_material_quote`, `review_labor_bid`) duplicated from `service/a2a.go` by design (zero coupling). Validation up-front and pure: nil `org_id`, empty `vendor`/`bidder`, negative amounts, unsupported `currency_code` all return `ErrInvalidArgs` with no tx interaction. 9 test functions: nil-`Enqueuer` panic, validation matrix (table tests, both events), envelope shape, omitempty contract for rfq_id/reasoning/timeline, enqueue-error propagation. `make audit` ALL PASSED. CPM80=181µs, CPM200=440µs. Caller wiring (procurement service → emitter; pipeline service → emitter) lands in a follow-up.
 - **2026-05-05** PR #18 [`c6c86c1`] S3 Session 7.1: Procurement Maestro `RecommendVendors` + migration 009. New `MaestroProcurementRecommender` interface (typed `procurement_recommend` task surface) wired into `ProcurementService` via a nil-tolerant constructor — `cmd/server` passes `brainClient.Maestro`; `cmd/worker` passes `nil` (daily `RecomputeStatuses` tick has no recommendation surface, so `RecommendVendors` short-circuits with `ErrMaestroUnavailable`). `RecommendVendors` opens one tx, verifies item ownership via new `GetProcurementItem` store method, calls Maestro with the item's `estimated_cost_cents` as budget context, persists each ranked vendor via new `CreateProcurementRecommendation` store method (all share `resp.RunID`), and writes one batch audit row keyed by `procurement_item_id` with metadata `{run_id, recommendation_count, tokens_used, cost_cents, currency_code}`. New migration `009_procurement_recommendations` follows Composite Currency Pattern (`predicted_spend_cents` + `predicted_spend_currency_code`); `confidence_pct SMALLINT` (0..100) instead of float per no-floats culture — Maestro's float64 `Confidence` is rounded * 100 with NaN/negative/>1 clamping (defends against a buggy Brain response violating CHECK + rolling back the tx). `vendor_id` is nullable, no FK (vendors table not yet modeled). 3 indexes (item+created_at DESC, run_id, org+created_at DESC) all single-line + `-- buildos:lock-ok:` (fresh table). New audit constant `AuditResourceProcurementRecommendation`, model struct `models.ProcurementRecommendation`, sentinel `ErrMaestroUnavailable`. `fakeProcurementRecommender` test double + 3 new tests (validation gate, nil-Maestro path, `confidenceToPct` table test covering edges). `make audit` ALL PASSED. CPM80=183µs, CPM200=431µs.
 - **2026-05-05** PR #17 [`62bf293`] S2 Session 5.1: outbound `buildos.prospect_promoted` A2A event on PROSPECT → PROJECT atomic promotion. Extends `transitionToPermitIssued` to enqueue an `A2AWebhookDispatch` River job inside the same tx as the project insert + prospect update + HydrateProject job — Brain only ever receives the announcement for a project that committed. Payload is feed-card-shaped per ADR-001 D14 (`card_type=pipeline.prospect_promoted`, title, body, priority, empty actions, metadata{prospect_id, project_id, org_id, gsf, permit_issued_date RFC3339, optional address}). `address` is omitted when nil so Brain's dedup/ETL distinguishes absent from empty. `EventTypeProspectPromoted` is exported as the cross-repo event_type identifier. New helper + struct are package-private. Tests assert explicit envelope shape (renamed JSON key fails loud) plus the nil-address omission contract. Full transition path stays deferred to integration suite. `make audit` ALL PASSED. CPM80=187µs, CPM200=425µs.
@@ -39,7 +40,7 @@ Companion docs:
 - **2026-05-01** PR #3 [`29ea6fe`] SecretSource abstraction (env/file/chain) + `LoadWithSource()`.
 - **2026-05-01** PR #2 [`699a64d`] Sprints 1-5 + Phase F core (44 commits — domain endpoints, Brain integration, production hardening, Dockerfile, D8 build-tag hardening).
 
-18 PRs merged under the L8 self-audit gate (PR #9 added the L8 SRE
+19 PRs merged under the L8 self-audit gate (PR #9 added the L8 SRE
 audit gate as a second checklist applied per PR). Every landed
 commit had `make audit` green + integration suite green +
 govulncheck clean. PRs #9 onward also have CI green at merge time
@@ -64,12 +65,16 @@ Pattern. **S3 Session 7.2 shipped (PR #19)** — new `internal/a2a`
 package with typed `EmitReviewMaterialQuote` / `EmitReviewLaborBid`
 methods for domain services to enqueue outbound A2A events on a
 `pgx.Tx`; signing + delivery happens later in the River worker
-via the already-shipped `service.A2AOutboundService`. S2 Session
-5.2 was already materially shipped in production code
-(handlers/RBAC/tests); next up: caller wiring (procurement
-service → emitter for vendor-bid review; pipeline service → emitter
-for labor-bid review) and/or S3 Session 8.1 receiver idempotency
-replay tests.
+via the already-shipped `service.A2AOutboundService`. **S3 7.2
+caller wiring shipped (PR #20)** — `ProcurementService.RequestVendorReview`
+is the first real consumer; opens one tx, ownership-checks, emits,
+audits, returns idempotency key. `cmd/server` constructs the
+`*a2a.Emitter` over the shared River insert client and threads it
+through. Labor-bid wiring deferred to S6 (no labor RFQ surface
+exists yet). S2 Session 5.2 was already materially shipped in
+production code (handlers/RBAC/tests); next up: Vault SecretSource
+backend (Tier 2 #4) or S3 Session 8.1 (A2A receiver idempotency
+replay tests).
 
 ## Blocked
 
@@ -87,32 +92,30 @@ Known follow-up surfaced by PR #9 (not blocking, queued):
 See [.agents/handoff/NEXT_STEPS.md](./.agents/handoff/NEXT_STEPS.md)
 for the full prioritized backlog with entry-point file paths.
 
-Top three an L8 PE would queue (S1.5 + S2 5.1 + S3 7.1 + S3 7.2
-shipped; S2 5.2 materially complete in prod code; clear to compound
-on the Maestro/A2A track):
+Top three an L8 PE would queue (S1.5 + S2 5.1 + S3 7.1 + S3 7.2 +
+S3 7.2 caller wiring shipped; S2 5.2 materially complete in prod
+code; clear to compound on the Maestro/A2A track):
 
-1. **S3 7.2 caller wiring** — connect the new `a2a.Emitter` to its
-   first real callers. Procurement: extend `ProcurementService` so
-   that when a vendor quote arrives (or when `RecommendVendors`
-   surfaces a top candidate worthy of human review),
-   `EmitReviewMaterialQuote` enqueues the outbound event inside the
-   same tx that records the quote. Pipeline/scheduling side: when
-   a labor RFQ produces a bid that should land in Brain's review
-   queue, `EmitReviewLaborBid` mirrors. Wire `*a2a.Emitter` into
-   relevant service constructors (server-side only — worker doesn't
-   emit). Tests: end-to-end with `riverClient` + emitter on a real
-   tx, assert the dispatch row hits `river_job` with the correct
-   event_type + payload + idempotency key.
-2. **Vault SecretSource backend** (Tier 2 #4) — `internal/config/vault.go`
+1. **Vault SecretSource backend** (Tier 2 #4) — `internal/config/vault.go`
    implementing the `SecretSource` interface for HashiCorp Vault.
    Required before first-fork cutover (Phase H). Independent of
-   Maestro/A2A track — can run in parallel.
-3. **S3 Session 8.1 — A2A receiver idempotency replay tests.**
+   Maestro/A2A track — can run in parallel. Use `hashicorp/vault/api`;
+   path scheme `vault://kv/data/buildos/<fork>/<key>`. Wire into
+   `LoadWithSource` chain. Tests: spin up Vault dev mode in a
+   testcontainer; round-trip a secret.
+2. **S3 Session 8.1 — A2A receiver idempotency replay tests.**
    `internal/api/a2a_test.go`. Same envelope twice with same
    `X-Idempotency-Key` → second returns `already_processed: true`
    with same `feed_card_id`. Unknown `event_type` → `400 UNKNOWN_EVENT`.
    Body > 1 MiB → `413 PAYLOAD_TOO_LARGE`. Sets up Session 8.2
    (LocalBlue lead-captured wiring; Gate 2 trigger).
+3. **HTTP handler / RBAC for `RequestVendorReview`** — small
+   follow-up to PR #20. Add a `POST /api/v1/projects/{projectID}/procurement/{itemID}/request-review`
+   handler that calls `ProcurementService.RequestVendorReview`,
+   gated to `superintendent` or higher. Returns `{idempotency_key}`
+   on 202. Integration test asserts the river_job row hits with
+   the correct event_type and payload. Closes the loop so an
+   operator can actually trigger a review request from the API.
 
 ## Working agreement (L8 self-audit gate)
 
