@@ -25,14 +25,22 @@ type ScheduleService struct {
 	pool          *pgxpool.Pool
 	scheduleStore *store.ScheduleStore
 	riverClient   *river.Client[pgx.Tx]
+	audit         AuditRecorder
 }
 
-// NewScheduleService creates a new ScheduleService.
-func NewScheduleService(pool *pgxpool.Pool, scheduleStore *store.ScheduleStore, riverClient *river.Client[pgx.Tx]) *ScheduleService {
+// NewScheduleService creates a new ScheduleService. audit may be nil;
+// nil falls back to a no-op recorder so partial-wiring deployments
+// (e.g. the worker daemon, integration tests) compile without an
+// AuditService. Production wiring in cmd/server passes a real recorder.
+func NewScheduleService(pool *pgxpool.Pool, scheduleStore *store.ScheduleStore, riverClient *river.Client[pgx.Tx], audit AuditRecorder) *ScheduleService {
+	if audit == nil {
+		audit = NewNoopAuditRecorder()
+	}
 	return &ScheduleService{
 		pool:          pool,
 		scheduleStore: scheduleStore,
 		riverClient:   riverClient,
+		audit:         audit,
 	}
 }
 
@@ -40,7 +48,12 @@ func NewScheduleService(pool *pgxpool.Pool, scheduleStore *store.ScheduleStore, 
 // All operations execute within a single pgx.BeginTxFunc transaction to prevent
 // "phantom jobs" that reference data not yet committed. Cross-tenant guard:
 // returns ErrNotFound if the project doesn't belong to callerOrgID.
-func (s *ScheduleService) RecalculateSchedule(ctx context.Context, projectID, callerOrgID uuid.UUID) (*physics.CPMResult, time.Duration, error) {
+//
+// callerUserSub is the OIDC subject of the user triggering the recalc;
+// recorded on the audit row. May be empty for system-triggered recalcs
+// (e.g. River DelayCascade jobs); the AuditRecorder treats an empty
+// UserSub as "system actor" rather than rejecting it.
+func (s *ScheduleService) RecalculateSchedule(ctx context.Context, projectID, callerOrgID uuid.UUID, callerUserSub string) (*physics.CPMResult, time.Duration, error) {
 	var cpmResult *physics.CPMResult
 	var computeTime time.Duration
 
@@ -124,7 +137,23 @@ func (s *ScheduleService) RecalculateSchedule(ctx context.Context, projectID, ca
 			return fmt.Errorf("persist schedule: %w", err)
 		}
 
-		// 4. Enqueue delay cascade if critical path changed (SAME TRANSACTION)
+		// 4. Record audit row inside the same tx — if any later step
+		//    fails, the audit row rolls back with the schedule write.
+		s.audit.Record(ctx, tx, AuditEntry{
+			OrgID:        callerOrgID,
+			UserSub:      callerUserSub,
+			Action:       "schedule.recalculated",
+			ResourceType: AuditResourceSchedule,
+			ResourceID:   projectID,
+			Metadata: marshalAudit(map[string]any{
+				"task_count":         len(tasks),
+				"critical_path_size": len(criticalPath),
+				"compute_ms":         computeTime.Milliseconds(),
+				"project_end":        projectEnd,
+			}),
+		})
+
+		// 5. Enqueue delay cascade if critical path changed (SAME TRANSACTION)
 		if len(criticalPath) > 0 {
 			cpmResult.CriticalPathChanged = true
 			_, err := s.riverClient.InsertTx(ctx, tx, &worker.DelayCascadeArgs{

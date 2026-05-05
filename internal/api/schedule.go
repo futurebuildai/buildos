@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	mw "github.com/futurebuildai/buildos/internal/api/middleware"
 	"github.com/futurebuildai/buildos/internal/models"
 	"github.com/futurebuildai/buildos/internal/physics"
 	"github.com/futurebuildai/buildos/internal/service"
@@ -18,7 +19,7 @@ import (
 // ScheduleServicer is the subset of *service.ScheduleService consumed by
 // ScheduleHandler. Defined as an interface here for testability.
 type ScheduleServicer interface {
-	RecalculateSchedule(ctx context.Context, projectID, callerOrgID uuid.UUID) (*physics.CPMResult, time.Duration, error)
+	RecalculateSchedule(ctx context.Context, projectID, callerOrgID uuid.UUID, callerUserSub string) (*physics.CPMResult, time.Duration, error)
 	GetGantt(ctx context.Context, projectID, callerOrgID uuid.UUID) (service.GanttView, error)
 	ListProjectTasks(ctx context.Context, in service.ListProjectTasksInput) ([]models.ProjectTask, error)
 	UpdateTask(ctx context.Context, in service.UpdateTaskInput) (models.ProjectTask, error)
@@ -47,7 +48,8 @@ func (h *ScheduleHandler) Recalculate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	cpm, took, err := h.svc.RecalculateSchedule(r.Context(), projectID, callerOrg)
+	claims := mw.MustClaimsFromContext(r.Context())
+	cpm, took, err := h.svc.RecalculateSchedule(r.Context(), projectID, callerOrg, claims.Sub)
 	if err != nil {
 		writeScheduleError(w, r, err)
 		return
