@@ -20,6 +20,7 @@ Companion docs:
 
 ## Last shipped (most recent → older)
 
+- **2026-05-06** Gate 2 ratified by owner. New [ADR-003](./.agents/handoff/ADR-003-gate-2-ratification.md) codifies the decision: ADR-001 D14 (LocalBlue auto-flow) ACCEPTED unconditionally; ADR-001 D7 (A2A receiver scope) ACCEPTED with payload-alignment caveat (Option A — envelope + event-type list locked, per-event payload schemas deferred). Status lines added inline at ADR-001 D7 and D14. Four Brain-side backlog items surfaced in "Cross-repo coordination" below (P0 OrgID, P0 LocalblueLeadCapturedPayload re-derivation, P1 create_feed_card target_role, P2 Issuer cutover). S4 Session 9.1 unblocked with a two-event constraint (`update_schedule` + `delivery_confirmation` only). Docs-only diff; no production code touched.
 - **2026-05-05** PR #23 [`73b6b87`] S3 Session 8.2 — LocalBlue `lead.captured` inbound test surface (`internal/service/a2a_integration_test.go`). Test-only; no production code touched. Pairs with PR #22's receiver-side handler tests to lock the inbound A2A contract before Gate 2. Existing happy-path test covered prospect shape (LEAD stage, `localblue:` source tag, probability_pct=10) and feed-card shape (urgent, owner-targeted); existing `_RejectsMissingContractorOrg` covered the org-resolution gate. Six new tests close the remaining gaps: (1) `_IdempotencyReplay` — same envelope twice → `second.AlreadyProcessed=true`, exactly one prospect + one feed card (load-bearing guarantee against duplicate-prospect pipeline corruption on Brain retry); (2) `_RejectsMissingLeadName` — `ErrInvalidInput` + FULL rollback assertion (zero `a2a_inbound_log`, zero prospect, zero feed_card) so Brain's retry can succeed once the upstream payload is corrected (without rollback the lead would be lost forever); (3) `_RejectsMissingContactName` — symmetric; (4) `_OptionalFieldsMapToNull` — pins the `stringPtrOrNil` contract: empty contact_email/contact_phone/address arrive as SQL NULL not "" (downstream IS NULL semantics + future uniqueness gates); (5) `_DefaultSourceTag` — pins the `localblueSourceTag` boundary: empty source produces `"localblue"` not `"localblue:"` (no dangling colon corrupting analytics buckets); (6) `_NoPipelineStoreReturnsError` — defensive nil-pipelineStore guard returns `ErrInvalidInput` rather than nil-deref panic, with full rollback so retry semantics stay coherent if pipelineStore is wired later. Atomicity assertions share the `assertNoDedupOrOrphans` helper. `make audit` ALL PASSED. CPM80=183µs, CPM200=439µs. **Triggers Gate 2** — owner approval requested on (a) the LocalBlue auto-flow per ADR-001 D14 and (b) ratification of inbound A2A event schemas as cross-repo wire contracts.
 - **2026-05-05** PR #22 [`0fdfac1`] S3 Session 8.1 — A2A receiver idempotency replay + 1 MiB body cap tests (`internal/api/a2a_test.go`). Test-only; no production code touched. (1) `TestA2AHandler_IdempotencyReplaySameFeedCardID` — stateful `idempotencyReplayService` mock mirrors the production `ProcessWebhook` dedup contract: first envelope mints a `feed_card_id` with `already_processed=false`; second delivery with the same `IdempotencyKey` returns the SAME `feed_card_id` with `already_processed=true`. Asserts both 200 responses, both flag values, and `feed_card_id` stability — the user-facing guarantee that Brain's at-least-once retries don't duplicate feed cards. Decode shape now drills the `{data, meta}` response envelope properly. (2) `TestA2AHandler_BodyTooLargeReturns413` — > 1 MiB POST body trips the `mw.A2AInboundMaxBodyBytes` cap. Wraps `r.Body` with `http.MaxBytesReader` directly (the same wrapper `mw.MaxBodySize` middleware installs on the route group at `router.go:176-177`) so the handler-only test exercises the 413 branch without the chi stack; asserts `413 PAYLOAD_TOO_LARGE` rather than the generic 400 the handler emits on JSON decode errors. Unknown `event_type` → `400 UNKNOWN_EVENT` was already covered by `TestA2AHandler_ServiceErrorMaps/unknown_event` (not duplicated). All 8 `TestA2AHandler_*` subtests pass. `make audit` ALL PASSED. CPM80=179µs, CPM200=480µs. Sets up Session 8.2 (LocalBlue `lead.captured` inbound; Gate 2 trigger).
 - **2026-05-05** PR #21 [`e2f2f5f`] Vault SecretSource backend (Tier 2 #4). New `internal/config/vault.go` implements the `SecretSource` interface for HashiCorp Vault KV v2 — the production-default secret store for customer forks. Spec format: `vault://<mount>/data/<path-prefix>` (e.g. `vault://kv/data/buildos/acme`). One Vault secret per logical key with a single `value` field, provisioned by operators via `vault kv put kv/buildos/<fork>/<KEY> value=...`. KV v2 only — KV v1 mounts (no `/data/` segment) rejected at construction with a clear error so the spec format and the underlying HTTP API path agree literally. Address/TLS via SDK `DefaultConfig` (`VAULT_ADDR`, `VAULT_CACERT`, …); auth in priority order: `VAULT_TOKEN_FILE` (BuildOS-specific extension for k8s projected service-account tokens) → `VAULT_TOKEN` env → `~/.vault-token` (SDK default). Empty/expired token at construction permitted — first lookup fails loud rather than refusing to start, the right ergonomic for operators staging a fork. Per the SecretSource contract: hit returns (val, true, nil); 404, empty value, and KV v2 tombstoned versions all return ("", false, nil) (clean miss); transport / auth / 5xx errors propagate so a chain short-circuits ("Vault is down" must NOT silently fall back to env). `LoadSecretSource` gains a `vault://` dispatcher so chain composition works (`chain:vault://kv/data/buildos/acme,env`); the legacy "unknown spec rejected" test case migrated from `vault://prod` (now ambiguous) to `azure-kv://prod`. 11 unit tests using a `httptest` stub of the KV v2 API (spec validation matrix, token-file resolution, hit/404-miss/empty-value-miss/wrong-field/tombstone/non-string-value/empty-key, transport-error propagation, Close clears in-memory token). 1 integration test (build tag: integration) stands up `hashicorp/vault:1.18` dev container, provisions DATABASE_URL + BRAIN_JWKS_URL + BRAIN_ISSUER_URL via SDK `KVv2.Put`, and round-trips through both direct `LookupSecret` and the full `LoadWithSource` path — confirms the spec format maps cleanly to a real Vault. New deps: `github.com/hashicorp/vault/api v1.23.0` (+ transitive hashicorp/* and mitchellh/* utilities, all Apache-2.0 / MPL-2.0). `make audit` ALL PASSED. CPM80=139µs, CPM200=483µs.
@@ -51,34 +52,23 @@ govulncheck clean. PRs #9 onward also have CI green at merge time
 
 ## In flight
 
-Nothing on a branch waiting for review right now.
+Branch `ratify/gate-2-localblue-and-a2a-schemas` (this session) —
+docs-only diff: ADR-003 added; ADR-001 D7 + D14 inline status lines
+added; HANDOFF.md updated. PR pending.
 
-**>>> GATE 2 OWNER APPROVAL REQUESTED (2026-05-05) <<<**
-PR #23 closes the inbound A2A test surface (PR #22 + PR #23 together
-lock the receiver-side and service-side guarantees). Per the 18-week
-plan and ADR-001 D14, owner ratification is requested on:
-
-1. **LocalBlue `localblue.lead.captured` auto-flow (D14)**: Brain
-   captures a lead, BuildOS stages a prospect at LEAD with
-   urgent-priority feed card to the owner. **No human-in-the-loop**
-   between LocalBlue and the contractor's pipeline. Confirmed:
-   prospect.source = `"localblue:<orig>"` for analytics; full atomic
-   rollback on validation failure (no lead loss); idempotent on
-   Brain retry (no duplicate prospects). The implementation has been
-   live since prior work; test surface now locks the contract.
-2. **Inbound A2A event schemas as cross-repo wire contracts**:
-   `EventReviewMaterialQuote`, `EventReviewLaborBid`,
-   `EventUpdateSchedule`, `EventDeliveryConfirmation`,
-   `EventCreateFeedCard`, `EventLocalblueLeadCaptured`. BuildOS's
-   `WebhookEnvelope` and per-event payload structs
-   (`internal/service/a2a.go:35-371`) must mirror Brain's
-   `internal/a2a/types.go` exactly. Cross-repo coordination required
-   before either side renames a field or adds a required key.
-
-S4 Maestro `update_schedule` (Session 9.1) blocks on this gate —
-DailyFocusAgent will dispatch through the typed Maestro envelope
-which then comes back via A2A as `update_schedule`, and we don't
-want the agent layer compounding on un-ratified envelope shapes.
+**Gate 2 ratified by owner (2026-05-06).** Per
+[ADR-003](./.agents/handoff/ADR-003-gate-2-ratification.md):
+ADR-001 D14 (LocalBlue auto-flow) ACCEPTED unconditionally;
+ADR-001 D7 (A2A receiver scope) ACCEPTED with payload-alignment
+caveat (Option A — envelope + event-type list locked, per-event
+payload schemas deferred until Brain payload-alignment lands).
+Locked envelope mandates `org_id` as required (BuildOS continues
+to fall back to `defaultOrgID` until Brain emits the field —
+forward-compatible). Receiver-side tests in PRs #22 + #23 pin the
+BuildOS-side decoder shape so the alignment window is safe — Brain's
+emit changes won't silently regress BuildOS handling. Four
+Brain-side backlog items surfaced in the cross-repo coordination
+table below.
 
 **Gate 1 ratified by owner (2026-05-05).** S1.5 Brain Client
 Foundation is locked in: D5 typed Maestro envelopes
@@ -119,7 +109,8 @@ optional-field nullability, source-tag boundary, and the
 nil-pipelineStore guard. Both halves of the A2A inbound surface
 (handler + service) are now under test. S2 Session 5.2 was already
 materially shipped in production code (handlers/RBAC/tests).
-**Awaiting Gate 2 owner approval** before S4 begins.
+**Gate 2 ratified 2026-05-06 — see above.** S4 Session 9.1 cleared
+to proceed with the two-event constraint surfaced in "Next up".
 
 ## Blocked
 
@@ -140,33 +131,40 @@ for the full prioritized backlog with entry-point file paths.
 Top three an L8 PE would queue (S1.5 + S2 5.1 + S3 7.1 + S3 7.2 +
 S3 7.2 caller wiring + Vault SecretSource + S3 8.1 receiver tests +
 S3 8.2 LocalBlue inbound tests shipped; S2 5.2 materially complete
-in prod code; **Gate 2 awaiting owner approval — see "In flight"**):
+in prod code; **Gate 2 ratified 2026-05-06 — see ADR-003**):
 
-1. **HTTP handler / RBAC for `RequestVendorReview`** — small
-   follow-up to PR #20 that does NOT block on Gate 2 (procurement,
-   not LocalBlue). Add a
+1. **S4 Session 9.1 — DailyFocusAgent calls Maestro
+   `update_schedule`** (now unblocked).
+   `internal/service/agents.go` adds
+   `RecommendScheduleAdjustments(ctx, projectID)` calling
+   `brain.Maestro.UpdateSchedule` with the current task graph;
+   apply recommended deltas through existing
+   `ScheduleService.RecalculateSchedule` so CPM physics
+   re-validates. Audit every Maestro-driven edit with
+   `Action="schedule.maestro_edit"`,
+   `ResourceType=AuditResourceSchedule`, metadata
+   `{run_id, tokens_used, cost_cents, currency_code,
+   recommended_delta_count}`. **Constraint per ADR-003:** the
+   agent may consume `update_schedule` and `delivery_confirmation`
+   only — those two payloads are aligned across BuildOS/Brain.
+   Any agent flow that would touch `review_material_quote` /
+   `review_labor_bid` / `create_feed_card` (e.g. S6 SubLiaisonAgent
+   labor bid review loop) must wait for the matching payload-alignment
+   ratification.
+2. **HTTP handler / RBAC for `RequestVendorReview`** — small
+   follow-up to PR #20. Add a
    `POST /api/v1/projects/{projectID}/procurement/{itemID}/request-review`
    handler that calls `ProcurementService.RequestVendorReview`,
    gated to `superintendent` or higher. Returns `{idempotency_key}`
    on 202. Integration test asserts the river_job row hits with
    the correct event_type and payload. Closes the loop so an
    operator can actually trigger a review request from the API.
-2. **Phase D — security headers + CSP + dependency updates**
-   (parallel-eligible, doesn't block on Gate 2). Audit
+3. **Phase D — security headers + CSP + dependency updates**
+   (parallel-eligible). Audit
    `internal/api/middleware/` for missing security headers
    (HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy,
    CSP for the JSON API surface); `go list -u -m all` audit and
    bump direct deps that have non-breaking patches available.
-3. **[BLOCKED on Gate 2] S4 Session 9.1 — DailyFocusAgent calls
-   Maestro `update_schedule`.** `internal/service/agents.go` adds
-   `RecommendScheduleAdjustments(ctx, projectID)` calling
-   `brain.Maestro.UpdateSchedule` with the current task graph;
-   apply recommended deltas through existing
-   `ScheduleService.RecalculateSchedule` so CPM physics
-   re-validates. Audit every Maestro-driven edit with
-   `Action="schedule.maestro_edit"`. Resume after Gate 2 ratifies
-   the inbound A2A `update_schedule` envelope shape that this
-   agent will eventually round-trip through.
 
 ## Working agreement (L8 self-audit gate)
 
@@ -225,6 +223,11 @@ to forget when working on one side only. The Brain repo lives at
 | Maestro Chat | Brain | live | called from `internal/service/agents.go` DailyBriefing |
 | Billing usage | Brain | live | proxied at `/api/v1/billing/usage` |
 | LocalBlue → Brain → BuildOS | Brain | partial | BuildOS handler shipped (`internal/service/a2a.go` `handleLocalblueLeadCaptured`); Brain-side type definitions deleted 2026-05-04 (orphan branch never merged). When Brain emitter wiring resumes, re-derive `LocalblueLeadCapturedPayload` from BuildOS's `localblueLeadCapturedPayload` struct as the canonical reference. |
+| **[ADR-003 P0]** `OrgID` on emitted A2A envelope | Brain | TODO | Add `OrgID` field to `WebhookEvent` envelope in `brain/internal/a2a/types.go`. Populate on every emitted event from the source org context. BuildOS receiver-side already accepts it and falls back to `defaultOrgID` until Brain emits — forward-compatible. |
+| **[ADR-003 P0]** Re-derive `LocalblueLeadCapturedPayload` Brain-side | Brain | TODO | Re-add `EventLocalblueLeadCaptured` constant + `LocalblueLeadCapturedPayload` type in `brain/internal/a2a/types.go`, mirroring BuildOS canonical at `internal/service/a2a.go:360-371`. PR #23 atomicity tests pin the BuildOS-side decoder so the Brain-side re-derivation is safe. |
+| **[ADR-003 P1]** `create_feed_card` `target_role` resolution | Brain | TODO | Decide between (a) Brain adds `target_role` (`string`, optional) to `CreateFeedCardPayload` (recommended; preserves operator-targeting semantics) or (b) BuildOS removes the expectation. BuildOS today defaults to `"owner"` if absent. Owner decision needed. |
+| **[ADR-003 P2]** `Issuer` field cutover | Brain | TODO | Coordinate `iss="fb-brain"` literal cutover to URI form per ADR-001 D4. Dual-emit window required so neither side breaks during transition. Same coordination applies to `aud="fb-os"`. |
+| **[ADR-003] Receiver decoder follow-on** | BuildOS | queued | Once Brain ships items P0 + P1 above, BuildOS lands the receiver-side `LineItems` (`review_material_quote`) + `AIAnalysis` (`review_labor_bid`) + `target_role` decoder additions in a single follow-on PR. |
 | Stripe billing engine | Brain | not yet | gating G1 |
 | Vault / SecretsManager backends for SecretSource | BuildOS | env+file shipped; vault next when first customer fork needs it | `internal/config/secrets.go` interface ready |
 

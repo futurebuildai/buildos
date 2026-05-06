@@ -1,9 +1,16 @@
 # ADR-001: Vision Alignment — Decisions on the 16 Open Questions
 
-**Status:** PROPOSED — owner sign-off pending.
+**Status:** PARTIALLY ACCEPTED — see per-decision status below; remaining items still PROPOSED.
 **Date:** 2026-04-29
 **Author:** Claude (executing the L8 review the owner requested)
 **Inputs:** [VISION_ALIGNMENT.md](./VISION_ALIGNMENT.md), [TECH_STACK.md](../TECH_STACK.md), [ARCHITECTURE.md](./ARCHITECTURE.md), [API_CONTRACT.md](./API_CONTRACT.md), futurebuild.ai, futurebuildai/futurebuild-ecosystem
+
+**Ratification log:**
+- D5 (Maestro client contract): ACCEPTED at Gate 1 — owner-confirmed 2026-05-05.
+- D6 (Hub credential vault interface): ACCEPTED at Gate 1 — owner-confirmed 2026-05-05.
+- D7 (A2A receiver scope for Sprint 5): ACCEPTED with payload-alignment caveat at Gate 2 — owner-confirmed 2026-05-06; see [ADR-003](./ADR-003-gate-2-ratification.md).
+- D14 (LocalBlue lead → BuildOS Prospect): ACCEPTED at Gate 2 — owner-confirmed 2026-05-06; see [ADR-003](./ADR-003-gate-2-ratification.md).
+- D1, D2, D3, D4, D8, D9, D10, D11, D12, D13, D15, D16: still PROPOSED.
 
 ---
 
@@ -185,6 +192,8 @@ L8 bias enforced throughout: prefer reversible decisions, lean on industry conve
 
 ## D7 — A2A receiver scope for Sprint 5
 
+**Status:** ACCEPTED with payload-alignment caveat — owner-confirmed 2026-05-06 (Gate 2). Six receivers shipped (the original five plus `localblue.lead_captured` per D14). Per-event payload schemas locked for `update_schedule` and `delivery_confirmation`; the other four payloads await Brain-side alignment. See [ADR-003](./ADR-003-gate-2-ratification.md).
+
 **Question:** Five event types are defined; what handlers actually exist in BuildOS?
 
 **Decision:** Sprint 5 implements all 5 receivers as proper service-layer handlers. No stubs remain. Each handler is idempotent (keyed on event ID), creates a feed card or updates a domain entity, and writes an audit log entry. Failure to process raises `5xx` so Brain retries via exponential backoff (already specified in `ARCHITECTURE.md` §11).
@@ -361,6 +370,8 @@ currency_default: USD
 ---
 
 ## D14 — LocalBlue lead → BuildOS Prospect
+
+**Status:** ACCEPTED — owner-confirmed 2026-05-06 (Gate 2). Auto-flow shipped in PRs #22 + #23 (2026-05-05): `localblue.lead_captured` A2A handler creates a `pre_construction_prospects` row at `stage='LEAD'` atomically (prospect + feed-card + audit, single tx, six atomicity tests). See [ADR-003](./ADR-003-gate-2-ratification.md).
 
 **Question:** Auto-flow into pipeline, or manual import?
 
