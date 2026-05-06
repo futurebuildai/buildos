@@ -293,6 +293,106 @@ func TestMaestroTasks_TribunalReview_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestMaestroTasks_UpdateSchedule_ValidatesProjectID(t *testing.T) {
+	c, cleanup := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("server should not be called; client must reject nil project_id")
+	})
+	defer cleanup()
+
+	_, err := c.Maestro.UpdateSchedule(ctxWithToken(t), UpdateScheduleRequest{
+		ProjectID: uuid.Nil,
+		Tasks:     []ScheduleTaskSnapshot{{TaskID: uuid.New(), DurationDays: 5}},
+	})
+	if err == nil {
+		t.Fatal("expected error for nil project_id")
+	}
+}
+
+func TestMaestroTasks_UpdateSchedule_ValidatesTasksNonEmpty(t *testing.T) {
+	c, cleanup := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("server should not be called; client must reject empty tasks")
+	})
+	defer cleanup()
+
+	_, err := c.Maestro.UpdateSchedule(ctxWithToken(t), UpdateScheduleRequest{
+		ProjectID: uuid.New(),
+		Tasks:     nil,
+	})
+	if err == nil {
+		t.Fatal("expected error for empty tasks")
+	}
+}
+
+func TestMaestroTasks_UpdateSchedule_RoundTrip(t *testing.T) {
+	wantRunID := uuid.New()
+	wantProject := uuid.New()
+	wantTaskA := uuid.New()
+	wantTaskB := uuid.New()
+
+	c, cleanup := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		task, inputRaw := decodeTaskEnvelope(t, r)
+		if task != "update_schedule" {
+			t.Errorf("task = %q, want update_schedule", task)
+		}
+		var input UpdateScheduleRequest
+		if err := json.Unmarshal(inputRaw, &input); err != nil {
+			t.Fatalf("decode input: %v", err)
+		}
+		if input.ProjectID != wantProject {
+			t.Errorf("project_id = %s, want %s", input.ProjectID, wantProject)
+		}
+		if len(input.Tasks) != 2 {
+			t.Fatalf("tasks len = %d, want 2", len(input.Tasks))
+		}
+		if input.Tasks[0].TaskID != wantTaskA || input.Tasks[0].DurationDays != 7 {
+			t.Errorf("tasks[0] = %+v", input.Tasks[0])
+		}
+		if len(input.Dependencies) != 1 || input.Dependencies[0].DependencyType != "FS" {
+			t.Errorf("dependencies = %+v", input.Dependencies)
+		}
+		// Recommend extending task A by 2 days; leave task B unchanged
+		// (no NewDurationDays set — Brain returned a rationale-only row).
+		newDur := 9
+		writeTaskResult(t, w, wantRunID, map[string]any{
+			"adjustments": []ScheduleAdjustment{
+				{TaskID: wantTaskA, NewDurationDays: &newDur, Rationale: "weather drift"},
+				{TaskID: wantTaskB, Rationale: "monitor only — no change"},
+			},
+		})
+	})
+	defer cleanup()
+
+	resp, err := c.Maestro.UpdateSchedule(ctxWithToken(t), UpdateScheduleRequest{
+		ProjectID:        wantProject,
+		ProjectStartDate: "2026-05-06T00:00:00Z",
+		Tasks: []ScheduleTaskSnapshot{
+			{TaskID: wantTaskA, WBSCode: "1.1", Name: "Footings", DurationDays: 7, Status: "pending", PercentComplete: 0, IsCritical: true},
+			{TaskID: wantTaskB, WBSCode: "1.2", Name: "Strip forms", DurationDays: 2, Status: "pending", PercentComplete: 0, IsCritical: false},
+		},
+		Dependencies: []ScheduleDepSnapshot{
+			{PredecessorID: wantTaskA, SuccessorID: wantTaskB, DependencyType: "FS", LagDays: 0},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateSchedule: %v", err)
+	}
+	if resp.RunID != wantRunID {
+		t.Errorf("run_id = %s, want %s", resp.RunID, wantRunID)
+	}
+	if resp.TokensUsed != 1234 || resp.CostCents != 42 || resp.CurrencyCode != "USD" {
+		t.Errorf("cost metadata mismatch: %+v", resp.CostMetadata)
+	}
+	if len(resp.Adjustments) != 2 {
+		t.Fatalf("adjustments len = %d", len(resp.Adjustments))
+	}
+	if resp.Adjustments[0].NewDurationDays == nil || *resp.Adjustments[0].NewDurationDays != 9 {
+		t.Errorf("adjustments[0].NewDurationDays = %v, want *int=9", resp.Adjustments[0].NewDurationDays)
+	}
+	if resp.Adjustments[1].NewDurationDays != nil {
+		t.Errorf("adjustments[1].NewDurationDays = %v, want nil (rationale-only)", resp.Adjustments[1].NewDurationDays)
+	}
+}
+
 func TestMaestroTasks_HTTPErrorPropagates(t *testing.T) {
 	c, cleanup := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

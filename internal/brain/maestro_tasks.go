@@ -354,3 +354,100 @@ func (m *MaestroClient) TribunalReview(ctx context.Context, req TribunalReviewRe
 		Rationale:      out.Rationale,
 	}, nil
 }
+
+// ---- update_schedule --------------------------------------------------
+
+// ScheduleTaskSnapshot is the per-task projection BuildOS sends to
+// Brain on update_schedule. Mirrors the persisted columns Maestro
+// needs to reason about pacing/criticality without round-tripping
+// the full models.ProjectTask shape (which includes physics-transient
+// fields the prompt doesn't need).
+//
+// DurationDays is the value Maestro is allowed to recommend changing.
+// Status + PercentComplete provide progress context (e.g. don't
+// recommend extending duration on a task already 100% complete).
+type ScheduleTaskSnapshot struct {
+	TaskID          uuid.UUID `json:"task_id"`
+	WBSCode         string    `json:"wbs_code"`
+	Name            string    `json:"name"`
+	DurationDays    int       `json:"duration_days"`
+	Status          string    `json:"status"`
+	PercentComplete int       `json:"percent_complete"`
+	IsCritical      bool      `json:"is_critical"`
+}
+
+// ScheduleDepSnapshot is the per-dependency projection. Brain reads
+// the full DAG so it can reason about which task adjustments propagate
+// onto the critical path. DependencyType is the wire form ("FS",
+// "SS", "FF", "SF") matching models/types.DependencyType.
+type ScheduleDepSnapshot struct {
+	PredecessorID  uuid.UUID `json:"predecessor_id"`
+	SuccessorID    uuid.UUID `json:"successor_id"`
+	DependencyType string    `json:"dependency_type"`
+	LagDays        int       `json:"lag_days"`
+}
+
+// UpdateScheduleRequest is the input for the update_schedule task.
+// Brain reads the snapshot, applies its scheduling heuristics (recent
+// alerts, weather, vendor lead-time drift), and returns a list of
+// recommended duration adjustments. Brain does NOT mutate state
+// directly — BuildOS owns the CPM physics engine and re-validates
+// every recommendation by re-running ForwardPass + BackwardPass.
+type UpdateScheduleRequest struct {
+	ProjectID        uuid.UUID             `json:"project_id"`
+	ProjectStartDate string                `json:"project_start_date,omitempty"` // RFC3339
+	Tasks            []ScheduleTaskSnapshot `json:"tasks"`
+	Dependencies     []ScheduleDepSnapshot  `json:"dependencies"`
+}
+
+// ScheduleAdjustment is one recommended duration change. NewDurationDays
+// is a pointer so Brain can omit it when the recommendation is "no
+// change" (the prompt may return a "review the rationale" item without
+// a numeric delta — in which case BuildOS skips the SQL UPDATE for
+// that row but keeps the row in the audit metadata for transparency).
+//
+// Rationale is free-form prose Brain provides for the operator-facing
+// log. Bounded length (Brain caps server-side); BuildOS stores it
+// alongside the audit row so a PM can review why each task was nudged.
+type ScheduleAdjustment struct {
+	TaskID          uuid.UUID `json:"task_id"`
+	NewDurationDays *int      `json:"new_duration_days,omitempty"`
+	Rationale       string    `json:"rationale,omitempty"`
+}
+
+// UpdateScheduleResponse carries the recommended adjustments back to
+// the caller. CostMetadata blocks the per-call billing fields per
+// ADR-001 D5.
+type UpdateScheduleResponse struct {
+	CostMetadata
+	Adjustments []ScheduleAdjustment `json:"adjustments"`
+}
+
+// UpdateSchedule dispatches the update_schedule Maestro task.
+//
+// Validates: ProjectID required; at least one task in the snapshot
+// (Brain has nothing to reason about with an empty graph). Empty
+// Dependencies is allowed (a one-task project is degenerate but
+// legal).
+func (m *MaestroClient) UpdateSchedule(ctx context.Context, req UpdateScheduleRequest) (*UpdateScheduleResponse, error) {
+	if req.ProjectID == uuid.Nil {
+		return nil, fmt.Errorf("brain.Maestro.UpdateSchedule: project_id is required")
+	}
+	if len(req.Tasks) == 0 {
+		return nil, fmt.Errorf("brain.Maestro.UpdateSchedule: at least one task is required")
+	}
+	ctx, cancel := m.withTimeout(ctx)
+	defer cancel()
+
+	var out struct {
+		Adjustments []ScheduleAdjustment `json:"adjustments"`
+	}
+	cost, err := m.runTask(ctx, "update_schedule", req, &out)
+	if err != nil {
+		return nil, fmt.Errorf("brain.Maestro.UpdateSchedule: %w", err)
+	}
+	return &UpdateScheduleResponse{
+		CostMetadata: *cost,
+		Adjustments:  out.Adjustments,
+	}, nil
+}
