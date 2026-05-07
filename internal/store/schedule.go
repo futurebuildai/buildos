@@ -225,9 +225,16 @@ func (s *ScheduleStore) GetTaskInProject(ctx context.Context, tx pgx.Tx, taskID,
 // preserve existing values via COALESCE. AssignedCrew uses a pointer so
 // callers can distinguish "no change" (nil) from "clear the crew"
 // (non-nil pointer to empty slice).
+//
+// DurationDays is the agent-driven path: AgentsService.RecommendScheduleAdjustments
+// applies Maestro-recommended duration nudges through this field, and
+// CPM physics re-validates on the next recalc. Operator-driven UpdateTask
+// flows leave it nil (operators don't directly edit duration in the UI;
+// duration is DHSM-derived from GSF + WBS template).
 type UpdateTaskParams struct {
 	TaskID          uuid.UUID
 	ProjectID       uuid.UUID
+	DurationDays    *int
 	PercentComplete *int
 	Status          *string
 	AssignedCrew    *[]uuid.UUID
@@ -249,7 +256,8 @@ func (s *ScheduleStore) UpdateTask(ctx context.Context, tx pgx.Tx, p UpdateTaskP
 	var t models.ProjectTask
 	err := tx.QueryRow(ctx, `
 		UPDATE project_tasks
-		SET percent_complete = COALESCE($3, percent_complete),
+		SET duration_days    = COALESCE($6, duration_days),
+		    percent_complete = COALESCE($3, percent_complete),
 		    status           = COALESCE($4, status),
 		    assigned_crew    = CASE WHEN $5::uuid[] IS NULL THEN assigned_crew ELSE $5 END,
 		    updated_at       = now()
@@ -258,7 +266,7 @@ func (s *ScheduleStore) UpdateTask(ctx context.Context, tx pgx.Tx, p UpdateTaskP
 		          early_start, early_finish, late_start, late_finish,
 		          total_float, is_critical, status, percent_complete, assigned_crew,
 		          created_at, updated_at`,
-		p.TaskID, p.ProjectID, p.PercentComplete, p.Status, crewArg,
+		p.TaskID, p.ProjectID, p.PercentComplete, p.Status, crewArg, p.DurationDays,
 	).Scan(
 		&t.ID, &t.ProjectID, &t.WBSCode, &t.Name, &t.DurationDays,
 		&t.EarlyStart, &t.EarlyFinish, &t.LateStart, &t.LateFinish,
