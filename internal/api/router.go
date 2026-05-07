@@ -198,6 +198,17 @@ func NewRouter(cfg RouterConfig) http.Handler {
 					r.With(mw.RequireMinRole(mw.RoleSuperintendent)).
 						Post("/recalculate", schedule.Recalculate)
 					r.Get("/gantt", schedule.Gantt)
+
+					// Maestro-driven duration adjustments. Same role
+					// gate as /recalculate (CPM-affecting); plus
+					// pro-tier plan gate (consumes metered AI tokens).
+					// Mounts only when AgentsService is wired —
+					// matches the conditional under /api/v1/agents.
+					if agents != nil {
+						r.With(mw.RequireMinRole(mw.RoleSuperintendent)).
+							With(mw.RequirePlanTier(mw.PlanTierPro)).
+							Post("/recommend-adjustments", agents.RecommendScheduleAdjustments)
+					}
 				})
 
 				// Tasks sub-routes
