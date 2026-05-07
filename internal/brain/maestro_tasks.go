@@ -394,8 +394,8 @@ type ScheduleDepSnapshot struct {
 // directly — BuildOS owns the CPM physics engine and re-validates
 // every recommendation by re-running ForwardPass + BackwardPass.
 type UpdateScheduleRequest struct {
-	ProjectID        uuid.UUID             `json:"project_id"`
-	ProjectStartDate string                `json:"project_start_date,omitempty"` // RFC3339
+	ProjectID        uuid.UUID              `json:"project_id"`
+	ProjectStartDate string                 `json:"project_start_date,omitempty"` // RFC3339
 	Tasks            []ScheduleTaskSnapshot `json:"tasks"`
 	Dependencies     []ScheduleDepSnapshot  `json:"dependencies"`
 }

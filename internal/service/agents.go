@@ -433,14 +433,14 @@ func (s *AgentsService) RecommendScheduleAdjustments(ctx context.Context, caller
 			ResourceType: AuditResourceSchedule,
 			ResourceID:   projectID,
 			Metadata: marshalAudit(map[string]any{
-				"run_id":                    resp.RunID,
-				"tokens_used":               resp.TokensUsed,
-				"cost_cents":                resp.CostCents,
-				"currency_code":             resp.CurrencyCode,
-				"recommended_delta_count":   len(resp.Adjustments),
-				"applied_deltas":            applied,
-				"skipped_rationale_only":    skipped,
-				"adjustments":               resp.Adjustments,
+				"run_id":                  resp.RunID,
+				"tokens_used":             resp.TokensUsed,
+				"cost_cents":              resp.CostCents,
+				"currency_code":           resp.CurrencyCode,
+				"recommended_delta_count": len(resp.Adjustments),
+				"applied_deltas":          applied,
+				"skipped_rationale_only":  skipped,
+				"adjustments":             resp.Adjustments,
 			}),
 		})
 
