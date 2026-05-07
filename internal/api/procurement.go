@@ -21,6 +21,7 @@ type ProcurementServicer interface {
 	ListProcurement(ctx context.Context, projectID, callerOrgID uuid.UUID, statusFilter []string) ([]models.ProcurementItem, error)
 	CreateProcurementItem(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, in service.CreateProcurementItemInput) (models.ProcurementItem, error)
 	UpdateProcurementItem(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, in service.UpdateProcurementItemInput) (models.ProcurementItem, error)
+	RequestVendorReview(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, in service.RequestVendorReviewInput) (uuid.UUID, error)
 }
 
 // ProcurementHandler handles /api/v1/projects/{projectID}/procurement/* endpoints.
@@ -158,8 +159,100 @@ func (h *ProcurementHandler) Update(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, map[string]any{"item": item})
 }
 
+type requestVendorReviewRequest struct {
+	Vendor       string     `json:"vendor"`
+	TotalCents   int64      `json:"total_cents"`
+	CurrencyCode string     `json:"currency_code"`
+	RFQID        *uuid.UUID `json:"rfq_id,omitempty"`
+	Reasoning    string     `json:"reasoning,omitempty"`
+}
+
+// RequestVendorReview enqueues an outbound A2A `review_material_quote`
+// event so Brain can dispatch the quote to the org's review queue.
+// The service opens one tx and runs the ownership check + River
+// InsertTx + audit row atomically; the JWS-signed HTTPS POST happens
+// later in the worker via the already-shipped A2AOutboundService.
+//
+// POST /api/v1/projects/{projectID}/procurement/{itemID}/request-review
+//
+// Role gate: superintendent or higher (operator-driven outbound action).
+// Applied at the route in router.go.
+//
+// Body: {vendor, total_cents, currency_code, rfq_id?, reasoning?}.
+//   - vendor: required, non-empty.
+//   - total_cents: required, non-negative.
+//   - currency_code: required, USD or CAD (Composite Currency Pattern).
+//   - rfq_id: optional; uuid.Nil when omitted (Maestro-driven flow with no formal RFQ).
+//   - reasoning: optional Maestro narrative.
+//
+// Errors:
+//
+//   - 400 VALIDATION_ERROR: invalid project_id / item_id / JSON body /
+//     wire-shape rejection from the emitter (vendor empty, negative
+//     total_cents, unsupported currency_code) → ErrInvalidInput.
+//   - 404 NOT_FOUND: item missing or belongs to another org →
+//     ErrProcurementItemNotFound. (Cross-org item access surfaces as
+//     404 by design — an attacker probing for existence can't
+//     distinguish "no such item" from "item in different org".)
+//   - 503 SERVICE_UNAVAILABLE: ProcurementService constructed without
+//     the A2A emitter (worker binary path) → ErrA2AEmitterUnavailable.
+//
+// On success: 202 Accepted with {idempotency_key}. 202 (not 200)
+// because the actual HTTPS delivery to Brain is async — we've only
+// committed the enqueue, the worker drives the POST. The
+// idempotency_key lets the caller correlate enqueue → delivery via
+// the river_jobs table or future delivery-status surface.
+func (h *ProcurementHandler) RequestVendorReview(w http.ResponseWriter, r *http.Request) {
+	if _, ok := parseUUIDFromURL(w, r, "projectID"); !ok {
+		return
+	}
+	itemID, ok := parseUUIDFromURL(w, r, "itemID")
+	if !ok {
+		return
+	}
+	callerOrg, ok := callerOrgIDFromClaims(w, r)
+	if !ok {
+		return
+	}
+
+	var body requestVendorReviewRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid JSON body")
+		return
+	}
+
+	rfqID := uuid.Nil
+	if body.RFQID != nil {
+		rfqID = *body.RFQID
+	}
+
+	claims := mw.MustClaimsFromContext(r.Context())
+	idempotencyKey, err := h.svc.RequestVendorReview(r.Context(), callerOrg, claims.Sub, service.RequestVendorReviewInput{
+		ProcurementItemID: itemID,
+		RFQID:             rfqID,
+		Vendor:            body.Vendor,
+		TotalCents:        body.TotalCents,
+		CurrencyCode:      body.CurrencyCode,
+		Reasoning:         body.Reasoning,
+	})
+	if err != nil {
+		h.writeServiceError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusAccepted, map[string]any{"idempotency_key": idempotencyKey})
+}
+
 // writeServiceError maps ProcurementService sentinels to HTTP responses.
 func (h *ProcurementHandler) writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
+	// ProcurementService nil-dep sentinel — RequestVendorReview
+	// returns this when the service was constructed without an
+	// a2a.Emitter (worker binary path). Map to 503 so callers know
+	// to retry against a server binary rather than treating it as
+	// a permanent input error.
+	if errors.Is(err, service.ErrA2AEmitterUnavailable) {
+		writeErrorResponse(w, r, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "vendor review flow not available on this binary")
+		return
+	}
 	switch {
 	case errors.Is(err, service.ErrProcurementItemNotFound):
 		writeErrorResponse(w, r, http.StatusNotFound, "NOT_FOUND", "procurement item not found")

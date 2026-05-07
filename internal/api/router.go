@@ -227,11 +227,19 @@ func NewRouter(cfg RouterConfig) http.Handler {
 					r.Put("/{invoiceID}", financials.UpdateInvoice)
 				})
 
-				// Procurement — owner, admin: full; superintendent: read
+				// Procurement — owner, admin: full; superintendent: read + outbound review
 				r.Route("/procurement", func(r chi.Router) {
 					r.Get("/", procurement.List)
 					r.With(mw.RequireRole(mw.RoleOwner, mw.RoleAdmin)).Post("/", procurement.Create)
 					r.With(mw.RequireRole(mw.RoleOwner, mw.RoleAdmin)).Put("/{itemID}", procurement.Update)
+					// Outbound A2A vendor-review request. Superintendent gate
+					// (operator-driven; matches the field-level supervision
+					// boundary). No plan-tier gate — this enqueues a webhook,
+					// it doesn't itself consume Maestro tokens (the upstream
+					// Maestro call that produced the reasoning text was
+					// metered separately).
+					r.With(mw.RequireMinRole(mw.RoleSuperintendent)).
+						Post("/{itemID}/request-review", procurement.RequestVendorReview)
 				})
 			})
 		})
