@@ -20,6 +20,7 @@ Companion docs:
 
 ## Last shipped (most recent → older)
 
+- **2026-05-06** PR #25 [`2426c2b`] S4 Session 9.1 — DailyFocusAgent calls Maestro `update_schedule` (closes the first agent-driven CPM-edit flow under the ADR-003 two-event constraint). New typed Maestro task `update_schedule` in `internal/brain/maestro_tasks.go` (`UpdateScheduleRequest{ProjectID, ProjectStartDate, Tasks[], Dependencies[]}` + `UpdateScheduleResponse{CostMetadata + ScheduleAdjustment[]}` where `ScheduleAdjustment.NewDurationDays *int` so rationale-only recommendations serialize cleanly). Validates `ProjectID` non-zero + tasks non-empty client-side. `internal/store/schedule.go` extends `UpdateTaskParams` with `DurationDays *int` (operator path leaves nil — DHSM-derived; only the agent path writes through it) + `COALESCE($6, duration_days)` in the UPDATE. `internal/service/agents.go` adds `MaestroScheduleAdjuster` interface, extends `AgentsService` with `scheduleStore`+`scheduleService`+`scheduleAdjuster`, constructor signature now `(pool, fields, feed, scheduleStore, scheduleService, briefer, adjuster, audit)`. New `RecommendScheduleAdjustments(ctx, callerOrgID, callerUserSub, projectID)`: single tx wraps `VerifyProjectInOrg` → `GetProjectTasks/Dependencies/StartDate` → `Maestro.UpdateSchedule` (held inside tx, mirrors `ProcurementService.RecommendVendors` pattern so recommendation+audit+duration writes commit/rollback atomically) → loops `Adjustments`, applies via `UpdateTask` (skips nil/negative `NewDurationDays`; defensive guard against a buggy Brain response) → batch audit row `schedule.maestro_edit` / `AuditResourceSchedule` keyed by `project_id` with metadata `{run_id, tokens_used, cost_cents, currency_code, recommended_delta_count, applied_deltas, skipped_rationale_only, adjustments[]}`. After tx commit, synchronously calls `ScheduleService.RecalculateSchedule` (its own tx) so CPM physics re-validates with the new durations; on recalc failure returns the result + wrapped `"apply succeeded; recalc deferred"` error (eventual-consistency degradation — durations + audit are persisted, physics catches up at next manual recalc). Skip when `AppliedDeltas == 0` to avoid double-audit on no-op. Two new sentinels: `ErrAgentsMaestroUnavailable` (nil adjuster — worker binary doesn't expose agent endpoints) + `ErrAgentsScheduleServiceUnavailable` (nil scheduleStore/scheduleService). `cmd/server/main.go` wired with the new 8-arg signature; worker passes nil for the schedule trio. ADR-003 note: this is the OUTBOUND BuildOS → Brain Maestro call — Brain's reply rides the synchronous HTTP envelope; the inbound-A2A two-event constraint applies to round-trips this flow does not exercise. Tests: `maestro_tasks_test.go` validation matrix + round-trip (envelope discriminator, project_id, FS dependency, two adjustments incl. rationale-only with nil pointer); `agents_test.go` constructor migration + new validation matrix (nil org, nil project, nil adjuster → sentinel, nil schedule trio → sentinel). One follow-up gofmt commit (`3c323f9`) for indentation alignment after the initial push. `make audit` ALL PASSED. CPM80=184µs, CPM200=460µs.
 - **2026-05-06** Gate 2 ratified by owner. New [ADR-003](./.agents/handoff/ADR-003-gate-2-ratification.md) codifies the decision: ADR-001 D14 (LocalBlue auto-flow) ACCEPTED unconditionally; ADR-001 D7 (A2A receiver scope) ACCEPTED with payload-alignment caveat (Option A — envelope + event-type list locked, per-event payload schemas deferred). Status lines added inline at ADR-001 D7 and D14. Four Brain-side backlog items surfaced in "Cross-repo coordination" below (P0 OrgID, P0 LocalblueLeadCapturedPayload re-derivation, P1 create_feed_card target_role, P2 Issuer cutover). S4 Session 9.1 unblocked with a two-event constraint (`update_schedule` + `delivery_confirmation` only). Docs-only diff; no production code touched.
 - **2026-05-05** PR #23 [`73b6b87`] S3 Session 8.2 — LocalBlue `lead.captured` inbound test surface (`internal/service/a2a_integration_test.go`). Test-only; no production code touched. Pairs with PR #22's receiver-side handler tests to lock the inbound A2A contract before Gate 2. Existing happy-path test covered prospect shape (LEAD stage, `localblue:` source tag, probability_pct=10) and feed-card shape (urgent, owner-targeted); existing `_RejectsMissingContractorOrg` covered the org-resolution gate. Six new tests close the remaining gaps: (1) `_IdempotencyReplay` — same envelope twice → `second.AlreadyProcessed=true`, exactly one prospect + one feed card (load-bearing guarantee against duplicate-prospect pipeline corruption on Brain retry); (2) `_RejectsMissingLeadName` — `ErrInvalidInput` + FULL rollback assertion (zero `a2a_inbound_log`, zero prospect, zero feed_card) so Brain's retry can succeed once the upstream payload is corrected (without rollback the lead would be lost forever); (3) `_RejectsMissingContactName` — symmetric; (4) `_OptionalFieldsMapToNull` — pins the `stringPtrOrNil` contract: empty contact_email/contact_phone/address arrive as SQL NULL not "" (downstream IS NULL semantics + future uniqueness gates); (5) `_DefaultSourceTag` — pins the `localblueSourceTag` boundary: empty source produces `"localblue"` not `"localblue:"` (no dangling colon corrupting analytics buckets); (6) `_NoPipelineStoreReturnsError` — defensive nil-pipelineStore guard returns `ErrInvalidInput` rather than nil-deref panic, with full rollback so retry semantics stay coherent if pipelineStore is wired later. Atomicity assertions share the `assertNoDedupOrOrphans` helper. `make audit` ALL PASSED. CPM80=183µs, CPM200=439µs. **Triggers Gate 2** — owner approval requested on (a) the LocalBlue auto-flow per ADR-001 D14 and (b) ratification of inbound A2A event schemas as cross-repo wire contracts.
 - **2026-05-05** PR #22 [`0fdfac1`] S3 Session 8.1 — A2A receiver idempotency replay + 1 MiB body cap tests (`internal/api/a2a_test.go`). Test-only; no production code touched. (1) `TestA2AHandler_IdempotencyReplaySameFeedCardID` — stateful `idempotencyReplayService` mock mirrors the production `ProcessWebhook` dedup contract: first envelope mints a `feed_card_id` with `already_processed=false`; second delivery with the same `IdempotencyKey` returns the SAME `feed_card_id` with `already_processed=true`. Asserts both 200 responses, both flag values, and `feed_card_id` stability — the user-facing guarantee that Brain's at-least-once retries don't duplicate feed cards. Decode shape now drills the `{data, meta}` response envelope properly. (2) `TestA2AHandler_BodyTooLargeReturns413` — > 1 MiB POST body trips the `mw.A2AInboundMaxBodyBytes` cap. Wraps `r.Body` with `http.MaxBytesReader` directly (the same wrapper `mw.MaxBodySize` middleware installs on the route group at `router.go:176-177`) so the handler-only test exercises the 413 branch without the chi stack; asserts `413 PAYLOAD_TOO_LARGE` rather than the generic 400 the handler emits on JSON decode errors. Unknown `event_type` → `400 UNKNOWN_EVENT` was already covered by `TestA2AHandler_ServiceErrorMaps/unknown_event` (not duplicated). All 8 `TestA2AHandler_*` subtests pass. `make audit` ALL PASSED. CPM80=179µs, CPM200=480µs. Sets up Session 8.2 (LocalBlue `lead.captured` inbound; Gate 2 trigger).
@@ -44,7 +45,7 @@ Companion docs:
 - **2026-05-01** PR #3 [`29ea6fe`] SecretSource abstraction (env/file/chain) + `LoadWithSource()`.
 - **2026-05-01** PR #2 [`699a64d`] Sprints 1-5 + Phase F core (44 commits — domain endpoints, Brain integration, production hardening, Dockerfile, D8 build-tag hardening).
 
-22 PRs merged under the L8 self-audit gate (PR #9 added the L8 SRE
+23 PRs merged under the L8 self-audit gate (PR #9 added the L8 SRE
 audit gate as a second checklist applied per PR). Every landed
 commit had `make audit` green + integration suite green +
 govulncheck clean. PRs #9 onward also have CI green at merge time
@@ -52,9 +53,7 @@ govulncheck clean. PRs #9 onward also have CI green at merge time
 
 ## In flight
 
-Branch `ratify/gate-2-localblue-and-a2a-schemas` (this session) —
-docs-only diff: ADR-003 added; ADR-001 D7 + D14 inline status lines
-added; HANDOFF.md updated. PR pending.
+Nothing in flight. PR #25 (S4 Session 9.1) merged this session.
 
 **Gate 2 ratified by owner (2026-05-06).** Per
 [ADR-003](./.agents/handoff/ADR-003-gate-2-ratification.md):
@@ -109,8 +108,15 @@ optional-field nullability, source-tag boundary, and the
 nil-pipelineStore guard. Both halves of the A2A inbound surface
 (handler + service) are now under test. S2 Session 5.2 was already
 materially shipped in production code (handlers/RBAC/tests).
-**Gate 2 ratified 2026-05-06 — see above.** S4 Session 9.1 cleared
-to proceed with the two-event constraint surfaced in "Next up".
+**Gate 2 ratified 2026-05-06 — see above.** **S4 Session 9.1 shipped
+(PR #25)** — `RecommendScheduleAdjustments` orchestrates Brain
+Maestro `update_schedule`, applies recommended duration deltas via
+`ScheduleStore.UpdateTask` inside the same tx as the batch
+`schedule.maestro_edit` audit row, then synchronously re-runs
+`ScheduleService.RecalculateSchedule` so CPM physics re-validates.
+The first agent-driven CPM-edit flow is now in production code with
+the ADR-003 two-event constraint preserved (this is the outbound
+BuildOS → Brain call; the inbound-A2A constraint applies elsewhere).
 
 ## Blocked
 
@@ -130,27 +136,22 @@ for the full prioritized backlog with entry-point file paths.
 
 Top three an L8 PE would queue (S1.5 + S2 5.1 + S3 7.1 + S3 7.2 +
 S3 7.2 caller wiring + Vault SecretSource + S3 8.1 receiver tests +
-S3 8.2 LocalBlue inbound tests shipped; S2 5.2 materially complete
-in prod code; **Gate 2 ratified 2026-05-06 — see ADR-003**):
+S3 8.2 LocalBlue inbound tests + S4 9.1 Maestro `update_schedule`
+shipped; S2 5.2 materially complete in prod code; **Gate 2 ratified
+2026-05-06 — see ADR-003**):
 
-1. **S4 Session 9.1 — DailyFocusAgent calls Maestro
-   `update_schedule`** (now unblocked).
-   `internal/service/agents.go` adds
-   `RecommendScheduleAdjustments(ctx, projectID)` calling
-   `brain.Maestro.UpdateSchedule` with the current task graph;
-   apply recommended deltas through existing
-   `ScheduleService.RecalculateSchedule` so CPM physics
-   re-validates. Audit every Maestro-driven edit with
-   `Action="schedule.maestro_edit"`,
-   `ResourceType=AuditResourceSchedule`, metadata
-   `{run_id, tokens_used, cost_cents, currency_code,
-   recommended_delta_count}`. **Constraint per ADR-003:** the
-   agent may consume `update_schedule` and `delivery_confirmation`
-   only — those two payloads are aligned across BuildOS/Brain.
-   Any agent flow that would touch `review_material_quote` /
-   `review_labor_bid` / `create_feed_card` (e.g. S6 SubLiaisonAgent
-   labor bid review loop) must wait for the matching payload-alignment
-   ratification.
+1. **HTTP handler / RBAC for `RecommendScheduleAdjustments`** —
+   follow-up to PR #25. Add a
+   `POST /api/v1/projects/{projectID}/schedule/recommend-adjustments`
+   handler that calls
+   `AgentsService.RecommendScheduleAdjustments`, gated to
+   `superintendent` or higher (CPM-affecting). Returns
+   `{adjustments[], applied_deltas, skipped_rationale_only,
+   run_id, cost_cents, currency_code}` on 200; map
+   `ErrAgentsMaestroUnavailable` / `ErrAgentsScheduleServiceUnavailable`
+   to 503; map `ErrInvalidInput` to 400; map `ErrNotFound` to 404.
+   Integration test exercises the full path end-to-end with a
+   stub MaestroScheduleAdjuster.
 2. **HTTP handler / RBAC for `RequestVendorReview`** — small
    follow-up to PR #20. Add a
    `POST /api/v1/projects/{projectID}/procurement/{itemID}/request-review`
