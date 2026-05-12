@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -611,6 +612,420 @@ func assertNoDedupOrOrphans(t *testing.T, ctx context.Context, pool *pgxpool.Poo
 	}
 	if feedCount != 0 {
 		t.Errorf("feed card count = %d, want 0 (must roll back with the tx)", feedCount)
+	}
+}
+
+// TestA2AService_ProcessWebhook_ReviewMaterialQuote_LineItems exercises
+// the receiver-side decoder addition for Brain's MaterialQuoteLineItem
+// shape (ADR-003 follow-on). When the envelope carries line_items,
+// the feed-card body picks up an "N items" suffix so the operator
+// preview surfaces the itemization without needing to drill into the
+// raw payload.
+func TestA2AService_ProcessWebhook_ReviewMaterialQuote_LineItems(t *testing.T) {
+	pool := testdb.NewPool(t)
+	ctx := context.Background()
+
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Acme")
+	svc := NewA2AService(pool, store.NewA2AStore(), store.NewFeedCardsStore(), store.NewPipelineStore(), nil)
+
+	payload := map[string]any{
+		"vendor":        "Acme Lumber",
+		"total_cents":   750000,
+		"currency_code": "USD",
+		"line_items": []map[string]any{
+			{"name": "2x4 stud", "quantity": 100, "unit_price_cents": 250, "currency_code": "USD"},
+			{"name": "5/8 OSB sheathing", "quantity": 40, "unit_price_cents": 1850, "currency_code": "USD"},
+			{"name": "30# felt", "quantity": 3, "unit_price_cents": 6000, "currency_code": "USD"},
+		},
+	}
+	body, _ := json.Marshal(payload)
+
+	result, err := svc.ProcessWebhook(ctx, WebhookEnvelope{
+		EventType:      EventReviewMaterialQuote,
+		IdempotencyKey: uuid.New(),
+		Payload:        body,
+		Issuer:         "fb-brain",
+		OrgID:          orgID,
+	})
+	if err != nil {
+		t.Fatalf("ProcessWebhook: %v", err)
+	}
+	if result.FeedCardID == nil {
+		t.Fatal("expected feed card to land")
+	}
+
+	var cardBody string
+	if err := pool.QueryRow(ctx, `SELECT body FROM feed_cards WHERE id = $1`, *result.FeedCardID).Scan(&cardBody); err != nil {
+		t.Fatalf("fetch feed card body: %v", err)
+	}
+	// Body should be "7500.00 USD · 3 items"
+	wantSuffix := "· 3 items"
+	if !strings.HasSuffix(cardBody, wantSuffix) {
+		t.Errorf("feed card body = %q, want suffix %q", cardBody, wantSuffix)
+	}
+	// And the money portion still leads.
+	if !strings.HasPrefix(cardBody, "7500.00 USD") {
+		t.Errorf("feed card body = %q, want prefix %q", cardBody, "7500.00 USD")
+	}
+}
+
+// TestA2AService_ProcessWebhook_ReviewMaterialQuote_SingularItem pins
+// the pluralize boundary so a future cleanup of the helper can't
+// silently regress display copy.
+func TestA2AService_ProcessWebhook_ReviewMaterialQuote_SingularItem(t *testing.T) {
+	pool := testdb.NewPool(t)
+	ctx := context.Background()
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Acme")
+	svc := NewA2AService(pool, store.NewA2AStore(), store.NewFeedCardsStore(), store.NewPipelineStore(), nil)
+
+	body, _ := json.Marshal(map[string]any{
+		"vendor":        "Acme Lumber",
+		"total_cents":   1000,
+		"currency_code": "USD",
+		"line_items": []map[string]any{
+			{"name": "2x4 stud", "quantity": 4, "unit_price_cents": 250, "currency_code": "USD"},
+		},
+	})
+
+	result, err := svc.ProcessWebhook(ctx, WebhookEnvelope{
+		EventType:      EventReviewMaterialQuote,
+		IdempotencyKey: uuid.New(),
+		Payload:        body,
+		Issuer:         "fb-brain",
+		OrgID:          orgID,
+	})
+	if err != nil {
+		t.Fatalf("ProcessWebhook: %v", err)
+	}
+
+	var cardBody string
+	if err := pool.QueryRow(ctx, `SELECT body FROM feed_cards WHERE id = $1`, *result.FeedCardID).Scan(&cardBody); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if !strings.HasSuffix(cardBody, "· 1 item") {
+		t.Errorf("singular form regression: feed card body = %q, want suffix %q", cardBody, "· 1 item")
+	}
+}
+
+// TestA2AService_ProcessWebhook_ReviewMaterialQuote_RejectsMixedCurrency
+// guards the composite-currency invariant at the receiver. A line item
+// with currency_code different from the envelope's would let a mixed-
+// currency quote land as a single feed card whose aggregate has no
+// canonical interpretation. Reject + tx rollback so Brain's retry can
+// succeed once the upstream payload is corrected.
+func TestA2AService_ProcessWebhook_ReviewMaterialQuote_RejectsMixedCurrency(t *testing.T) {
+	pool := testdb.NewPool(t)
+	ctx := context.Background()
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Acme")
+	svc := NewA2AService(pool, store.NewA2AStore(), store.NewFeedCardsStore(), store.NewPipelineStore(), nil)
+
+	body, _ := json.Marshal(map[string]any{
+		"vendor":        "Acme Lumber",
+		"total_cents":   500000,
+		"currency_code": "USD",
+		"line_items": []map[string]any{
+			{"name": "ok item", "quantity": 10, "unit_price_cents": 100, "currency_code": "USD"},
+			{"name": "rogue item", "quantity": 1, "unit_price_cents": 49900, "currency_code": "CAD"},
+		},
+	})
+
+	_, err := svc.ProcessWebhook(ctx, WebhookEnvelope{
+		EventType:      EventReviewMaterialQuote,
+		IdempotencyKey: uuid.New(),
+		Payload:        body,
+		Issuer:         "fb-brain",
+		OrgID:          orgID,
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("err = %v, want ErrInvalidInput", err)
+	}
+
+	// Full rollback: no dedup row, no feed card.
+	assertNoDedupOrOrphans(t, ctx, pool, orgID)
+}
+
+// TestA2AService_ProcessWebhook_ReviewMaterialQuote_RejectsNegativeQuantity
+// guards against a buggy Brain emitter producing a negative quantity —
+// silently allowed by JSON decode, but would produce a nonsense feed
+// card preview and corrupt any downstream aggregation that summed
+// quantities.
+func TestA2AService_ProcessWebhook_ReviewMaterialQuote_RejectsNegativeQuantity(t *testing.T) {
+	pool := testdb.NewPool(t)
+	ctx := context.Background()
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Acme")
+	svc := NewA2AService(pool, store.NewA2AStore(), store.NewFeedCardsStore(), store.NewPipelineStore(), nil)
+
+	body, _ := json.Marshal(map[string]any{
+		"vendor":        "Acme Lumber",
+		"total_cents":   100,
+		"currency_code": "USD",
+		"line_items": []map[string]any{
+			{"name": "bad qty", "quantity": -3, "unit_price_cents": 250, "currency_code": "USD"},
+		},
+	})
+
+	_, err := svc.ProcessWebhook(ctx, WebhookEnvelope{
+		EventType:      EventReviewMaterialQuote,
+		IdempotencyKey: uuid.New(),
+		Payload:        body,
+		Issuer:         "fb-brain",
+		OrgID:          orgID,
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("err = %v, want ErrInvalidInput", err)
+	}
+	assertNoDedupOrOrphans(t, ctx, pool, orgID)
+}
+
+// TestA2AService_ProcessWebhook_ReviewMaterialQuote_RejectsNegativeUnitPrice
+// is the symmetric guard for unit_price_cents. Negative cents would
+// produce a feed card body with a negative money preview and trip
+// downstream cost-aggregation.
+func TestA2AService_ProcessWebhook_ReviewMaterialQuote_RejectsNegativeUnitPrice(t *testing.T) {
+	pool := testdb.NewPool(t)
+	ctx := context.Background()
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Acme")
+	svc := NewA2AService(pool, store.NewA2AStore(), store.NewFeedCardsStore(), store.NewPipelineStore(), nil)
+
+	body, _ := json.Marshal(map[string]any{
+		"vendor":        "Acme Lumber",
+		"total_cents":   100,
+		"currency_code": "USD",
+		"line_items": []map[string]any{
+			{"name": "bad price", "quantity": 1, "unit_price_cents": -250, "currency_code": "USD"},
+		},
+	})
+
+	_, err := svc.ProcessWebhook(ctx, WebhookEnvelope{
+		EventType:      EventReviewMaterialQuote,
+		IdempotencyKey: uuid.New(),
+		Payload:        body,
+		Issuer:         "fb-brain",
+		OrgID:          orgID,
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("err = %v, want ErrInvalidInput", err)
+	}
+	assertNoDedupOrOrphans(t, ctx, pool, orgID)
+}
+
+// TestA2AService_ProcessWebhook_ReviewLaborBid_WithAIAnalysis covers
+// the receiver-side decoder addition for Brain's ai_analysis field.
+// When non-empty, the analysis is appended to the feed-card body
+// preview so an operator triaging the inbound bid sees Brain's
+// reasoning hint inline rather than needing to open the full bid view.
+func TestA2AService_ProcessWebhook_ReviewLaborBid_WithAIAnalysis(t *testing.T) {
+	pool := testdb.NewPool(t)
+	ctx := context.Background()
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Acme")
+	svc := NewA2AService(pool, store.NewA2AStore(), store.NewFeedCardsStore(), store.NewPipelineStore(), nil)
+
+	body, _ := json.Marshal(map[string]any{
+		"bidder":        "Hammer & Nail Inc",
+		"amount_cents":  450000,
+		"currency_code": "USD",
+		"timeline":      "3 weeks",
+		"ai_analysis":   "Within 8% of peer median; verified license; one OSHA citation 2023.",
+	})
+
+	result, err := svc.ProcessWebhook(ctx, WebhookEnvelope{
+		EventType:      EventReviewLaborBid,
+		IdempotencyKey: uuid.New(),
+		Payload:        body,
+		Issuer:         "fb-brain",
+		OrgID:          orgID,
+	})
+	if err != nil {
+		t.Fatalf("ProcessWebhook: %v", err)
+	}
+	if result.FeedCardID == nil {
+		t.Fatal("expected feed card")
+	}
+
+	var cardBody string
+	if err := pool.QueryRow(ctx, `SELECT body FROM feed_cards WHERE id = $1`, *result.FeedCardID).Scan(&cardBody); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if !strings.Contains(cardBody, "analysis: Within 8% of peer median") {
+		t.Errorf("feed card body = %q, want to contain ai_analysis preview", cardBody)
+	}
+	// Timeline must still come through alongside the analysis.
+	if !strings.Contains(cardBody, "timeline: 3 weeks") {
+		t.Errorf("feed card body = %q, want to contain timeline", cardBody)
+	}
+}
+
+// TestA2AService_ProcessWebhook_ReviewLaborBid_AnalysisTruncation pins
+// the 200-rune cap on the analysis preview. Feed-card body is a
+// notification surface; the full text is preserved in
+// a2a_inbound_log.payload for any caller that needs it.
+func TestA2AService_ProcessWebhook_ReviewLaborBid_AnalysisTruncation(t *testing.T) {
+	pool := testdb.NewPool(t)
+	ctx := context.Background()
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Acme")
+	svc := NewA2AService(pool, store.NewA2AStore(), store.NewFeedCardsStore(), store.NewPipelineStore(), nil)
+
+	// Build a 250-rune analysis from a repeating ASCII pattern (each
+	// rune = 1 byte, easy to assert against).
+	longAnalysis := strings.Repeat("x", 250)
+
+	body, _ := json.Marshal(map[string]any{
+		"bidder":        "Hammer & Nail Inc",
+		"amount_cents":  450000,
+		"currency_code": "USD",
+		"ai_analysis":   longAnalysis,
+	})
+
+	result, err := svc.ProcessWebhook(ctx, WebhookEnvelope{
+		EventType:      EventReviewLaborBid,
+		IdempotencyKey: uuid.New(),
+		Payload:        body,
+		Issuer:         "fb-brain",
+		OrgID:          orgID,
+	})
+	if err != nil {
+		t.Fatalf("ProcessWebhook: %v", err)
+	}
+
+	var cardBody string
+	if err := pool.QueryRow(ctx, `SELECT body FROM feed_cards WHERE id = $1`, *result.FeedCardID).Scan(&cardBody); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	// Expected analysis chunk: 200 x's + ellipsis.
+	wantAnalysis := strings.Repeat("x", 200) + "…"
+	if !strings.Contains(cardBody, "analysis: "+wantAnalysis) {
+		t.Errorf("feed card body = %q\nwant to contain truncated analysis %q", cardBody, wantAnalysis)
+	}
+	// Negative pin: the un-truncated 250-rune form must NOT appear.
+	if strings.Contains(cardBody, longAnalysis) {
+		t.Errorf("feed card body = %q, full untruncated analysis leaked through", cardBody)
+	}
+}
+
+// TestA2AService_ProcessWebhook_CreateFeedCard_ValidTargetRoles is a
+// table over the four BuildOS RBAC roles, pinning that each one
+// passes validation and persists onto the feed card unchanged.
+func TestA2AService_ProcessWebhook_CreateFeedCard_ValidTargetRoles(t *testing.T) {
+	pool := testdb.NewPool(t)
+	ctx := context.Background()
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Acme")
+	svc := NewA2AService(pool, store.NewA2AStore(), store.NewFeedCardsStore(), store.NewPipelineStore(), nil)
+
+	for _, role := range []string{"owner", "admin", "superintendent", "field_worker"} {
+		t.Run(role, func(t *testing.T) {
+			body, _ := json.Marshal(map[string]any{
+				"card_type":   "brain.generic",
+				"title":       "Test " + role,
+				"body":        "hi",
+				"priority":    "normal",
+				"target_role": role,
+			})
+			result, err := svc.ProcessWebhook(ctx, WebhookEnvelope{
+				EventType:      EventCreateFeedCard,
+				IdempotencyKey: uuid.New(),
+				Payload:        body,
+				Issuer:         "fb-brain",
+				OrgID:          orgID,
+			})
+			if err != nil {
+				t.Fatalf("ProcessWebhook: %v", err)
+			}
+			if result.FeedCardID == nil {
+				t.Fatal("expected feed card")
+			}
+
+			var got *string
+			if err := pool.QueryRow(ctx, `SELECT target_role FROM feed_cards WHERE id = $1`, *result.FeedCardID).Scan(&got); err != nil {
+				t.Fatalf("fetch: %v", err)
+			}
+			if got == nil || *got != role {
+				t.Errorf("target_role = %v, want %s", got, role)
+			}
+		})
+	}
+}
+
+// TestA2AService_ProcessWebhook_CreateFeedCard_RejectsInvalidTargetRole
+// pins the L8 strict-validation choice: a non-empty target_role that
+// isn't in the RBAC vocabulary is a wire-shape violation. Reject with
+// ErrInvalidInput so the tx rolls back, no card lands silently muted
+// to "owner", and Brain's retry succeeds once the upstream payload is
+// corrected. Empty (absent) still defaults to "owner" — that's the
+// distinct legacy path covered by other tests.
+func TestA2AService_ProcessWebhook_CreateFeedCard_RejectsInvalidTargetRole(t *testing.T) {
+	pool := testdb.NewPool(t)
+	ctx := context.Background()
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Acme")
+	svc := NewA2AService(pool, store.NewA2AStore(), store.NewFeedCardsStore(), store.NewPipelineStore(), nil)
+
+	body, _ := json.Marshal(map[string]any{
+		"card_type":   "brain.generic",
+		"title":       "Test",
+		"body":        "hi",
+		"priority":    "normal",
+		"target_role": "PROJECT_MANAGER", // not in BuildOS vocabulary
+	})
+
+	_, err := svc.ProcessWebhook(ctx, WebhookEnvelope{
+		EventType:      EventCreateFeedCard,
+		IdempotencyKey: uuid.New(),
+		Payload:        body,
+		Issuer:         "fb-brain",
+		OrgID:          orgID,
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("err = %v, want ErrInvalidInput", err)
+	}
+	// Tx rollback: no dedup row, no feed card.
+	assertNoDedupOrOrphans(t, ctx, pool, orgID)
+}
+
+// TestA2AService_ProcessWebhook_CreateFeedCard_EmptyTargetRoleDefaultsToOwner
+// is the legacy-default pin. Empty target_role on the wire is the
+// pre-ADR-003 default (Brain didn't emit the field). The receiver
+// continues to fall back to "owner" so existing Brain emitters keep
+// working unchanged.
+func TestA2AService_ProcessWebhook_CreateFeedCard_EmptyTargetRoleDefaultsToOwner(t *testing.T) {
+	pool := testdb.NewPool(t)
+	ctx := context.Background()
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Acme")
+	svc := NewA2AService(pool, store.NewA2AStore(), store.NewFeedCardsStore(), store.NewPipelineStore(), nil)
+
+	// target_role intentionally omitted from the JSON.
+	body, _ := json.Marshal(map[string]any{
+		"card_type": "brain.generic",
+		"title":     "Test",
+		"body":      "hi",
+		"priority":  "normal",
+	})
+
+	result, err := svc.ProcessWebhook(ctx, WebhookEnvelope{
+		EventType:      EventCreateFeedCard,
+		IdempotencyKey: uuid.New(),
+		Payload:        body,
+		Issuer:         "fb-brain",
+		OrgID:          orgID,
+	})
+	if err != nil {
+		t.Fatalf("ProcessWebhook: %v", err)
+	}
+
+	var got *string
+	if err := pool.QueryRow(ctx, `SELECT target_role FROM feed_cards WHERE id = $1`, *result.FeedCardID).Scan(&got); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if got == nil || *got != "owner" {
+		t.Errorf("target_role = %v, want owner (legacy default)", got)
 	}
 }
 
