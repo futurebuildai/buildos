@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -162,11 +163,23 @@ func (s *A2AService) dispatch(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, e
 
 // ---------- handlers ----------
 
+// materialQuoteLineItem mirrors Brain's a2a.MaterialQuoteLineItem
+// (see futurebuild-brain/internal/a2a/types.go). LineItems are
+// optional on the wire today — Brain may emit a top-level total only,
+// or the total plus an itemized breakdown.
+type materialQuoteLineItem struct {
+	Name           string `json:"name"`
+	Quantity       int    `json:"quantity"`
+	UnitPriceCents int64  `json:"unit_price_cents"`
+	CurrencyCode   string `json:"currency_code"`
+}
+
 type reviewMaterialQuotePayload struct {
-	RFQID        uuid.UUID `json:"rfq_id"`
-	TotalCents   int64     `json:"total_cents"`
-	CurrencyCode string    `json:"currency_code"`
-	Vendor       string    `json:"vendor"`
+	RFQID        uuid.UUID               `json:"rfq_id"`
+	TotalCents   int64                   `json:"total_cents"`
+	CurrencyCode string                  `json:"currency_code"`
+	Vendor       string                  `json:"vendor"`
+	LineItems    []materialQuoteLineItem `json:"line_items,omitempty"`
 }
 
 func (s *A2AService) handleReviewMaterialQuote(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, payload []byte) (uuid.UUID, error) {
@@ -177,13 +190,36 @@ func (s *A2AService) handleReviewMaterialQuote(ctx context.Context, tx pgx.Tx, o
 	if p.Vendor == "" || p.CurrencyCode == "" {
 		return uuid.Nil, fmt.Errorf("%w: review_material_quote requires vendor + currency_code", ErrInvalidInput)
 	}
+	// Each line item must share the envelope-level currency_code. Mixed
+	// currencies inside a single quote would violate the composite-
+	// currency invariant (`cents` paired with `currency_code` at one
+	// scope) and downstream aggregation has no way to interpret. Also
+	// guard against negative quantity / unit_price_cents from a buggy
+	// Brain emitter — those would survive JSON decode silently and
+	// corrupt the feed-card preview.
+	for i, li := range p.LineItems {
+		if li.CurrencyCode != p.CurrencyCode {
+			return uuid.Nil, fmt.Errorf("%w: review_material_quote line_items[%d] currency_code=%q mismatches envelope currency_code=%q", ErrInvalidInput, i, li.CurrencyCode, p.CurrencyCode)
+		}
+		if li.Quantity < 0 {
+			return uuid.Nil, fmt.Errorf("%w: review_material_quote line_items[%d] quantity must be >= 0", ErrInvalidInput, i)
+		}
+		if li.UnitPriceCents < 0 {
+			return uuid.Nil, fmt.Errorf("%w: review_material_quote line_items[%d] unit_price_cents must be >= 0", ErrInvalidInput, i)
+		}
+	}
+
+	body := formatMoney(p.TotalCents, p.CurrencyCode)
+	if n := len(p.LineItems); n > 0 {
+		body += fmt.Sprintf(" · %d %s", n, pluralize("item", n))
+	}
 
 	role := "owner"
 	card, err := s.feedStore.CreateFeedCard(ctx, tx, store.CreateFeedCardParams{
 		OrgID:      orgID,
 		CardType:   "procurement.material_quote",
 		Title:      "Review material quote from " + p.Vendor,
-		Body:       formatMoney(p.TotalCents, p.CurrencyCode),
+		Body:       body,
 		Priority:   models.FeedPriorityUrgent,
 		TargetRole: &role,
 	})
@@ -199,7 +235,14 @@ type reviewLaborBidPayload struct {
 	AmountCents  int64     `json:"amount_cents"`
 	CurrencyCode string    `json:"currency_code"`
 	Timeline     string    `json:"timeline"`
+	AIAnalysis   string    `json:"ai_analysis,omitempty"`
 }
+
+// aiAnalysisPreviewMaxRunes caps the analysis preview rendered in the
+// feed-card body. Cards are notification surfaces, not the
+// authoritative view of the analysis — the full text round-trips
+// through a2a_inbound_log.payload for any caller that needs it.
+const aiAnalysisPreviewMaxRunes = 200
 
 func (s *A2AService) handleReviewLaborBid(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, payload []byte) (uuid.UUID, error) {
 	var p reviewLaborBidPayload
@@ -214,6 +257,9 @@ func (s *A2AService) handleReviewLaborBid(ctx context.Context, tx pgx.Tx, orgID 
 	body := formatMoney(p.AmountCents, p.CurrencyCode)
 	if p.Timeline != "" {
 		body += " · timeline: " + p.Timeline
+	}
+	if p.AIAnalysis != "" {
+		body += " · analysis: " + truncateRunes(p.AIAnalysis, aiAnalysisPreviewMaxRunes)
 	}
 	card, err := s.feedStore.CreateFeedCard(ctx, tx, store.CreateFeedCardParams{
 		OrgID:      orgID,
@@ -328,8 +374,19 @@ func (s *A2AService) handleCreateFeedCard(ctx context.Context, tx pgx.Tx, orgID 
 		priority = models.FeedPriorityNormal
 	}
 
+	// target_role is optional on the wire (ADR-003 P1; Brain-side
+	// Stage 12 added it as `json:"target_role,omitempty"`). Empty
+	// falls back to "owner" — that's the legacy default before Brain
+	// could express a role. A NON-empty value that isn't in the
+	// BuildOS RBAC vocabulary is a wire-shape violation: reject with
+	// ErrInvalidInput so the surrounding tx rolls back, Brain's
+	// at-least-once retry can succeed once the upstream payload is
+	// corrected, and the typo doesn't silently get muted to "owner".
 	var rolePtr *string
 	if p.Role != "" {
+		if !isAllowedTargetRole(p.Role) {
+			return uuid.Nil, fmt.Errorf("%w: create_feed_card target_role=%q must be one of owner|admin|superintendent|field_worker", ErrInvalidInput, p.Role)
+		}
 		rolePtr = &p.Role
 	} else {
 		role := "owner"
@@ -498,6 +555,47 @@ func orgIDFromLocalblueLead(payload []byte) (uuid.UUID, bool) {
 // the contractor sees in a notification preview.
 func formatMoney(cents int64, code string) string {
 	return fmt.Sprintf("%.2f %s", float64(cents)/100.0, code)
+}
+
+// truncateRunes returns s if it fits in n runes; otherwise returns the
+// first n runes followed by a single-rune ellipsis. Rune-aware so we
+// never split a multi-byte UTF-8 character.
+func truncateRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	runes := []rune(s)
+	return string(runes[:n]) + "…"
+}
+
+// pluralize returns the singular form for n == 1 and base+"s" otherwise.
+// Tiny helper kept local because the only caller is the material-quote
+// line-item preview.
+func pluralize(base string, n int) string {
+	if n == 1 {
+		return base
+	}
+	return base + "s"
+}
+
+// allowedTargetRoles is the BuildOS RBAC role vocabulary that
+// create_feed_card events may target. Mirrors the constants in
+// internal/api/middleware/rbac.go (RoleOwner/RoleAdmin/...). Kept as a
+// local copy rather than imported because middleware is an inbound-HTTP
+// concern and the service layer must not depend on it.
+var allowedTargetRoles = map[string]struct{}{
+	"owner":          {},
+	"admin":          {},
+	"superintendent": {},
+	"field_worker":   {},
+}
+
+func isAllowedTargetRole(s string) bool {
+	_, ok := allowedTargetRoles[s]
+	return ok
 }
 
 func boolToStatus(b bool) string {
