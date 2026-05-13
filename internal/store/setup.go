@@ -13,12 +13,12 @@ import (
 )
 
 // SetupStore manages the rows the onboarding wizard reads + writes:
-//   * organizations company-profile columns (migration 010 extension)
-//   * setup_bootstrap_tokens
-//   * trade_categories
-//   * cost_codes
-//   * working_calendars + holiday_overrides
-//   * permit_jurisdictions
+//   - organizations company-profile columns (migration 010 extension)
+//   - setup_bootstrap_tokens
+//   - trade_categories
+//   - cost_codes
+//   - working_calendars + holiday_overrides
+//   - permit_jurisdictions
 //
 // All methods take a pgx.Tx so the service layer can compose wizard
 // steps inside one transaction with the audit-log write (matches the

@@ -14,26 +14,26 @@ import (
 // CompanyProfile captures the wizard step 1 fields stored as columns on
 // the organizations table.
 type CompanyProfile struct {
-	LegalName               *string
-	Address                 *string
-	EIN                     *string
-	CompanyType             *string
-	Region                  *string
-	OnboardingComplete      bool
-	OnboardingCompletedAt   *time.Time
+	LegalName             *string
+	Address               *string
+	EIN                   *string
+	CompanyType           *string
+	Region                *string
+	OnboardingComplete    bool
+	OnboardingCompletedAt *time.Time
 }
 
 // SetupBootstrapToken records a one-shot owner-claim token. CleartextToken
 // is never persisted — store.SetupStore hashes it before insert. Stored
 // fields mirror the setup_bootstrap_tokens table.
 type SetupBootstrapToken struct {
-	ID          uuid.UUID
-	OrgID       uuid.UUID
-	TokenHash   string
-	IssuedAt    time.Time
-	ExpiresAt   time.Time
-	RedeemedAt  *time.Time
-	RedeemedBy  *uuid.UUID
+	ID         uuid.UUID
+	OrgID      uuid.UUID
+	TokenHash  string
+	IssuedAt   time.Time
+	ExpiresAt  time.Time
+	RedeemedAt *time.Time
+	RedeemedBy *uuid.UUID
 }
 
 // IsActive returns true when the token has not yet been redeemed AND
@@ -91,15 +91,15 @@ const (
 
 // WorkingCalendar mirrors the working_calendars table row.
 type WorkingCalendar struct {
-	ID                uuid.UUID
-	OrgID             uuid.UUID
-	Name              string
-	Timezone          string
-	WorkingDaysMask   int16
-	DailyWorkMinutes  int
-	IsDefault         bool
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	ID               uuid.UUID
+	OrgID            uuid.UUID
+	Name             string
+	Timezone         string
+	WorkingDaysMask  int16
+	DailyWorkMinutes int
+	IsDefault        bool
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // IsWorkingDay returns true when the given Go time.Weekday is set in
