@@ -1044,3 +1044,340 @@ func TestA2AService_ProcessWebhook_RequiresOrgID(t *testing.T) {
 		t.Fatal("missing org_id with no default should error")
 	}
 }
+
+// TestA2AService_ProcessWebhook_UpdateSchedule covers the happy path:
+// Brain emits a delivery-date + affected WBS codes, BuildOS lands a
+// superintendent-targeted normal-priority feed card with both fields
+// rendered in the body. The CPM-recalc enqueue is intentionally NOT
+// triggered yet (blocked on Brain emitting project_id — see service
+// handler comment).
+func TestA2AService_ProcessWebhook_UpdateSchedule(t *testing.T) {
+	pool := testdb.NewPool(t)
+	ctx := context.Background()
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Acme")
+	svc := NewA2AService(pool, store.NewA2AStore(), store.NewFeedCardsStore(), store.NewPipelineStore(), nil)
+
+	body, _ := json.Marshal(map[string]any{
+		"event_type":    "material_delay",
+		"delivery_date": "2026-06-15",
+		"constraints":   map[string]any{"wbs_codes": []string{"03-30-00", "06-10-00"}},
+	})
+
+	result, err := svc.ProcessWebhook(ctx, WebhookEnvelope{
+		EventType:      EventUpdateSchedule,
+		IdempotencyKey: uuid.New(),
+		Payload:        body,
+		Issuer:         "fb-brain",
+		OrgID:          orgID,
+	})
+	if err != nil {
+		t.Fatalf("ProcessWebhook: %v", err)
+	}
+	if result.FeedCardID == nil {
+		t.Fatal("expected feed card")
+	}
+
+	var cardType, cardBody, priority string
+	var targetRole *string
+	if err := pool.QueryRow(ctx, `
+		SELECT card_type, body, priority, target_role
+		FROM feed_cards WHERE id = $1`, *result.FeedCardID).Scan(&cardType, &cardBody, &priority, &targetRole); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if cardType != "schedule.update_requested" {
+		t.Errorf("card_type = %q", cardType)
+	}
+	if priority != "normal" {
+		t.Errorf("priority = %q, want normal", priority)
+	}
+	if targetRole == nil || *targetRole != "superintendent" {
+		t.Errorf("target_role = %v, want superintendent", targetRole)
+	}
+	if !strings.Contains(cardBody, "2026-06-15") {
+		t.Errorf("body = %q, want delivery_date", cardBody)
+	}
+	if !strings.Contains(cardBody, "03-30-00") || !strings.Contains(cardBody, "06-10-00") {
+		t.Errorf("body = %q, want both WBS codes", cardBody)
+	}
+}
+
+// TestA2AService_ProcessWebhook_UpdateSchedule_IdempotencyReplay pins
+// the dedup contract for update_schedule. Brain's at-least-once
+// delivery means a Maestro retry can resubmit the same envelope; the
+// receiver must produce exactly one feed card.
+func TestA2AService_ProcessWebhook_UpdateSchedule_IdempotencyReplay(t *testing.T) {
+	pool := testdb.NewPool(t)
+	ctx := context.Background()
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Acme")
+	svc := NewA2AService(pool, store.NewA2AStore(), store.NewFeedCardsStore(), store.NewPipelineStore(), nil)
+
+	envelope := WebhookEnvelope{
+		EventType:      EventUpdateSchedule,
+		IdempotencyKey: uuid.New(), // same key both calls
+		Payload:        json.RawMessage(`{"event_type":"material_delay","delivery_date":"2026-06-15","constraints":{"wbs_codes":["03-30-00"]}}`),
+		Issuer:         "fb-brain",
+		OrgID:          orgID,
+	}
+
+	first, err := svc.ProcessWebhook(ctx, envelope)
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	if first.AlreadyProcessed || first.FeedCardID == nil {
+		t.Fatalf("first call shape = %+v", first)
+	}
+	second, err := svc.ProcessWebhook(ctx, envelope)
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if !second.AlreadyProcessed {
+		t.Error("replay should be already_processed")
+	}
+	if second.FeedCardID != nil {
+		t.Error("replay should NOT create a second feed card")
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM feed_cards WHERE org_id=$1`, orgID).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 feed card after replay, got %d", count)
+	}
+}
+
+// TestA2AService_ProcessWebhook_UpdateSchedule_RejectsOversizedWBSList
+// guards the per-payload WBS-code count cap. A buggy Brain emit could
+// otherwise inflate the feed-card body unboundedly and degrade the
+// notification UI.
+func TestA2AService_ProcessWebhook_UpdateSchedule_RejectsOversizedWBSList(t *testing.T) {
+	pool := testdb.NewPool(t)
+	ctx := context.Background()
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Acme")
+	svc := NewA2AService(pool, store.NewA2AStore(), store.NewFeedCardsStore(), store.NewPipelineStore(), nil)
+
+	codes := make([]string, 257) // one over the 256 cap
+	for i := range codes {
+		codes[i] = "wbs"
+	}
+	body, _ := json.Marshal(map[string]any{
+		"event_type":    "x",
+		"delivery_date": "2026-06-15",
+		"constraints":   map[string]any{"wbs_codes": codes},
+	})
+
+	_, err := svc.ProcessWebhook(ctx, WebhookEnvelope{
+		EventType:      EventUpdateSchedule,
+		IdempotencyKey: uuid.New(),
+		Payload:        body,
+		Issuer:         "fb-brain",
+		OrgID:          orgID,
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("err = %v, want ErrInvalidInput", err)
+	}
+	assertNoDedupOrOrphans(t, ctx, pool, orgID)
+}
+
+// TestA2AService_ProcessWebhook_UpdateSchedule_RejectsOversizedWBSCode
+// guards the per-WBS-code length cap. Same rationale as the count cap:
+// keep the feed-card body bounded against a malformed upstream emit.
+func TestA2AService_ProcessWebhook_UpdateSchedule_RejectsOversizedWBSCode(t *testing.T) {
+	pool := testdb.NewPool(t)
+	ctx := context.Background()
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Acme")
+	svc := NewA2AService(pool, store.NewA2AStore(), store.NewFeedCardsStore(), store.NewPipelineStore(), nil)
+
+	huge := strings.Repeat("x", 65) // one over the 64-byte cap
+	body, _ := json.Marshal(map[string]any{
+		"event_type":  "x",
+		"constraints": map[string]any{"wbs_codes": []string{huge}},
+	})
+
+	_, err := svc.ProcessWebhook(ctx, WebhookEnvelope{
+		EventType:      EventUpdateSchedule,
+		IdempotencyKey: uuid.New(),
+		Payload:        body,
+		Issuer:         "fb-brain",
+		OrgID:          orgID,
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("err = %v, want ErrInvalidInput", err)
+	}
+	assertNoDedupOrOrphans(t, ctx, pool, orgID)
+}
+
+// TestA2AService_ProcessWebhook_DeliveryConfirmation covers the happy
+// path: a convergence_status of "converged" with materials_ordered=true
+// and labor_approved=true should land a normal-priority,
+// superintendent-targeted feed card whose body interpolates all three
+// signals.
+func TestA2AService_ProcessWebhook_DeliveryConfirmation(t *testing.T) {
+	pool := testdb.NewPool(t)
+	ctx := context.Background()
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Acme")
+	svc := NewA2AService(pool, store.NewA2AStore(), store.NewFeedCardsStore(), store.NewPipelineStore(), nil)
+
+	body, _ := json.Marshal(map[string]any{
+		"materials_ordered":  true,
+		"labor_approved":     true,
+		"convergence_status": "converged",
+	})
+
+	result, err := svc.ProcessWebhook(ctx, WebhookEnvelope{
+		EventType:      EventDeliveryConfirmation,
+		IdempotencyKey: uuid.New(),
+		Payload:        body,
+		Issuer:         "fb-brain",
+		OrgID:          orgID,
+	})
+	if err != nil {
+		t.Fatalf("ProcessWebhook: %v", err)
+	}
+	if result.FeedCardID == nil {
+		t.Fatal("expected feed card")
+	}
+
+	var cardType, cardBody, priority string
+	var targetRole *string
+	if err := pool.QueryRow(ctx, `
+		SELECT card_type, body, priority, target_role
+		FROM feed_cards WHERE id = $1`, *result.FeedCardID).Scan(&cardType, &cardBody, &priority, &targetRole); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if cardType != "procurement.delivery_confirmation" {
+		t.Errorf("card_type = %q", cardType)
+	}
+	if priority != "normal" {
+		t.Errorf("priority = %q, want normal", priority)
+	}
+	if targetRole == nil || *targetRole != "superintendent" {
+		t.Errorf("target_role = %v, want superintendent", targetRole)
+	}
+	if !strings.Contains(cardBody, "Materials ordered") {
+		t.Errorf("body = %q, want 'Materials ordered'", cardBody)
+	}
+	if !strings.Contains(cardBody, "Labor ordered") {
+		t.Errorf("body = %q, want 'Labor ordered'", cardBody)
+	}
+	if !strings.Contains(cardBody, "Convergence: converged") {
+		t.Errorf("body = %q, want 'Convergence: converged'", cardBody)
+	}
+}
+
+// TestA2AService_ProcessWebhook_DeliveryConfirmation_EmptyStatusDefaults
+// pins the "" → "in_progress" normalization so an upstream emit that
+// omits convergence_status still renders a complete feed-card body.
+func TestA2AService_ProcessWebhook_DeliveryConfirmation_EmptyStatusDefaults(t *testing.T) {
+	pool := testdb.NewPool(t)
+	ctx := context.Background()
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Acme")
+	svc := NewA2AService(pool, store.NewA2AStore(), store.NewFeedCardsStore(), store.NewPipelineStore(), nil)
+
+	body, _ := json.Marshal(map[string]any{
+		"materials_ordered": false,
+		"labor_approved":    false,
+		// convergence_status intentionally omitted
+	})
+
+	result, err := svc.ProcessWebhook(ctx, WebhookEnvelope{
+		EventType:      EventDeliveryConfirmation,
+		IdempotencyKey: uuid.New(),
+		Payload:        body,
+		Issuer:         "fb-brain",
+		OrgID:          orgID,
+	})
+	if err != nil {
+		t.Fatalf("ProcessWebhook: %v", err)
+	}
+
+	var cardBody string
+	if err := pool.QueryRow(ctx, `SELECT body FROM feed_cards WHERE id=$1`, *result.FeedCardID).Scan(&cardBody); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if !strings.Contains(cardBody, "Convergence: in_progress") {
+		t.Errorf("body = %q, want 'Convergence: in_progress'", cardBody)
+	}
+	if !strings.Contains(cardBody, "Materials pending") {
+		t.Errorf("body = %q, want 'Materials pending'", cardBody)
+	}
+	if !strings.Contains(cardBody, "Labor pending") {
+		t.Errorf("body = %q, want 'Labor pending'", cardBody)
+	}
+}
+
+// TestA2AService_ProcessWebhook_DeliveryConfirmation_RejectsOversizedStatus
+// guards the convergence_status length cap. The body cap keeps a
+// pathological upstream emit from inflating the feed-card UI.
+func TestA2AService_ProcessWebhook_DeliveryConfirmation_RejectsOversizedStatus(t *testing.T) {
+	pool := testdb.NewPool(t)
+	ctx := context.Background()
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Acme")
+	svc := NewA2AService(pool, store.NewA2AStore(), store.NewFeedCardsStore(), store.NewPipelineStore(), nil)
+
+	body, _ := json.Marshal(map[string]any{
+		"materials_ordered":  true,
+		"labor_approved":     true,
+		"convergence_status": strings.Repeat("x", 65),
+	})
+
+	_, err := svc.ProcessWebhook(ctx, WebhookEnvelope{
+		EventType:      EventDeliveryConfirmation,
+		IdempotencyKey: uuid.New(),
+		Payload:        body,
+		Issuer:         "fb-brain",
+		OrgID:          orgID,
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("err = %v, want ErrInvalidInput", err)
+	}
+	assertNoDedupOrOrphans(t, ctx, pool, orgID)
+}
+
+// TestA2AService_ProcessWebhook_DeliveryConfirmation_IdempotencyReplay
+// pins the dedup contract for delivery_confirmation, symmetric with
+// the update_schedule replay test.
+func TestA2AService_ProcessWebhook_DeliveryConfirmation_IdempotencyReplay(t *testing.T) {
+	pool := testdb.NewPool(t)
+	ctx := context.Background()
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Acme")
+	svc := NewA2AService(pool, store.NewA2AStore(), store.NewFeedCardsStore(), store.NewPipelineStore(), nil)
+
+	envelope := WebhookEnvelope{
+		EventType:      EventDeliveryConfirmation,
+		IdempotencyKey: uuid.New(),
+		Payload:        json.RawMessage(`{"materials_ordered":true,"labor_approved":true,"convergence_status":"converged"}`),
+		Issuer:         "fb-brain",
+		OrgID:          orgID,
+	}
+
+	if _, err := svc.ProcessWebhook(ctx, envelope); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	second, err := svc.ProcessWebhook(ctx, envelope)
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if !second.AlreadyProcessed {
+		t.Error("replay should be already_processed")
+	}
+	if second.FeedCardID != nil {
+		t.Error("replay should NOT create a second feed card")
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM feed_cards WHERE org_id=$1`, orgID).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 feed card after replay, got %d", count)
+	}
+}

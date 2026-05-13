@@ -283,10 +283,31 @@ type updateSchedulePayload struct {
 	} `json:"constraints"`
 }
 
+// Defensive bounds on update_schedule fields. Brain's emit path does
+// not validate format (DeliveryDate is whatever the AI Maestro task
+// returned), so the receiver must cap unbounded strings/arrays before
+// they land in feed_cards body text or risk inflating notification UI.
+const (
+	updateScheduleDeliveryDateMaxLen = 64
+	updateScheduleWBSCodeMaxLen      = 64
+	updateScheduleWBSCodesMax        = 256
+)
+
 func (s *A2AService) handleUpdateSchedule(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, payload []byte) (uuid.UUID, error) {
 	var p updateSchedulePayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return uuid.Nil, fmt.Errorf("%w: update_schedule payload: %v", ErrInvalidInput, err)
+	}
+	if len(p.DeliveryDate) > updateScheduleDeliveryDateMaxLen {
+		return uuid.Nil, fmt.Errorf("%w: update_schedule delivery_date exceeds %d bytes", ErrInvalidInput, updateScheduleDeliveryDateMaxLen)
+	}
+	if len(p.Constraints.WBSCodes) > updateScheduleWBSCodesMax {
+		return uuid.Nil, fmt.Errorf("%w: update_schedule wbs_codes count %d exceeds limit %d", ErrInvalidInput, len(p.Constraints.WBSCodes), updateScheduleWBSCodesMax)
+	}
+	for i, code := range p.Constraints.WBSCodes {
+		if len(code) > updateScheduleWBSCodeMaxLen {
+			return uuid.Nil, fmt.Errorf("%w: update_schedule wbs_codes[%d] exceeds %d bytes", ErrInvalidInput, i, updateScheduleWBSCodeMaxLen)
+		}
 	}
 
 	role := "superintendent"
@@ -299,7 +320,10 @@ func (s *A2AService) handleUpdateSchedule(ctx context.Context, tx pgx.Tx, orgID 
 	}
 
 	// Future PR: also enqueue a DelayCascade River job here so the CPM
-	// recalculation kicks off automatically. For now the card prompts a
+	// recalculation kicks off automatically. Blocked on Brain wire
+	// shape — `UpdateSchedulePayload` currently does not carry the
+	// project_id this fork would need to scope the recalc to one
+	// project. Tracked at ADR-003 backlog. For now the card prompts a
 	// human to run /schedule/recalculate.
 	card, err := s.feedStore.CreateFeedCard(ctx, tx, store.CreateFeedCardParams{
 		OrgID:      orgID,
@@ -321,10 +345,19 @@ type deliveryConfirmationPayload struct {
 	ConvergenceStatus string `json:"convergence_status"`
 }
 
+// Defensive cap on convergence_status to keep feed-card body text
+// bounded. Brain's emit side does not enforce a vocabulary today, so
+// the receiver clamps length; an empty string is normalized to
+// "in_progress" below.
+const deliveryConfirmationStatusMaxLen = 64
+
 func (s *A2AService) handleDeliveryConfirmation(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, payload []byte) (uuid.UUID, error) {
 	var p deliveryConfirmationPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return uuid.Nil, fmt.Errorf("%w: delivery_confirmation payload: %v", ErrInvalidInput, err)
+	}
+	if len(p.ConvergenceStatus) > deliveryConfirmationStatusMaxLen {
+		return uuid.Nil, fmt.Errorf("%w: delivery_confirmation convergence_status exceeds %d bytes", ErrInvalidInput, deliveryConfirmationStatusMaxLen)
 	}
 
 	role := "superintendent"
