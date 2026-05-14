@@ -59,7 +59,7 @@ type RouterConfig struct {
 	FieldService       FieldServicer
 	A2AService         A2AServicer
 	A2AVerifier        JWSVerifier
-	SetupService       SetupServicer // optional — when nil, /setup/* routes don't mount AND SetupGate is skipped
+	SetupService       SetupServicer     // optional — when nil, /setup/* routes don't mount AND SetupGate is skipped
 	BrainPinger        BrainPinger       // optional — when nil, /ready skips the Brain check
 	JWKSReporter       JWKSCacheReporter // optional — when nil, /ready skips the JWKS check
 	BillingClient      BillingClient     // optional — when nil, /billing/* routes don't mount

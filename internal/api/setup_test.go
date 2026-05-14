@@ -46,17 +46,17 @@ type mockSetupService struct {
 	redeemErr    error
 
 	// Captured args for assertions.
-	lastStateOrgID         uuid.UUID
-	lastCompanyInput       service.UpdateCompanyInfoInput
-	lastTradeInput         service.CreateTradeInput
-	lastCostCodeInput      service.CreateCostCodeInput
-	lastCalendarInput      service.CreateCalendarInput
-	lastHolidayInput       service.AddHolidayInput
-	lastJurisdictionInput  service.AddJurisdictionInput
-	lastCompleteInput      service.CompleteSetupInput
-	lastRedeemCleartext    string
-	lastRedeemSubject      string
-	lastRedeemCallerOrgID  uuid.UUID
+	lastStateOrgID        uuid.UUID
+	lastCompanyInput      service.UpdateCompanyInfoInput
+	lastTradeInput        service.CreateTradeInput
+	lastCostCodeInput     service.CreateCostCodeInput
+	lastCalendarInput     service.CreateCalendarInput
+	lastHolidayInput      service.AddHolidayInput
+	lastJurisdictionInput service.AddJurisdictionInput
+	lastCompleteInput     service.CompleteSetupInput
+	lastRedeemCleartext   string
+	lastRedeemSubject     string
+	lastRedeemCallerOrgID uuid.UUID
 }
 
 func (m *mockSetupService) GetState(_ context.Context, orgID uuid.UUID) (service.SetupState, error) {

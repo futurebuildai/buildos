@@ -84,14 +84,14 @@ func newPermitJurisdictionDTO(j models.PermitJurisdiction) permitJurisdictionDTO
 // service.SetupState but lifts the jurisdiction list through the DTO
 // for proper JSON-bytes emission.
 type setupStateResponse struct {
-	OrgID               uuid.UUID               `json:"org_id"`
-	OnboardingComplete  bool                    `json:"onboarding_complete"`
-	CompanyProfile      models.CompanyProfile   `json:"company_profile"`
-	Trades              []models.TradeCategory  `json:"trades"`
-	CostCodes           []models.CostCode       `json:"cost_codes"`
-	DefaultCalendar     *models.WorkingCalendar `json:"default_calendar,omitempty"`
+	OrgID               uuid.UUID                `json:"org_id"`
+	OnboardingComplete  bool                     `json:"onboarding_complete"`
+	CompanyProfile      models.CompanyProfile    `json:"company_profile"`
+	Trades              []models.TradeCategory   `json:"trades"`
+	CostCodes           []models.CostCode        `json:"cost_codes"`
+	DefaultCalendar     *models.WorkingCalendar  `json:"default_calendar,omitempty"`
 	DefaultHolidays     []models.HolidayOverride `json:"default_holidays,omitempty"`
-	PermitJurisdictions []permitJurisdictionDTO `json:"permit_jurisdictions"`
+	PermitJurisdictions []permitJurisdictionDTO  `json:"permit_jurisdictions"`
 }
 
 func newSetupStateResponse(s service.SetupState) setupStateResponse {

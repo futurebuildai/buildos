@@ -28,8 +28,8 @@ import (
 //
 // Reuses ErrNotFound, ErrInvalidInput from budget.go (same package).
 var (
-	ErrSetupAlreadyComplete       = errors.New("setup: onboarding already complete")
-	ErrInvalidBootstrapToken      = errors.New("setup: invalid bootstrap token")
+	ErrSetupAlreadyComplete        = errors.New("setup: onboarding already complete")
+	ErrInvalidBootstrapToken       = errors.New("setup: invalid bootstrap token")
 	ErrBootstrapUserNotProvisioned = errors.New("setup: bootstrap redeemer not yet provisioned in users table")
 )
 
@@ -795,7 +795,7 @@ func (s *SetupService) RedeemBootstrapToken(ctx context.Context, cleartext strin
 //   - subject not in users          → ErrBootstrapUserNotProvisioned (412)
 //   - token not found / expired     → ErrInvalidBootstrapToken (401)
 //   - token belongs to a different org than the JWT claim
-//                                  → ErrInvalidBootstrapToken (401; NOT consumed)
+//     → ErrInvalidBootstrapToken (401; NOT consumed)
 //   - any redeem-time race          → ErrInvalidBootstrapToken (401)
 //
 // callerOrgID must be the org_id claim on the redeemer's JWT — used
