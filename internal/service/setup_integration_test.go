@@ -1,0 +1,521 @@
+//go:build integration
+
+package service
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
+	"github.com/futurebuildai/buildos/internal/models"
+	"github.com/futurebuildai/buildos/internal/store"
+	"github.com/futurebuildai/buildos/internal/testdb"
+)
+
+func strPtr(s string) *string { return &s }
+
+// fixedClock returns the same time on every call. Used to make
+// IssueBootstrapToken expiry deterministic across test runs.
+func fixedClock(t time.Time) func() time.Time { return func() time.Time { return t } }
+
+// newSetupService constructs a SetupService bound to a fresh pool +
+// no-op audit + injected clock. Helper for every test in this file.
+func newSetupService(t *testing.T, clock func() time.Time) (*SetupService, uuid.UUID) {
+	t.Helper()
+	pool := testdb.NewPool(t)
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Kelbrook Construction")
+	svc := NewSetupService(pool, store.NewSetupStore(), NewNoopAuditRecorder(), clock)
+	return svc, orgID
+}
+
+func TestSetupService_GetState_FreshOrg(t *testing.T) {
+	svc, orgID := newSetupService(t, nil)
+	got, err := svc.GetState(context.Background(), orgID)
+	if err != nil {
+		t.Fatalf("GetState: %v", err)
+	}
+	if got.OnboardingComplete {
+		t.Error("OnboardingComplete should be false for fresh org")
+	}
+	if len(got.Trades) != 0 {
+		t.Errorf("Trades len = %d, want 0", len(got.Trades))
+	}
+	if got.DefaultCalendar != nil {
+		t.Error("DefaultCalendar should be nil for fresh org")
+	}
+}
+
+func TestSetupService_UpdateCompanyInfo_HappyPath(t *testing.T) {
+	svc, orgID := newSetupService(t, nil)
+	cp, err := svc.UpdateCompanyInfo(context.Background(), UpdateCompanyInfoInput{
+		OrgID:     orgID,
+		UserSub:   "user-1",
+		LegalName: strPtr("Kelbrook LLC"),
+		Region:    strPtr("US-CT"),
+	})
+	if err != nil {
+		t.Fatalf("UpdateCompanyInfo: %v", err)
+	}
+	if cp.LegalName == nil || *cp.LegalName != "Kelbrook LLC" {
+		t.Errorf("LegalName = %v", cp.LegalName)
+	}
+}
+
+func TestSetupService_UpdateCompanyInfo_RejectsEmptyPatch(t *testing.T) {
+	svc, orgID := newSetupService(t, nil)
+	_, err := svc.UpdateCompanyInfo(context.Background(), UpdateCompanyInfoInput{OrgID: orgID})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("err = %v, want ErrInvalidInput", err)
+	}
+}
+
+func TestSetupService_UpdateCompanyInfo_RejectsBadRegion(t *testing.T) {
+	svc, orgID := newSetupService(t, nil)
+	_, err := svc.UpdateCompanyInfo(context.Background(), UpdateCompanyInfoInput{
+		OrgID:  orgID,
+		Region: strPtr("not a region!"),
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("err = %v, want ErrInvalidInput", err)
+	}
+}
+
+func TestSetupService_CreateTrade_NormalizesCode(t *testing.T) {
+	svc, orgID := newSetupService(t, nil)
+	got, err := svc.CreateTrade(context.Background(), CreateTradeInput{
+		OrgID: orgID,
+		Code:  "  elec ", // mixed case + whitespace
+		Name:  "Electrical",
+	})
+	if err != nil {
+		t.Fatalf("CreateTrade: %v", err)
+	}
+	if got.Code != "ELEC" {
+		t.Errorf("Code = %q, want ELEC", got.Code)
+	}
+}
+
+func TestSetupService_CreateTrade_RejectsBadCode(t *testing.T) {
+	svc, orgID := newSetupService(t, nil)
+	_, err := svc.CreateTrade(context.Background(), CreateTradeInput{
+		OrgID: orgID,
+		Code:  "elec/plumbing", // slash not allowed
+		Name:  "x",
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("err = %v, want ErrInvalidInput", err)
+	}
+}
+
+func TestSetupService_CreateTrade_DuplicateCode_MapsToInvalidInput(t *testing.T) {
+	// UNIQUE(org_id, code) at the DB layer becomes ErrInvalidInput
+	// at the service layer (via mapSetupStoreError) so the HTTP handler
+	// returns 409/422, not 500.
+	svc, orgID := newSetupService(t, nil)
+	ctx := context.Background()
+	if _, err := svc.CreateTrade(ctx, CreateTradeInput{OrgID: orgID, Code: "ELEC", Name: "Electrical"}); err != nil {
+		t.Fatalf("first trade: %v", err)
+	}
+	_, err := svc.CreateTrade(ctx, CreateTradeInput{OrgID: orgID, Code: "ELEC", Name: "Dup"})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("err = %v, want ErrInvalidInput on duplicate code", err)
+	}
+}
+
+func TestSetupService_CreateCostCode_AcceptsCSIFormat(t *testing.T) {
+	svc, orgID := newSetupService(t, nil)
+	got, err := svc.CreateCostCode(context.Background(), CreateCostCodeInput{
+		OrgID:    orgID,
+		Code:     "03-30-00",
+		Name:     "Cast-in-Place Concrete",
+		Division: "03 Concrete",
+	})
+	if err != nil {
+		t.Fatalf("CreateCostCode: %v", err)
+	}
+	if got.Code != "03-30-00" || got.Division != "03 Concrete" {
+		t.Errorf("got = %+v", got)
+	}
+}
+
+func TestSetupService_CreateCostCode_RejectsBadFormat(t *testing.T) {
+	svc, orgID := newSetupService(t, nil)
+	cases := []string{"3-30-00", "03-3-00", "03_30_00", "concrete", "03-30-00-99"}
+	for _, code := range cases {
+		_, err := svc.CreateCostCode(context.Background(), CreateCostCodeInput{
+			OrgID:    orgID,
+			Code:     code,
+			Name:     "x",
+			Division: "03 Concrete",
+		})
+		if !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("code %q: err = %v, want ErrInvalidInput", code, err)
+		}
+	}
+}
+
+func TestSetupService_CreateCalendar_HappyPath(t *testing.T) {
+	svc, orgID := newSetupService(t, nil)
+	got, err := svc.CreateCalendar(context.Background(), CreateCalendarInput{
+		OrgID:           orgID,
+		Name:            "Default",
+		Timezone:        "America/New_York",
+		WorkingDaysMask: models.WorkingDaysMonFri,
+		IsDefault:       true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCalendar: %v", err)
+	}
+	if !got.IsDefault {
+		t.Error("IsDefault = false")
+	}
+	if got.WorkingDaysMask != models.WorkingDaysMonFri {
+		t.Errorf("WorkingDaysMask = %d, want %d", got.WorkingDaysMask, models.WorkingDaysMonFri)
+	}
+	if got.DailyWorkMinutes != 480 {
+		t.Errorf("DailyWorkMinutes = %d, want 480 (default)", got.DailyWorkMinutes)
+	}
+}
+
+func TestSetupService_CreateCalendar_RejectsBadTimezone(t *testing.T) {
+	svc, orgID := newSetupService(t, nil)
+	_, err := svc.CreateCalendar(context.Background(), CreateCalendarInput{
+		OrgID:    orgID,
+		Name:     "Default",
+		Timezone: "America/Hartford", // not a real TZ
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("err = %v, want ErrInvalidInput", err)
+	}
+}
+
+func TestSetupService_CreateCalendar_TwoDefaults_SecondFails(t *testing.T) {
+	// Partial UNIQUE index idx_working_calendars_org_default_unique
+	// rejects a second default calendar for the same org.
+	svc, orgID := newSetupService(t, nil)
+	ctx := context.Background()
+	if _, err := svc.CreateCalendar(ctx, CreateCalendarInput{
+		OrgID: orgID, Name: "First", IsDefault: true,
+	}); err != nil {
+		t.Fatalf("first calendar: %v", err)
+	}
+	_, err := svc.CreateCalendar(ctx, CreateCalendarInput{
+		OrgID: orgID, Name: "Second", IsDefault: true,
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("err = %v, want ErrInvalidInput on duplicate default", err)
+	}
+}
+
+func TestSetupService_AddHoliday_TruncatesToDate(t *testing.T) {
+	svc, orgID := newSetupService(t, nil)
+	ctx := context.Background()
+	cal, err := svc.CreateCalendar(ctx, CreateCalendarInput{OrgID: orgID, Name: "Default", IsDefault: true})
+	if err != nil {
+		t.Fatalf("create cal: %v", err)
+	}
+	july4 := time.Date(2026, time.July, 4, 14, 30, 0, 0, time.UTC) // mid-day
+	got, err := svc.AddHoliday(ctx, AddHolidayInput{
+		OrgID:       orgID,
+		CalendarID:  cal.ID,
+		HolidayDate: july4,
+		Name:        "Independence Day",
+	})
+	if err != nil {
+		t.Fatalf("AddHoliday: %v", err)
+	}
+	if got.HolidayDate.Hour() != 0 || got.HolidayDate.Minute() != 0 {
+		t.Errorf("HolidayDate = %v, want midnight UTC", got.HolidayDate)
+	}
+	if got.HolidayDate.Year() != 2026 || got.HolidayDate.Month() != time.July || got.HolidayDate.Day() != 4 {
+		t.Errorf("HolidayDate = %v, want 2026-07-04", got.HolidayDate)
+	}
+}
+
+func TestSetupService_AddJurisdiction_RejectsInvalidJSON(t *testing.T) {
+	svc, orgID := newSetupService(t, nil)
+	_, err := svc.AddJurisdiction(context.Background(), AddJurisdictionInput{
+		OrgID:       orgID,
+		Name:        "Hartford CT",
+		PermitTypes: []byte(`{not valid json`),
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("err = %v, want ErrInvalidInput", err)
+	}
+}
+
+func TestSetupService_Complete_RejectsIncompletePrereqs(t *testing.T) {
+	svc, orgID := newSetupService(t, nil)
+	ctx := context.Background()
+	// Step 1 only — no trades, codes, calendar.
+	if _, err := svc.UpdateCompanyInfo(ctx, UpdateCompanyInfoInput{OrgID: orgID, LegalName: strPtr("Kelbrook LLC")}); err != nil {
+		t.Fatalf("update company: %v", err)
+	}
+	_, err := svc.Complete(ctx, CompleteSetupInput{OrgID: orgID})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("err = %v, want ErrInvalidInput on missing prereqs", err)
+	}
+}
+
+func TestSetupService_Complete_HappyPathAndIdempotent(t *testing.T) {
+	now := time.Date(2026, time.May, 13, 12, 0, 0, 0, time.UTC)
+	svc, orgID := newSetupService(t, fixedClock(now))
+	ctx := context.Background()
+
+	mustStep := func(name string, fn func() error) {
+		if err := fn(); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	mustStep("company info", func() error {
+		_, e := svc.UpdateCompanyInfo(ctx, UpdateCompanyInfoInput{OrgID: orgID, LegalName: strPtr("Kelbrook LLC")})
+		return e
+	})
+	mustStep("trade", func() error {
+		_, e := svc.CreateTrade(ctx, CreateTradeInput{OrgID: orgID, Code: "ELEC", Name: "Electrical"})
+		return e
+	})
+	mustStep("cost code", func() error {
+		_, e := svc.CreateCostCode(ctx, CreateCostCodeInput{
+			OrgID: orgID, Code: "03-30-00", Name: "Cast-in-Place", Division: "03 Concrete",
+		})
+		return e
+	})
+	mustStep("calendar", func() error {
+		_, e := svc.CreateCalendar(ctx, CreateCalendarInput{
+			OrgID: orgID, Name: "Default", WorkingDaysMask: models.WorkingDaysMonFri, IsDefault: true,
+		})
+		return e
+	})
+
+	cp, err := svc.Complete(ctx, CompleteSetupInput{OrgID: orgID, UserSub: "owner-1"})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if !cp.OnboardingComplete {
+		t.Error("OnboardingComplete = false after Complete()")
+	}
+	if cp.OnboardingCompletedAt == nil || !cp.OnboardingCompletedAt.Equal(now) {
+		t.Errorf("OnboardingCompletedAt = %v, want %v", cp.OnboardingCompletedAt, now)
+	}
+
+	// Idempotent: re-call preserves the original completion time.
+	cp2, err := svc.Complete(ctx, CompleteSetupInput{OrgID: orgID, UserSub: "owner-1"})
+	if err != nil {
+		t.Fatalf("second Complete: %v", err)
+	}
+	if !cp2.OnboardingCompletedAt.Equal(now) {
+		t.Errorf("second OnboardingCompletedAt = %v, want %v", cp2.OnboardingCompletedAt, now)
+	}
+
+	// Post-completion mutations are rejected.
+	_, err = svc.CreateTrade(ctx, CreateTradeInput{OrgID: orgID, Code: "PLBG", Name: "Plumbing"})
+	if !errors.Is(err, ErrSetupAlreadyComplete) {
+		t.Fatalf("post-complete trade: err = %v, want ErrSetupAlreadyComplete", err)
+	}
+}
+
+func TestSetupService_IssueBootstrapToken_ExpiresAtRespectsClock(t *testing.T) {
+	now := time.Date(2026, time.May, 13, 12, 0, 0, 0, time.UTC)
+	svc, orgID := newSetupService(t, fixedClock(now))
+	issued, err := svc.IssueBootstrapToken(context.Background(), orgID, "operator", 0)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	if issued.Cleartext == "" {
+		t.Fatal("Cleartext is empty")
+	}
+	if !issued.ExpiresAt.Equal(now.Add(DefaultBootstrapTokenTTL)) {
+		t.Errorf("ExpiresAt = %v, want %v", issued.ExpiresAt, now.Add(DefaultBootstrapTokenTTL))
+	}
+}
+
+func TestSetupService_IssueBootstrapToken_RefusesAfterComplete(t *testing.T) {
+	// Driving a wizard to completion + then trying to issue a token
+	// returns ErrSetupAlreadyComplete (defense-in-depth: a stale
+	// operator script shouldn't be able to mint a fresh claim after
+	// the org is configured).
+	svc, orgID := newSetupService(t, nil)
+	ctx := context.Background()
+	if _, err := svc.UpdateCompanyInfo(ctx, UpdateCompanyInfoInput{OrgID: orgID, LegalName: strPtr("Kelbrook LLC")}); err != nil {
+		t.Fatalf("update company: %v", err)
+	}
+	if _, err := svc.CreateTrade(ctx, CreateTradeInput{OrgID: orgID, Code: "ELEC", Name: "Electrical"}); err != nil {
+		t.Fatalf("trade: %v", err)
+	}
+	if _, err := svc.CreateCostCode(ctx, CreateCostCodeInput{OrgID: orgID, Code: "03-30-00", Name: "x", Division: "03"}); err != nil {
+		t.Fatalf("cost: %v", err)
+	}
+	if _, err := svc.CreateCalendar(ctx, CreateCalendarInput{OrgID: orgID, Name: "Default", WorkingDaysMask: models.WorkingDaysMonFri, IsDefault: true}); err != nil {
+		t.Fatalf("calendar: %v", err)
+	}
+	if _, err := svc.Complete(ctx, CompleteSetupInput{OrgID: orgID}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	_, err := svc.IssueBootstrapToken(ctx, orgID, "ops", 0)
+	if !errors.Is(err, ErrSetupAlreadyComplete) {
+		t.Errorf("err = %v, want ErrSetupAlreadyComplete", err)
+	}
+}
+
+func TestSetupService_RedeemBootstrapToken_RoundTrip(t *testing.T) {
+	now := time.Date(2026, time.May, 13, 12, 0, 0, 0, time.UTC)
+	pool := testdb.NewPool(t)
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Kelbrook Construction")
+	userID := uuid.New()
+	testdb.SeedUser(t, pool, userID, orgID)
+	svc := NewSetupService(pool, store.NewSetupStore(), NewNoopAuditRecorder(), fixedClock(now))
+	ctx := context.Background()
+
+	issued, err := svc.IssueBootstrapToken(ctx, orgID, "ops", 0)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	got, err := svc.RedeemBootstrapToken(ctx, issued.Cleartext, userID)
+	if err != nil {
+		t.Fatalf("Redeem: %v", err)
+	}
+	if got.OrgID != orgID {
+		t.Errorf("OrgID = %s, want %s", got.OrgID, orgID)
+	}
+
+	// Second redemption fails.
+	_, err = svc.RedeemBootstrapToken(ctx, issued.Cleartext, userID)
+	if !errors.Is(err, ErrInvalidBootstrapToken) {
+		t.Errorf("second redeem err = %v, want ErrInvalidBootstrapToken", err)
+	}
+}
+
+func TestSetupService_RedeemBootstrapToken_WrongCleartext(t *testing.T) {
+	pool := testdb.NewPool(t)
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Kelbrook Construction")
+	userID := uuid.New()
+	testdb.SeedUser(t, pool, userID, orgID)
+	svc := NewSetupService(pool, store.NewSetupStore(), NewNoopAuditRecorder(), nil)
+	ctx := context.Background()
+
+	if _, err := svc.IssueBootstrapToken(ctx, orgID, "ops", 0); err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	_, err := svc.RedeemBootstrapToken(ctx, "wrong-cleartext", userID)
+	if !errors.Is(err, ErrInvalidBootstrapToken) {
+		t.Errorf("err = %v, want ErrInvalidBootstrapToken", err)
+	}
+}
+
+func TestSetupService_RedeemBootstrapToken_ExpiredToken(t *testing.T) {
+	now := time.Date(2026, time.May, 13, 12, 0, 0, 0, time.UTC)
+	pool := testdb.NewPool(t)
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Kelbrook Construction")
+	userID := uuid.New()
+	testdb.SeedUser(t, pool, userID, orgID)
+
+	clk := now
+	svc := NewSetupService(pool, store.NewSetupStore(), NewNoopAuditRecorder(), func() time.Time { return clk })
+	ctx := context.Background()
+
+	issued, err := svc.IssueBootstrapToken(ctx, orgID, "ops", time.Minute)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	clk = issued.ExpiresAt.Add(time.Second)
+	_, err = svc.RedeemBootstrapToken(ctx, issued.Cleartext, userID)
+	if !errors.Is(err, ErrInvalidBootstrapToken) {
+		t.Errorf("expired-token redeem err = %v, want ErrInvalidBootstrapToken", err)
+	}
+}
+
+func TestSetupService_IsOnboardingComplete(t *testing.T) {
+	svc, orgID := newSetupService(t, nil)
+	ctx := context.Background()
+	done, err := svc.IsOnboardingComplete(ctx, orgID)
+	if err != nil {
+		t.Fatalf("IsOnboardingComplete: %v", err)
+	}
+	if done {
+		t.Error("done = true for fresh org")
+	}
+
+	// Drive the wizard to completion.
+	if _, err := svc.UpdateCompanyInfo(ctx, UpdateCompanyInfoInput{OrgID: orgID, LegalName: strPtr("Kelbrook LLC")}); err != nil {
+		t.Fatalf("update company: %v", err)
+	}
+	if _, err := svc.CreateTrade(ctx, CreateTradeInput{OrgID: orgID, Code: "ELEC", Name: "Electrical"}); err != nil {
+		t.Fatalf("trade: %v", err)
+	}
+	if _, err := svc.CreateCostCode(ctx, CreateCostCodeInput{OrgID: orgID, Code: "03-30-00", Name: "x", Division: "03"}); err != nil {
+		t.Fatalf("cost code: %v", err)
+	}
+	if _, err := svc.CreateCalendar(ctx, CreateCalendarInput{OrgID: orgID, Name: "Default", WorkingDaysMask: models.WorkingDaysMonFri, IsDefault: true}); err != nil {
+		t.Fatalf("calendar: %v", err)
+	}
+	if _, err := svc.Complete(ctx, CompleteSetupInput{OrgID: orgID}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	done, err = svc.IsOnboardingComplete(ctx, orgID)
+	if err != nil {
+		t.Fatalf("IsOnboardingComplete: %v", err)
+	}
+	if !done {
+		t.Error("done = false after Complete()")
+	}
+}
+
+func TestSetupService_AuditTrail(t *testing.T) {
+	// Spot-check that audit rows DO land for wizard steps. A separate
+	// recorder captures entries instead of writing to audit_log.
+	rec := &capturingAuditRecorder{}
+	pool := testdb.NewPool(t)
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Kelbrook Construction")
+	svc := NewSetupService(pool, store.NewSetupStore(), rec, nil)
+
+	ctx := context.Background()
+	if _, err := svc.UpdateCompanyInfo(ctx, UpdateCompanyInfoInput{
+		OrgID: orgID, UserSub: "operator", LegalName: strPtr("Kelbrook LLC"),
+	}); err != nil {
+		t.Fatalf("update company: %v", err)
+	}
+
+	if len(rec.entries) != 1 {
+		t.Fatalf("audit entries = %d, want 1", len(rec.entries))
+	}
+	e := rec.entries[0]
+	if e.Action != AuditActionSetupCompanyInfo {
+		t.Errorf("Action = %q, want %q", e.Action, AuditActionSetupCompanyInfo)
+	}
+	if e.UserSub != "operator" {
+		t.Errorf("UserSub = %q, want operator", e.UserSub)
+	}
+	// After-blob is the patch JSON.
+	var after map[string]any
+	if err := json.Unmarshal(e.After, &after); err != nil {
+		t.Fatalf("unmarshal After: %v", err)
+	}
+	if after["legal_name"] != "Kelbrook LLC" {
+		t.Errorf("After.legal_name = %v, want Kelbrook LLC", after["legal_name"])
+	}
+}
+
+// capturingAuditRecorder is an in-memory AuditRecorder used to verify
+// audit trail content without touching the audit_log table. Not safe
+// for concurrent use — the wizard service runs sequentially per request.
+type capturingAuditRecorder struct {
+	entries []AuditEntry
+}
+
+func (c *capturingAuditRecorder) Record(_ context.Context, _ pgx.Tx, e AuditEntry) {
+	c.entries = append(c.entries, e)
+}
