@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
@@ -167,6 +168,26 @@ func run(logger *slog.Logger) error {
 	a2aService := service.NewA2AService(pool, a2aStore, feedCardsStore, pipelineStore, cfg.DefaultOrgID)
 	a2aVerifier := api.NewJWKSVerifier(jwks) // verifies Brain's JWS using the same JWKS used for JWT validation
 
+	// Onboarding wizard (MB-7). The same *service.SetupService
+	// satisfies both api.SetupServicer (wizard handlers) and
+	// middleware.OnboardingChecker (SetupGate). Wiring it here flips
+	// the gate on automatically.
+	setupStore := store.NewSetupStore()
+	setupService := service.NewSetupService(pool, setupStore, auditService, nil)
+
+	// Materialize a one-shot owner-claim bootstrap row from
+	// BUILDOS_BOOTSTRAP_TOKEN. Idempotent — re-boots with the same
+	// env value are a silent no-op. Empty env is also a no-op.
+	// Operators who skip this can still bring up the fork by issuing
+	// a token out-of-band (see cmd/buildos-fork-init); this is the
+	// happy path for the canonical fork-onboarding runbook.
+	if seeded, err := setupService.SeedBootstrapTokenIfNeeded(ctx, cfg.BootstrapToken, uuid.Nil, 0); err != nil {
+		// A bad env value is loud at boot, not at first request.
+		return fmt.Errorf("seed bootstrap token: %w", err)
+	} else if seeded {
+		logger.Info("bootstrap token seeded for first-run wizard claim")
+	}
+
 	// Build the router with all route groups
 	router := api.NewRouter(api.RouterConfig{
 		Pool:               pool,
@@ -189,6 +210,7 @@ func run(logger *slog.Logger) error {
 		Metrics:            metrics,
 		BillingClient:      brainClient.Billing,
 		AgentsService:      agentsService,
+		SetupService:       setupService,
 		SentryEnabled:      sentryOK,
 		RateLimiter:        middleware.NewIPRateLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst),
 	})

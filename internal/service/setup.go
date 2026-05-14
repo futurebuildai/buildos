@@ -28,8 +28,9 @@ import (
 //
 // Reuses ErrNotFound, ErrInvalidInput from budget.go (same package).
 var (
-	ErrSetupAlreadyComplete  = errors.New("setup: onboarding already complete")
-	ErrInvalidBootstrapToken = errors.New("setup: invalid bootstrap token")
+	ErrSetupAlreadyComplete        = errors.New("setup: onboarding already complete")
+	ErrInvalidBootstrapToken       = errors.New("setup: invalid bootstrap token")
+	ErrBootstrapUserNotProvisioned = errors.New("setup: bootstrap redeemer not yet provisioned in users table")
 )
 
 // Setup audit-log resource type / action constants. Wizard rows are
@@ -782,6 +783,184 @@ func (s *SetupService) RedeemBootstrapToken(ctx context.Context, cleartext strin
 		return RedeemedBootstrapToken{}, mapSetupStoreError(err)
 	}
 	return out, nil
+}
+
+// RedeemBootstrapTokenForSubject is the HTTP-facing wrapper around
+// RedeemBootstrapToken. It resolves the caller's OIDC subject to a
+// users.id via SetupStore.LookupUserIDBySubject, verifies the token
+// belongs to the caller's org (so a cross-org user cannot burn another
+// org's token), then redeems atomically.
+//
+// Failure semantics (matching the HTTP error mapping in W3):
+//   - subject not in users          → ErrBootstrapUserNotProvisioned (412)
+//   - token not found / expired     → ErrInvalidBootstrapToken (401)
+//   - token belongs to a different org than the JWT claim
+//     → ErrInvalidBootstrapToken (401; NOT consumed)
+//   - any redeem-time race          → ErrInvalidBootstrapToken (401)
+//
+// callerOrgID must be the org_id claim on the redeemer's JWT — used
+// for both the user-lookup scope and the cross-org safety check.
+func (s *SetupService) RedeemBootstrapTokenForSubject(ctx context.Context, cleartext, subject string, callerOrgID uuid.UUID) (RedeemedBootstrapToken, error) {
+	if cleartext == "" {
+		return RedeemedBootstrapToken{}, ErrInvalidBootstrapToken
+	}
+	if callerOrgID == uuid.Nil {
+		return RedeemedBootstrapToken{}, fmt.Errorf("%w: caller org_id required", ErrInvalidInput)
+	}
+	if subject == "" {
+		return RedeemedBootstrapToken{}, fmt.Errorf("%w: subject required", ErrInvalidInput)
+	}
+	hash := hashBootstrapToken(cleartext)
+	now := s.now()
+
+	var out RedeemedBootstrapToken
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		userID, err := s.store.LookupUserIDBySubject(ctx, tx, subject, callerOrgID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return ErrBootstrapUserNotProvisioned
+			}
+			return err
+		}
+
+		tok, err := s.store.GetActiveBootstrapTokenByHash(ctx, tx, hash, now)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return ErrInvalidBootstrapToken
+			}
+			return err
+		}
+		// Cross-org safety: if the JWT claimer's org doesn't match
+		// the token's org, refuse — and do NOT consume the token.
+		// An attacker with a valid (different-org) JWT and a guessed
+		// cleartext must not be able to burn a victim's token.
+		if tok.OrgID != callerOrgID {
+			return ErrInvalidBootstrapToken
+		}
+		if err := s.store.RedeemBootstrapToken(ctx, tx, tok.ID, userID, now); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return ErrInvalidBootstrapToken
+			}
+			return err
+		}
+		out = RedeemedBootstrapToken{ID: tok.ID, OrgID: tok.OrgID}
+		s.audit.Record(ctx, tx, AuditEntry{
+			OrgID:        tok.OrgID,
+			UserSub:      subject,
+			Action:       AuditActionSetupBootstrapClaim,
+			ResourceType: AuditResourceOrganization,
+			ResourceID:   tok.ID,
+		})
+		return nil
+	})
+	if err != nil {
+		// Pass-through sentinel errors; only map storage-shaped ones.
+		if errors.Is(err, ErrInvalidBootstrapToken) ||
+			errors.Is(err, ErrBootstrapUserNotProvisioned) ||
+			errors.Is(err, ErrInvalidInput) {
+			return RedeemedBootstrapToken{}, err
+		}
+		return RedeemedBootstrapToken{}, mapSetupStoreError(err)
+	}
+	return out, nil
+}
+
+// SeedBootstrapTokenIfNeeded is the boot-time helper that lets
+// cmd/server materialize a setup_bootstrap_tokens row from an
+// operator-supplied cleartext (BUILDOS_BOOTSTRAP_TOKEN env). Idempotent
+// — relies on the schema's UNIQUE(token_hash) constraint to swallow
+// re-boot inserts of the same cleartext.
+//
+// Returns (false, nil) when no fork-zero org exists yet, when the
+// fork-zero org has already finished onboarding, or when an active
+// token already exists for the cleartext. Returns (true, nil) when a
+// fresh row landed. Returns (false, err) on storage failure or on
+// malformed cleartext (caught at boot so a bad env var fails fast).
+//
+// orgID may be uuid.Nil; when Nil the service picks the first
+// onboarding-incomplete organization. The Nil-fallback exists because
+// cmd/server doesn't always know the fork's org_id at boot — in
+// single-tenant forks there is exactly one organizations row, freshly
+// seeded by migration 010.
+func (s *SetupService) SeedBootstrapTokenIfNeeded(ctx context.Context, cleartext string, orgID uuid.UUID, ttl time.Duration) (bool, error) {
+	if cleartext == "" {
+		return false, nil // not configured — silent no-op
+	}
+	// Format validation: base64url-no-pad of 32 bytes is exactly 43
+	// chars. Catches operator typos at boot rather than at redeem.
+	if l := len(cleartext); l != 43 {
+		return false, fmt.Errorf("%w: cleartext bootstrap token must be 43 base64url chars (got %d)", ErrInvalidInput, l)
+	}
+	if _, err := base64.RawURLEncoding.DecodeString(cleartext); err != nil {
+		return false, fmt.Errorf("%w: cleartext bootstrap token is not base64url: %v", ErrInvalidInput, err)
+	}
+	if ttl <= 0 {
+		ttl = DefaultBootstrapTokenTTL
+	}
+
+	hash := hashBootstrapToken(cleartext)
+	expires := s.now().Add(ttl)
+
+	var seeded bool
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		target := orgID
+		if target == uuid.Nil {
+			// Pick the first onboarding-incomplete org. Strict in
+			// single-tenant forks (exactly one org row). For
+			// multi-tenant variants the caller must pass orgID.
+			err := tx.QueryRow(ctx, `
+				SELECT id FROM organizations
+				WHERE onboarding_complete = false
+				ORDER BY created_at ASC
+				LIMIT 1`).Scan(&target)
+			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					// All orgs onboarded — nothing to seed.
+					return nil
+				}
+				return fmt.Errorf("find fork-zero org: %w", err)
+			}
+		} else {
+			cp, gerr := s.store.GetCompanyProfile(ctx, tx, target)
+			if gerr != nil {
+				return gerr
+			}
+			if cp.OnboardingComplete {
+				return nil
+			}
+		}
+
+		_, qErr := s.store.CreateBootstrapToken(ctx, tx, store.CreateBootstrapTokenParams{
+			OrgID:     target,
+			TokenHash: hash,
+			ExpiresAt: expires,
+		})
+		if qErr != nil {
+			// SQLSTATE 23505: token already exists — idempotent
+			// re-boot. Not an error.
+			var pgErr *pgconn.PgError
+			if errors.As(qErr, &pgErr) && pgErr.Code == "23505" {
+				return nil
+			}
+			return fmt.Errorf("seed bootstrap token: %w", qErr)
+		}
+		seeded = true
+		s.audit.Record(ctx, tx, AuditEntry{
+			OrgID:        target,
+			UserSub:      "system:boot",
+			Action:       AuditActionSetupBootstrapIssue,
+			ResourceType: AuditResourceOrganization,
+			ResourceID:   target,
+		})
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, ErrInvalidInput) {
+			return false, err
+		}
+		return false, mapSetupStoreError(err)
+	}
+	return seeded, nil
 }
 
 // IsOnboardingComplete is a cheap read-only check used by the
