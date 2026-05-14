@@ -14,26 +14,30 @@ import (
 // CompanyProfile captures the wizard step 1 fields stored as columns on
 // the organizations table.
 type CompanyProfile struct {
-	LegalName             *string
-	Address               *string
-	EIN                   *string
-	CompanyType           *string
-	Region                *string
-	OnboardingComplete    bool
-	OnboardingCompletedAt *time.Time
+	LegalName             *string    `json:"legal_name,omitempty"`
+	Address               *string    `json:"address,omitempty"`
+	EIN                   *string    `json:"ein,omitempty"`
+	CompanyType           *string    `json:"company_type,omitempty"`
+	Region                *string    `json:"region,omitempty"`
+	OnboardingComplete    bool       `json:"onboarding_complete"`
+	OnboardingCompletedAt *time.Time `json:"onboarding_completed_at,omitempty"`
 }
 
 // SetupBootstrapToken records a one-shot owner-claim token. CleartextToken
 // is never persisted — store.SetupStore hashes it before insert. Stored
 // fields mirror the setup_bootstrap_tokens table.
+//
+// Wire note: TokenHash is intentionally NOT JSON-tagged for emission; it
+// is internal-only. Wire shapes built from this type should be carved
+// out as DTOs that drop hash + redeemed_by.
 type SetupBootstrapToken struct {
-	ID         uuid.UUID
-	OrgID      uuid.UUID
-	TokenHash  string
-	IssuedAt   time.Time
-	ExpiresAt  time.Time
-	RedeemedAt *time.Time
-	RedeemedBy *uuid.UUID
+	ID         uuid.UUID  `json:"id"`
+	OrgID      uuid.UUID  `json:"org_id"`
+	TokenHash  string     `json:"-"`
+	IssuedAt   time.Time  `json:"issued_at"`
+	ExpiresAt  time.Time  `json:"expires_at"`
+	RedeemedAt *time.Time `json:"redeemed_at,omitempty"`
+	RedeemedBy *uuid.UUID `json:"redeemed_by,omitempty"`
 }
 
 // IsActive returns true when the token has not yet been redeemed AND
@@ -45,14 +49,14 @@ func (t SetupBootstrapToken) IsActive(now time.Time) bool {
 
 // TradeCategory mirrors the trade_categories table row.
 type TradeCategory struct {
-	ID          uuid.UUID
-	OrgID       uuid.UUID
-	Code        string
-	Name        string
-	Description *string
-	IsDefault   bool
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID          uuid.UUID `json:"id"`
+	OrgID       uuid.UUID `json:"org_id"`
+	Code        string    `json:"code"`
+	Name        string    `json:"name"`
+	Description *string   `json:"description,omitempty"`
+	IsDefault   bool      `json:"is_default"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // CostCode mirrors the cost_codes table row. Codes follow CSI
@@ -60,15 +64,15 @@ type TradeCategory struct {
 // is the first 2-digit segment (e.g. "03 Concrete") denormalized for
 // fast filters.
 type CostCode struct {
-	ID         uuid.UUID
-	OrgID      uuid.UUID
-	Code       string
-	Name       string
-	Division   string
-	ParentCode *string
-	IsDefault  bool
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	ID         uuid.UUID `json:"id"`
+	OrgID      uuid.UUID `json:"org_id"`
+	Code       string    `json:"code"`
+	Name       string    `json:"name"`
+	Division   string    `json:"division"`
+	ParentCode *string   `json:"parent_code,omitempty"`
+	IsDefault  bool      `json:"is_default"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // WorkingDayBit is a single-day flag in WorkingCalendar.WorkingDaysMask.
@@ -91,15 +95,15 @@ const (
 
 // WorkingCalendar mirrors the working_calendars table row.
 type WorkingCalendar struct {
-	ID               uuid.UUID
-	OrgID            uuid.UUID
-	Name             string
-	Timezone         string
-	WorkingDaysMask  int16
-	DailyWorkMinutes int
-	IsDefault        bool
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID               uuid.UUID `json:"id"`
+	OrgID            uuid.UUID `json:"org_id"`
+	Name             string    `json:"name"`
+	Timezone         string    `json:"timezone"`
+	WorkingDaysMask  int16     `json:"working_days_mask"`
+	DailyWorkMinutes int       `json:"daily_work_minutes"`
+	IsDefault        bool      `json:"is_default"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 // IsWorkingDay returns true when the given Go time.Weekday is set in
@@ -130,26 +134,32 @@ func (c WorkingCalendar) IsWorkingDay(d time.Weekday) bool {
 
 // HolidayOverride mirrors the holiday_overrides table row.
 type HolidayOverride struct {
-	ID          uuid.UUID
-	CalendarID  uuid.UUID
-	OrgID       uuid.UUID
-	HolidayDate time.Time
-	Name        string
-	CreatedAt   time.Time
+	ID          uuid.UUID `json:"id"`
+	CalendarID  uuid.UUID `json:"calendar_id"`
+	OrgID       uuid.UUID `json:"org_id"`
+	HolidayDate time.Time `json:"holiday_date"`
+	Name        string    `json:"name"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // PermitJurisdiction mirrors the permit_jurisdictions table row.
 // PermitTypes and InspectionChecklist are stored as JSONB; the store
 // passes them through as raw bytes so callers can choose to leave them
 // as opaque blobs or marshal into typed shapes per-feature.
+//
+// json:"-" on the JSONB byte slices is deliberate: a default []byte
+// marshal would emit base64 over the wire, which is wrong for stored
+// JSON. The api-layer DTO re-emits these as json.RawMessage so the
+// raw JSON lands on the wire verbatim. Keeping the model as []byte
+// avoids pgx Scan-type mismatches that json.RawMessage would create.
 type PermitJurisdiction struct {
-	ID                  uuid.UUID
-	OrgID               uuid.UUID
-	Name                string
-	Region              *string
-	PermitTypes         []byte // raw JSONB
-	InspectionChecklist []byte // raw JSONB
-	Notes               *string
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	ID                  uuid.UUID `json:"id"`
+	OrgID               uuid.UUID `json:"org_id"`
+	Name                string    `json:"name"`
+	Region              *string   `json:"region,omitempty"`
+	PermitTypes         []byte    `json:"-"` // raw JSONB; emitted via api DTO
+	InspectionChecklist []byte    `json:"-"` // raw JSONB; emitted via api DTO
+	Notes               *string   `json:"notes,omitempty"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
 }

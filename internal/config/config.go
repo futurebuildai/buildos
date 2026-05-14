@@ -35,6 +35,13 @@ type Config struct {
 	// and require Brain to populate org_id on every event.
 	DefaultOrgID *uuid.UUID
 
+	// BootstrapToken is the one-shot owner-claim cleartext that
+	// cmd/server materializes into setup_bootstrap_tokens at boot.
+	// Empty == no seeding (fork operator may issue a token via
+	// cmd/buildos-fork-init instead). Format: 43 chars base64url
+	// (32 random bytes, no padding). See docs/fork-onboarding.md.
+	BootstrapToken string
+
 	// Outbound A2A — JWS-signed POST to Brain's webhook receiver.
 	// Empty A2ASigningKeyPath disables outbound dispatch; the worker
 	// falls back to a no-op (queued events drain but discard with a
@@ -143,6 +150,8 @@ func LoadWithSource(ctx context.Context, src SecretSource) (*Config, error) {
 
 		DevAuthMode:  getEnvStr("DEV_AUTH_MODE", ""),
 		DefaultOrgID: parseOptionalUUID(os.Getenv("DEFAULT_ORG_ID")),
+
+		BootstrapToken: secret("BUILDOS_BOOTSTRAP_TOKEN"),
 
 		BrainOutboundURL:  secret("BRAIN_OUTBOUND_URL"),
 		A2ASigningKeyPath: secret("A2A_SIGNING_KEY_PATH"),
