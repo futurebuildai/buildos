@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"os"
@@ -26,12 +27,12 @@ func TestForkInit_KeypairRoundTripsThroughSigner(t *testing.T) {
 
 	// Deterministic seed for test speed; production always uses
 	// crypto/rand. The seed value is irrelevant — any non-zero works.
-	if err := run(dir, kid, orgID, 2048, 12345); err != nil {
+	if err := run(dir, kid, orgID, 2048, 12345, true); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
-	// Confirm all four artifacts landed.
-	for _, name := range []string{"private.pem", "public.pem", "jwks.json", "fork.yaml"} {
+	// Confirm all five artifacts landed.
+	for _, name := range []string{"private.pem", "public.pem", "jwks.json", "bootstrap_token.txt", "fork.yaml"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Errorf("missing artifact %s: %v", name, err)
 		}
@@ -99,7 +100,7 @@ func TestForkInit_KeypairRoundTripsThroughSigner(t *testing.T) {
 
 func TestForkInit_PrivatePEMHasRestrictiveMode(t *testing.T) {
 	dir := t.TempDir()
-	if err := run(dir, "kid-1", "", 2048, 99); err != nil {
+	if err := run(dir, "kid-1", "", 2048, 99, true); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	st, err := os.Stat(filepath.Join(dir, "private.pem"))
@@ -113,6 +114,67 @@ func TestForkInit_PrivatePEMHasRestrictiveMode(t *testing.T) {
 	}
 }
 
+// TestForkInit_BootstrapTokenIsCSPRNGAndOwnerOnly pins the two
+// security-relevant properties of bootstrap_token.txt: file mode
+// MUST be 0600 (otherwise a shared-host operator leaks the token to
+// any process running as the same user via /tmp), and the cleartext
+// MUST decode to exactly 32 bytes (256 bits of CSPRNG entropy is
+// what makes a fast deterministic SHA-256 hash on the DB side safe
+// against offline brute-force; cutting that short breaks the
+// security model in internal/service/setup.go).
+func TestForkInit_BootstrapTokenIsCSPRNGAndOwnerOnly(t *testing.T) {
+	dir := t.TempDir()
+	if err := run(dir, "kid-btok", "", 2048, 42, true); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	st, err := os.Stat(filepath.Join(dir, "bootstrap_token.txt"))
+	if err != nil {
+		t.Fatalf("stat bootstrap_token.txt: %v", err)
+	}
+	if mode := st.Mode().Perm(); mode != 0o600 {
+		t.Errorf("bootstrap_token.txt perm = %o, want 600", mode)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "bootstrap_token.txt"))
+	if err != nil {
+		t.Fatalf("read bootstrap_token.txt: %v", err)
+	}
+	cleartext := strings.TrimRight(string(body), "\n")
+	decoded, err := base64.RawURLEncoding.DecodeString(cleartext)
+	if err != nil {
+		t.Fatalf("bootstrap_token.txt is not base64url-no-pad: %v\nbody=%q", err, cleartext)
+	}
+	if len(decoded) != bootstrapTokenByteLen {
+		t.Errorf("bootstrap_token decoded len = %d, want %d (256 bits CSPRNG)", len(decoded), bootstrapTokenByteLen)
+	}
+}
+
+// TestForkInit_SkipBootstrapTokenSuppressesArtifact pins that the
+// --skip-bootstrap-token CLI flag (rotation-only mode) does not
+// leave a stale bootstrap_token.txt next to the rotated keypair —
+// otherwise operators rotating signing keys would inadvertently
+// regenerate a claim token that re-arms the wizard's bootstrap path
+// after onboarding has already completed.
+func TestForkInit_SkipBootstrapTokenSuppressesArtifact(t *testing.T) {
+	dir := t.TempDir()
+	if err := run(dir, "kid-rotate", "", 2048, 7, false); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "bootstrap_token.txt")); !os.IsNotExist(err) {
+		t.Errorf("bootstrap_token.txt should NOT exist with emit=false (err=%v)", err)
+	}
+	// fork.yaml should reflect the operator's choice.
+	body, err := os.ReadFile(filepath.Join(dir, "fork.yaml"))
+	if err != nil {
+		t.Fatalf("read fork.yaml: %v", err)
+	}
+	if !strings.Contains(string(body), "bootstrap_token_emitted: false") {
+		t.Errorf("fork.yaml should record bootstrap_token_emitted: false; got:\n%s", body)
+	}
+	if strings.Contains(string(body), "BUILDOS_BOOTSTRAP_TOKEN") {
+		t.Errorf("fork.yaml should NOT mention BUILDOS_BOOTSTRAP_TOKEN when skipped; got:\n%s", body)
+	}
+}
+
 func TestForkInit_ForkYAMLNamesEnvVars(t *testing.T) {
 	// fork.yaml is the operator-readable artifact. It must list the
 	// exact env-var names BuildOS reads so the operator wiring up
@@ -120,7 +182,7 @@ func TestForkInit_ForkYAMLNamesEnvVars(t *testing.T) {
 	dir := t.TempDir()
 	const kid = "yaml-test-kid"
 	const orgID = "22222222-2222-2222-2222-222222222222"
-	if err := run(dir, kid, orgID, 2048, 7); err != nil {
+	if err := run(dir, kid, orgID, 2048, 7, true); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, err := os.ReadFile(filepath.Join(dir, "fork.yaml"))
@@ -129,12 +191,14 @@ func TestForkInit_ForkYAMLNamesEnvVars(t *testing.T) {
 	}
 	str := string(body)
 	for _, want := range []string{
-		`kid:           "yaml-test-kid"`,
-		`default_org_id: "` + orgID + `"`,
+		`kid:               "yaml-test-kid"`,
+		`default_org_id:    "` + orgID + `"`,
 		"A2A_KEY_ID:           yaml-test-kid",
 		"A2A_SIGNING_KEY_PATH:",
 		"DEFAULT_ORG_ID:       " + orgID,
-		"key_size_bits: 2048",
+		"BUILDOS_BOOTSTRAP_TOKEN",
+		"key_size_bits:     2048",
+		"bootstrap_token_emitted: true",
 	} {
 		if !strings.Contains(str, want) {
 			t.Errorf("fork.yaml missing %q\n--full--\n%s", want, str)
@@ -144,7 +208,7 @@ func TestForkInit_ForkYAMLNamesEnvVars(t *testing.T) {
 
 func TestForkInit_OmittedOrgIDPlaceholder(t *testing.T) {
 	dir := t.TempDir()
-	if err := run(dir, "kid-no-org", "", 2048, 11); err != nil {
+	if err := run(dir, "kid-no-org", "", 2048, 11, true); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, err := os.ReadFile(filepath.Join(dir, "fork.yaml"))

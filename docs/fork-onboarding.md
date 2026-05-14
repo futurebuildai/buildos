@@ -76,24 +76,31 @@ make fork-init OUT=./fork-config/identity \
                ORG_ID=11111111-1111-1111-1111-111111111111
 ```
 
-Outputs four files:
+Outputs five files:
 
 | File | Status | Purpose |
 |---|---|---|
 | `private.pem` | **NEVER commit** | RSA private key. Move into your secret store. |
 | `public.pem` | safe to commit | RSA public key in PEM. For docs / non-JWKS verifiers. |
 | `jwks.json` | paste into Brain | The form Brain expects when registering the fork. |
+| `bootstrap_token.txt` | **NEVER commit** | One-shot cleartext for the onboarding wizard's first-admin claim. 32 bytes of CSPRNG, base64url-encoded. Move into your secret store as `BUILDOS_BOOTSTRAP_TOKEN`. |
 | `fork.yaml` | commit | Operator-readable summary: kid, org_id, fingerprint, env-var names. |
 
-Confirm `private.pem` is in your `.gitignore`:
+Confirm both secrets are in your `.gitignore`:
 
 ```
 fork-config/identity/private.pem
+fork-config/identity/bootstrap_token.txt
 ```
 
-To rotate later: regenerate with a new `--kid`, register the new public
-key with Brain alongside the old one, deploy with the new
-`A2A_KEY_ID`. Old key remains valid until removed from Brain's JWKS.
+To rotate the signing key only (keep onboarding state): regenerate with
+a new `--kid` and `--skip-bootstrap-token`, register the new public key
+with Brain alongside the old, deploy with the new `A2A_KEY_ID`. Old key
+remains valid until removed from Brain's JWKS.
+
+To rotate everything (fresh tenant): regenerate without
+`--skip-bootstrap-token`; cmd/server reseeds `setup_bootstrap_tokens`
+on next boot if the org has not yet completed onboarding.
 
 ---
 
@@ -184,6 +191,7 @@ Required environment variables (pulled from the SecretSource):
 | `A2A_SIGNING_KEY_PATH` | yes | path to private.pem inside the secret-mount |
 | `A2A_KEY_ID` | yes | the kid from fork.yaml |
 | `DEFAULT_ORG_ID` | yes | the org_id from fork.yaml |
+| `BUILDOS_BOOTSTRAP_TOKEN` | first boot only | cleartext from bootstrap_token.txt; cmd/server seeds the hash on first boot then ignores. Unset (or rotate) after the first admin claims their owner seat via POST /api/v1/setup/bootstrap. |
 | `SENTRY_DSN` | recommended | per-fork Sentry project |
 | `CONFIG_SOURCE` | recommended | secret-source spec; defaults to env |
 
@@ -210,13 +218,59 @@ curl https://buildos.acme.example/health
 curl https://buildos.acme.example/ready
 # → {"status":"ok","components":{"database":"ok","brain":"ok","jwks":"ok"}}
 
-# 3. End-to-end A2A: ask Brain to send a test webhook to the fork.
+# 3. Onboarding gate is active — operational routes 403 until the
+#    wizard is complete:
+curl https://buildos.acme.example/api/v1/projects \
+  -H "Authorization: Bearer $JWT"
+# → 403 {"error":{"code":"SETUP_INCOMPLETE","message":"..."}}
+
+# 4. Setup state is reachable (gate-exempt):
+curl https://buildos.acme.example/api/v1/setup/state \
+  -H "Authorization: Bearer $JWT"
+# → 200 {"onboarding_complete":false,"completed_steps":[],"pending_steps":[...]}
+
+# 5. End-to-end A2A: ask Brain to send a test webhook to the fork.
 #    The fork's audit_log table should record a row for the event.
 
-# 4. Smoke a JWT round-trip:
+# 6. Smoke a JWT round-trip:
 #    Open the Brain login flow → BuildOS frontend → confirm the
 #    user lands on a real protected endpoint with their org_id +
 #    role pulled from the JWT.
+```
+
+---
+
+## Step 7 — Run the onboarding wizard
+
+Fresh forks land with `organizations.onboarding_complete = false`. Any
+`/api/v1/*` route except the wizard, health probes, `/metrics`, and
+the A2A webhook returns `403 SETUP_INCOMPLETE` until the wizard
+completes.
+
+The wizard claims the first owner via the bootstrap token:
+
+```bash
+# 1. The first admin presents the cleartext token (from
+#    bootstrap_token.txt, deployed as BUILDOS_BOOTSTRAP_TOKEN):
+curl -X POST https://buildos.acme.example/api/v1/setup/bootstrap \
+  -H "Content-Type: application/json" \
+  -d '{"token":"<cleartext from bootstrap_token.txt>", ...}'
+# → 200 — owner seat granted; subsequent steps use the resulting JWT.
+
+# 2. Walk the wizard (Lit web portal — Sprint 8 frontend):
+#    Step 1: Company info  → POST /api/v1/setup/company-info
+#    Step 2: Users & roles → POST /api/v1/setup/users
+#    Step 3: Trades        → POST /api/v1/setup/trades
+#    Step 4: Cost codes    → POST /api/v1/setup/cost-codes
+#    Step 5: Calendar      → POST /api/v1/setup/calendar
+#    Step 6: Jurisdictions → POST /api/v1/setup/jurisdictions
+#    Step 7: Integrations  → POST /api/v1/setup/integrations
+#    Step 8: Complete      → POST /api/v1/setup/complete
+# → onboarding_complete flips to true; operational routes unlock.
+
+# 3. After completion, unset BUILDOS_BOOTSTRAP_TOKEN in deploy
+#    secrets — it is now stamped used and re-presentation 401s.
+#    Rotating the token requires re-running buildos-fork-init.
 ```
 
 ---
