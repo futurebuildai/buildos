@@ -95,7 +95,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 #
 # Also handles env-to-file secret materialization for platforms that
 # lack a native file-secret mount (Railway, Fly, Render):
-#   A2A_PRIVATE_KEY_PEM (multi-line env)
+#   A2A_SIGNING_KEY (multi-line PEM env)
 #     -> writes to /tmp/a2a-private.pem with 0600
 #     -> sets A2A_SIGNING_KEY_PATH if unset
 # A pre-existing file at A2A_SIGNING_KEY_PATH is never clobbered, so
@@ -117,12 +117,14 @@ var (
 	buildDate = "unknown"
 )
 
-// materializeA2APrivateKey writes the contents of A2A_PRIVATE_KEY_PEM
-// to a file on tmpfs and exports A2A_SIGNING_KEY_PATH pointing at it.
-// No-op when the env var is empty or the target path already exists
-// (so K8s secret mounts, Vault Agent files, etc. take precedence).
+// materializeA2APrivateKey writes the contents of A2A_SIGNING_KEY
+// (multi-line PEM env) to a file on tmpfs and exports A2A_SIGNING_KEY_PATH
+// pointing at it. No-op when the env var is empty or the target path
+// already exists (so K8s secret mounts, Vault Agent files, etc. take
+// precedence). Intended for PaaS targets (Railway, Fly, Render) that
+// don't expose a file-secret primitive.
 func materializeA2APrivateKey() error {
-	pem := os.Getenv("A2A_PRIVATE_KEY_PEM")
+	pem := os.Getenv("A2A_SIGNING_KEY")
 	if pem == "" {
 		return nil
 	}
@@ -140,7 +142,7 @@ func materializeA2APrivateKey() error {
 	if err := os.Setenv("A2A_SIGNING_KEY_PATH", path); err != nil {
 		return fmt.Errorf("set A2A_SIGNING_KEY_PATH: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "buildos-entrypoint: materialized A2A_PRIVATE_KEY_PEM to %s (0600)\n", path)
+	fmt.Fprintf(os.Stderr, "buildos-entrypoint: materialized A2A_SIGNING_KEY env to %s (0600)\n", path)
 	return nil
 }
 
