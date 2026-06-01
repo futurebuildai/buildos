@@ -167,41 +167,38 @@ type requestVendorReviewRequest struct {
 	Reasoning    string     `json:"reasoning,omitempty"`
 }
 
-// RequestVendorReview enqueues an outbound A2A `review_material_quote`
-// event so Brain can dispatch the quote to the org's review queue.
-// The service opens one tx and runs the ownership check + River
-// InsertTx + audit row atomically; the JWS-signed HTTPS POST happens
-// later in the worker via the already-shipped A2AOutboundService.
+// RequestVendorReview surfaces a vendor's material quote for human
+// review by creating a local `vendor_review_requested` feed card. The
+// service opens one tx and runs the ownership check + feed-card insert
+// + audit row atomically.
 //
 // POST /api/v1/projects/{projectID}/procurement/{itemID}/request-review
 //
-// Role gate: superintendent or higher (operator-driven outbound action).
+// Role gate: superintendent or higher (operator-driven action).
 // Applied at the route in router.go.
 //
 // Body: {vendor, total_cents, currency_code, rfq_id?, reasoning?}.
 //   - vendor: required, non-empty.
 //   - total_cents: required, non-negative.
 //   - currency_code: required, USD or CAD (Composite Currency Pattern).
-//   - rfq_id: optional; uuid.Nil when omitted (Maestro-driven flow with no formal RFQ).
-//   - reasoning: optional Maestro narrative.
+//   - rfq_id: optional; uuid.Nil when omitted (AI-driven flow with no formal RFQ).
+//   - reasoning: optional AI narrative.
 //
 // Errors:
 //
 //   - 400 VALIDATION_ERROR: invalid project_id / item_id / JSON body /
-//     wire-shape rejection from the emitter (vendor empty, negative
-//     total_cents, unsupported currency_code) → ErrInvalidInput.
+//     vendor empty, negative total_cents, unsupported currency_code →
+//     ErrInvalidInput.
 //   - 404 NOT_FOUND: item missing or belongs to another org →
 //     ErrProcurementItemNotFound. (Cross-org item access surfaces as
 //     404 by design — an attacker probing for existence can't
 //     distinguish "no such item" from "item in different org".)
 //   - 503 SERVICE_UNAVAILABLE: ProcurementService constructed without
-//     the A2A emitter (worker binary path) → ErrA2AEmitterUnavailable.
+//     the feed-card store (worker binary path) →
+//     ErrVendorReviewUnavailable.
 //
-// On success: 202 Accepted with {idempotency_key}. 202 (not 200)
-// because the actual HTTPS delivery to Brain is async — we've only
-// committed the enqueue, the worker drives the POST. The
-// idempotency_key lets the caller correlate enqueue → delivery via
-// the river_jobs table or future delivery-status surface.
+// On success: 201 Created with {feed_card_id} — the id of the feed
+// card the operator will see and action.
 func (h *ProcurementHandler) RequestVendorReview(w http.ResponseWriter, r *http.Request) {
 	if _, ok := parseUUIDFromURL(w, r, "projectID"); !ok {
 		return
@@ -227,7 +224,7 @@ func (h *ProcurementHandler) RequestVendorReview(w http.ResponseWriter, r *http.
 	}
 
 	claims := mw.MustClaimsFromContext(r.Context())
-	idempotencyKey, err := h.svc.RequestVendorReview(r.Context(), callerOrg, claims.Sub, service.RequestVendorReviewInput{
+	feedCardID, err := h.svc.RequestVendorReview(r.Context(), callerOrg, claims.Sub, service.RequestVendorReviewInput{
 		ProcurementItemID: itemID,
 		RFQID:             rfqID,
 		Vendor:            body.Vendor,
@@ -239,17 +236,17 @@ func (h *ProcurementHandler) RequestVendorReview(w http.ResponseWriter, r *http.
 		h.writeServiceError(w, r, err)
 		return
 	}
-	writeJSON(w, r, http.StatusAccepted, map[string]any{"idempotency_key": idempotencyKey})
+	writeJSON(w, r, http.StatusCreated, map[string]any{"feed_card_id": feedCardID})
 }
 
 // writeServiceError maps ProcurementService sentinels to HTTP responses.
 func (h *ProcurementHandler) writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
 	// ProcurementService nil-dep sentinel — RequestVendorReview
-	// returns this when the service was constructed without an
-	// a2a.Emitter (worker binary path). Map to 503 so callers know
+	// returns this when the service was constructed without a
+	// feed-card store (worker binary path). Map to 503 so callers know
 	// to retry against a server binary rather than treating it as
 	// a permanent input error.
-	if errors.Is(err, service.ErrA2AEmitterUnavailable) {
+	if errors.Is(err, service.ErrVendorReviewUnavailable) {
 		writeErrorResponse(w, r, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "vendor review flow not available on this binary")
 		return
 	}

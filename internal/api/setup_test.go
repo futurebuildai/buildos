@@ -42,9 +42,6 @@ type mockSetupService struct {
 	completeResult models.CompanyProfile
 	completeErr    error
 
-	redeemResult service.RedeemedBootstrapToken
-	redeemErr    error
-
 	// Captured args for assertions.
 	lastStateOrgID        uuid.UUID
 	lastCompanyInput      service.UpdateCompanyInfoInput
@@ -54,9 +51,6 @@ type mockSetupService struct {
 	lastHolidayInput      service.AddHolidayInput
 	lastJurisdictionInput service.AddJurisdictionInput
 	lastCompleteInput     service.CompleteSetupInput
-	lastRedeemCleartext   string
-	lastRedeemSubject     string
-	lastRedeemCallerOrgID uuid.UUID
 }
 
 func (m *mockSetupService) GetState(_ context.Context, orgID uuid.UUID) (service.SetupState, error) {
@@ -90,12 +84,6 @@ func (m *mockSetupService) AddJurisdiction(_ context.Context, in service.AddJuri
 func (m *mockSetupService) Complete(_ context.Context, in service.CompleteSetupInput) (models.CompanyProfile, error) {
 	m.lastCompleteInput = in
 	return m.completeResult, m.completeErr
-}
-func (m *mockSetupService) RedeemBootstrapTokenForSubject(_ context.Context, cleartext, subject string, callerOrgID uuid.UUID) (service.RedeemedBootstrapToken, error) {
-	m.lastRedeemCleartext = cleartext
-	m.lastRedeemSubject = subject
-	m.lastRedeemCallerOrgID = callerOrgID
-	return m.redeemResult, m.redeemErr
 }
 func (m *mockSetupService) IsOnboardingComplete(_ context.Context, _ uuid.UUID) (bool, error) {
 	return true, nil
@@ -412,93 +400,6 @@ func TestSetup_Complete_MissingPrereqs_400(t *testing.T) {
 	h.Complete(w, r)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status=%d, want 400", w.Code)
-	}
-}
-
-// ---------- POST /setup/bootstrap ----------
-
-func TestSetup_Bootstrap_HappyPath(t *testing.T) {
-	tokenID := uuid.MustParse("44444444-4444-4444-4444-444444444444")
-	orgUUID := uuid.MustParse(testOrgID)
-	svc := &mockSetupService{
-		redeemResult: service.RedeemedBootstrapToken{ID: tokenID, OrgID: orgUUID},
-	}
-	h := NewSetupHandler(svc)
-	body := strings.NewReader(`{"token":"abcdef0123456789abcdef0123456789abcdef01234"}`)
-	r := buildRequest(t, "POST", "/api/v1/setup/bootstrap", testOrgID, nil, body)
-	w := httptest.NewRecorder()
-	h.Bootstrap(w, r)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status=%d, body=%s", w.Code, w.Body.String())
-	}
-	if svc.lastRedeemCleartext != "abcdef0123456789abcdef0123456789abcdef01234" {
-		t.Errorf("cleartext not forwarded: %q", svc.lastRedeemCleartext)
-	}
-	if svc.lastRedeemSubject != "test-sub" {
-		t.Errorf("subject not forwarded: %q", svc.lastRedeemSubject)
-	}
-	if svc.lastRedeemCallerOrgID != orgUUID {
-		t.Errorf("callerOrgID not forwarded: %s", svc.lastRedeemCallerOrgID)
-	}
-	var env struct {
-		Data bootstrapResponse `json:"data"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if !env.Data.Redeemed || env.Data.OrgID != orgUUID || env.Data.TokenID != tokenID {
-		t.Errorf("bootstrap response unexpected: %+v", env.Data)
-	}
-}
-
-func TestSetup_Bootstrap_MissingToken_400(t *testing.T) {
-	h := NewSetupHandler(&mockSetupService{})
-	body := strings.NewReader(`{}`)
-	r := buildRequest(t, "POST", "/api/v1/setup/bootstrap", testOrgID, nil, body)
-	w := httptest.NewRecorder()
-	h.Bootstrap(w, r)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("status=%d, want 400", w.Code)
-	}
-}
-
-func TestSetup_Bootstrap_InvalidToken_401(t *testing.T) {
-	h := NewSetupHandler(&mockSetupService{redeemErr: service.ErrInvalidBootstrapToken})
-	body := strings.NewReader(`{"token":"wrong"}`)
-	r := buildRequest(t, "POST", "/api/v1/setup/bootstrap", testOrgID, nil, body)
-	w := httptest.NewRecorder()
-	h.Bootstrap(w, r)
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("status=%d, want 401", w.Code)
-	}
-	if !strings.Contains(w.Body.String(), "INVALID_BOOTSTRAP_TOKEN") {
-		t.Errorf("error code missing; body=%s", w.Body.String())
-	}
-}
-
-func TestSetup_Bootstrap_UserNotProvisioned_412(t *testing.T) {
-	h := NewSetupHandler(&mockSetupService{redeemErr: service.ErrBootstrapUserNotProvisioned})
-	body := strings.NewReader(`{"token":"x"}`)
-	r := buildRequest(t, "POST", "/api/v1/setup/bootstrap", testOrgID, nil, body)
-	w := httptest.NewRecorder()
-	h.Bootstrap(w, r)
-	if w.Code != http.StatusPreconditionFailed {
-		t.Errorf("status=%d, want 412", w.Code)
-	}
-	if !strings.Contains(w.Body.String(), "BOOTSTRAP_USER_NOT_PROVISIONED") {
-		t.Errorf("error code missing; body=%s", w.Body.String())
-	}
-}
-
-func TestSetup_Bootstrap_InvalidOrgIDClaim_401(t *testing.T) {
-	h := NewSetupHandler(&mockSetupService{})
-	body := strings.NewReader(`{"token":"x"}`)
-	r := buildRequest(t, "POST", "/api/v1/setup/bootstrap", "not-a-uuid", nil, body)
-	w := httptest.NewRecorder()
-	h.Bootstrap(w, r)
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("status=%d, want 401", w.Code)
 	}
 }
 

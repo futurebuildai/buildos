@@ -20,8 +20,7 @@ type OnboardingChecker interface {
 
 // SetupGateConfig is the SetupGate middleware configuration. Paths
 // listed in ExemptPrefixes bypass the gate even when onboarding is
-// incomplete — these are the wizard routes themselves plus probes
-// and the A2A webhook (signed; doesn't carry a JWT claims context).
+// incomplete — these are the wizard routes themselves plus probes.
 type SetupGateConfig struct {
 	Checker        OnboardingChecker
 	ExemptPrefixes []string
@@ -33,13 +32,11 @@ type SetupGateConfig struct {
 //   - /api/v1/setup       wizard routes (the whole point of the gate)
 //   - /health, /ready     liveness + readiness probes
 //   - /metrics            Prometheus scrape (Prometheus convention)
-//   - /api/v1/a2a/webhook JWS-authenticated, no JWT claims, sender is Brain
 var DefaultSetupGateExemptPrefixes = []string{
 	"/api/v1/setup",
 	"/health",
 	"/ready",
 	"/metrics",
-	"/api/v1/a2a/webhook",
 }
 
 // SetupGate returns middleware that 403s any request whose

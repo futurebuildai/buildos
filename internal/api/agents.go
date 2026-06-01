@@ -7,8 +7,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/futurebuildai/buildos/internal/ai"
 	mw "github.com/futurebuildai/buildos/internal/api/middleware"
-	"github.com/futurebuildai/buildos/internal/brain"
 	"github.com/futurebuildai/buildos/internal/service"
 )
 
@@ -52,8 +52,8 @@ func (h *AgentsHandler) DailyBriefing(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, map[string]any{"briefing": briefing})
 }
 
-// RecommendScheduleAdjustments asks Brain Maestro to suggest duration
-// nudges for the project's task graph, applies them through
+// RecommendScheduleAdjustments asks the native AI client to suggest
+// duration nudges for the project's task graph, applies them through
 // ScheduleStore.UpdateTask, and re-runs CPM physics so the critical
 // path / floats stay coherent. The audit trail (one batch
 // "schedule.maestro_edit" row + the recalc's own row) is written by
@@ -63,8 +63,8 @@ func (h *AgentsHandler) DailyBriefing(w http.ResponseWriter, r *http.Request) {
 //
 // Role gate: superintendent or higher (CPM-affecting; matches the
 // gate on /schedule/recalculate). Plan-tier gate: pro tier or higher
-// (Maestro consumes metered AI tokens). Both applied at the route in
-// router.go.
+// (AI consumes the org's metered Anthropic key). Both applied at the
+// route in router.go.
 //
 // Errors:
 //
@@ -72,14 +72,14 @@ func (h *AgentsHandler) DailyBriefing(w http.ResponseWriter, r *http.Request) {
 //     missing required claim → ErrInvalidInput
 //   - 404 NOT_FOUND: project not in caller's org → ErrNotFound
 //   - 503 SERVICE_UNAVAILABLE: AgentsService constructed without the
-//     Maestro adjuster or schedule trio (worker binary path) →
-//     ErrAgentsMaestroUnavailable / ErrAgentsScheduleServiceUnavailable
-//   - 502 UPSTREAM_ERROR: Brain transient / 5xx
-//   - 401 UNAUTHORIZED: Brain rejected token
+//     AI adjuster or schedule trio (worker binary path) →
+//     ErrAgentsAIUnavailable / ErrAgentsScheduleServiceUnavailable; or
+//     no Anthropic key configured for the org → ai.ErrUnconfigured
+//   - 429 RATE_LIMITED: AI provider rate limited
+//   - 502 UPSTREAM_ERROR: AI provider transient / 5xx
 //
-// On success: 200 with the full ScheduleAdjustmentSet (run_id,
-// tokens_used, cost_cents, currency_code, adjustments, applied_deltas,
-// skipped_rationale_only). The "apply succeeded; recalc deferred"
+// On success: 200 with the full ScheduleAdjustmentSet (adjustments,
+// applied_deltas, skipped_rationale_only). The "apply succeeded; recalc deferred"
 // case from the service is mapped to 200 OK with the result body —
 // returning 5xx would mislead the caller into thinking the deltas
 // weren't applied (they were; only the CPM re-run was deferred).
@@ -103,8 +103,9 @@ func (h *AgentsHandler) RecommendScheduleAdjustments(w http.ResponseWriter, r *h
 		// result + wrapped error from the service. Surface the
 		// applied deltas to the caller (200) — the recalc lag will
 		// resolve at next /schedule/recalculate. We detect this by
-		// presence of an Adjustments slice on the result.
-		if result.RunID != uuid.Nil {
+		// the presence of applied deltas on the result (the only path
+		// that defers a recalc).
+		if result.AppliedDeltas > 0 {
 			writeJSON(w, r, http.StatusOK, result)
 			return
 		}
@@ -114,36 +115,49 @@ func (h *AgentsHandler) RecommendScheduleAdjustments(w http.ResponseWriter, r *h
 	writeJSON(w, r, http.StatusOK, result)
 }
 
-// writeServiceError maps AgentsService sentinels + Brain errors to
+// writeServiceError maps AgentsService sentinels + native AI errors to
 // HTTP responses.
 func (h *AgentsHandler) writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
-	// Brain errors first — they wrap inside service errors.
-	var httpErr *brain.HTTPError
+	// Native AI errors first — they wrap inside service errors.
+	//
+	// ErrUnconfigured (no Anthropic key set for the org) is a
+	// configuration gap, not an outage: surface 503 so the operator
+	// knows to set a key in the vault. Rate-limit / transient / circuit
+	// map to the usual upstream codes.
+	if errors.Is(err, ai.ErrUnconfigured) {
+		writeErrorResponse(w, r, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "AI is not configured for this organization")
+		return
+	}
+	if errors.Is(err, ai.ErrRateLimited) {
+		writeErrorResponse(w, r, http.StatusTooManyRequests, "RATE_LIMITED", "AI provider rate limited")
+		return
+	}
+	if errors.Is(err, ai.ErrTransient) || errors.Is(err, ai.ErrCircuitOpen) {
+		writeErrorResponse(w, r, http.StatusBadGateway, "UPSTREAM_ERROR", "AI provider transient error")
+		return
+	}
+	var httpErr *ai.HTTPError
 	if errors.As(err, &httpErr) {
 		switch {
 		case httpErr.StatusCode == http.StatusUnauthorized:
-			writeErrorResponse(w, r, http.StatusUnauthorized, "UNAUTHORIZED", "brain rejected token")
+			// 401 from Anthropic means the stored key is bad — an
+			// operator-fixable configuration problem, not a caller
+			// auth failure. Surface 503 so the client doesn't treat
+			// it as its own token being rejected.
+			writeErrorResponse(w, r, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "AI provider rejected the configured key")
 			return
 		case httpErr.StatusCode >= 500:
-			writeErrorResponse(w, r, http.StatusBadGateway, "UPSTREAM_ERROR", "brain upstream unavailable")
+			writeErrorResponse(w, r, http.StatusBadGateway, "UPSTREAM_ERROR", "AI provider upstream unavailable")
 			return
 		}
-	}
-	if errors.Is(err, brain.ErrTransient) {
-		writeErrorResponse(w, r, http.StatusBadGateway, "UPSTREAM_ERROR", "brain upstream transient error")
-		return
-	}
-	if errors.Is(err, brain.ErrUnauthenticated) {
-		writeErrorResponse(w, r, http.StatusUnauthorized, "UNAUTHORIZED", "missing brain token")
-		return
 	}
 
 	// AgentsService nil-dep sentinels — RecommendScheduleAdjustments
 	// returns these when the service was constructed without a
-	// MaestroScheduleAdjuster / ScheduleService (the worker binary).
-	// Map to 503 so callers know to retry against a server binary
-	// rather than treating it as a permanent input error.
-	if errors.Is(err, service.ErrAgentsMaestroUnavailable) || errors.Is(err, service.ErrAgentsScheduleServiceUnavailable) {
+	// ScheduleAdjuster / ScheduleService (the worker binary). Map to
+	// 503 so callers know to retry against a server binary rather than
+	// treating it as a permanent input error.
+	if errors.Is(err, service.ErrAgentsAIUnavailable) || errors.Is(err, service.ErrAgentsScheduleServiceUnavailable) {
 		writeErrorResponse(w, r, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "agent flow not available on this binary")
 		return
 	}

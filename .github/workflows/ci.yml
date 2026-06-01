@@ -67,15 +67,15 @@ jobs:
       - name: go vet
         run: go vet ./...
       - name: go vet (prod build tag)
-        # The prod-tagged file set differs (auth_dev.go vs auth_prod.go,
-        # cmd/dev-idp excluded). Vet must clean both modes or a release
-        # build can fail at the worst possible time.
+        # The prod-tagged file set differs (auth_dev.go vs auth_prod.go).
+        # Vet must clean both modes or a release build can fail at the
+        # worst possible time.
         run: go vet -tags=prod ./...
       - name: govulncheck (CI-blocking, both build modes)
-        # Run twice: default tags cover dev-mode code (cmd/dev-idp,
-        # the auth_dev.go bypass path, integration test deps); prod
-        # tags cover what actually ships. A vuln in either is a CI
-        # fail — we ship one or the other in any given environment.
+        # Run twice: default tags cover dev-mode code (the auth_dev.go
+        # bypass path, integration test deps); prod tags cover what
+        # actually ships. A vuln in either is a CI fail — we ship one
+        # or the other in any given environment.
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck -tags='integration' ./...

@@ -10,11 +10,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
 
 	"github.com/futurebuildai/buildos/internal/models"
 	"github.com/futurebuildai/buildos/internal/store"
-	"github.com/futurebuildai/buildos/internal/worker"
 )
 
 // Sentinel errors specific to FeedService. Generic ErrInvalidInput is
@@ -62,33 +60,25 @@ type FeedActionInput struct {
 }
 
 // FeedService handles list/dismiss/action operations against feed
-// cards. Writes (insert) flow through A2AService; this service is the
-// read+transition surface.
+// cards. Cards are written by other services (e.g. procurement's
+// vendor-review request, the pipeline promotion flow); this service is
+// the read+transition surface.
 //
-// riverClient is optional. When non-nil, ActionCard enqueues an
-// outbound A2A webhook inside the same tx as the status='actioned'
-// update — that way a successful HTTP response always corresponds to
-// a queued dispatch (no phantom job, no missed event). When nil, the
-// dispatch step is skipped silently and we fall back to logging only.
-//
-// audit is also optional; nil falls back to a no-op recorder.
+// audit is optional; nil falls back to a no-op recorder.
 type FeedService struct {
-	pool        *pgxpool.Pool
-	store       *store.FeedCardsStore
-	logger      *slog.Logger
-	riverClient *river.Client[pgx.Tx]
-	audit       AuditRecorder
+	pool   *pgxpool.Pool
+	store  *store.FeedCardsStore
+	logger *slog.Logger
+	audit  AuditRecorder
 }
 
 // NewFeedService creates a service bound to a pool + store + logger.
-// riverClient may be nil; when nil, ActionCard skips outbound A2A
-// emission (dev rigs, fork deployments without Brain). audit may be
-// nil; when nil, audit recording is skipped silently.
-func NewFeedService(pool *pgxpool.Pool, cards *store.FeedCardsStore, logger *slog.Logger, riverClient *river.Client[pgx.Tx], audit AuditRecorder) *FeedService {
+// audit may be nil; when nil, audit recording is skipped silently.
+func NewFeedService(pool *pgxpool.Pool, cards *store.FeedCardsStore, logger *slog.Logger, audit AuditRecorder) *FeedService {
 	if audit == nil {
 		audit = NewNoopAuditRecorder()
 	}
-	return &FeedService{pool: pool, store: cards, logger: logger, riverClient: riverClient, audit: audit}
+	return &FeedService{pool: pool, store: cards, logger: logger, audit: audit}
 }
 
 // ListFeed returns a page of cards visible to the caller. RBAC
@@ -202,32 +192,9 @@ func marshalAudit(v any) []byte {
 	return b
 }
 
-// FeedCardActionedEventType is the wire-protocol event_type stamped on
-// outbound A2A events emitted from ActionCard. Brain dispatches on
-// this value to its appropriate orchestrator (approve_quote handler,
-// reject_bid handler, etc.).
-const FeedCardActionedEventType = "buildos.feed_card_actioned"
-
-// feedActionedPayload is the wire shape Brain sees in the outbound
-// envelope's payload field. Kept stable across versions — Brain pins
-// to a schema version once cross-product orchestrators ship.
-type feedActionedPayload struct {
-	CardID     uuid.UUID       `json:"card_id"`
-	CardType   string          `json:"card_type"`
-	ActionType string          `json:"action_type"`
-	Payload    json.RawMessage `json:"payload,omitempty"`
-}
-
-// ActionCard transitions a card to status='actioned' and (when a
-// River client is wired) enqueues an outbound A2A webhook inside the
-// same tx — Brain receives a "buildos.feed_card_actioned" event and
-// dispatches to the appropriate orchestrator (approve_quote,
-// reject_bid, …).
-//
-// The enqueue is INSIDE the tx so a successful 200 response always
-// corresponds to a queued dispatch. River's InsertTx writes the job
-// row in the same tx as the status update — either both commit or
-// both roll back, never just one.
+// ActionCard transitions a card to status='actioned' and records an
+// audit row, atomically in one tx. The action payload is opaque JSON
+// recorded on the audit row for later inspection.
 //
 // callerUserSub is recorded on the audit row.
 func (s *FeedService) ActionCard(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, cardID uuid.UUID, in FeedActionInput) (models.FeedCard, error) {
@@ -248,30 +215,6 @@ func (s *FeedService) ActionCard(ctx context.Context, callerOrgID uuid.UUID, cal
 			return err
 		}
 		out = c
-
-		// Outbound A2A only when a River client is wired AND the card
-		// was actually transitioned (which it was — ActionFeedCard
-		// returns the row only on a successful UPDATE).
-		if s.riverClient != nil {
-			payloadBytes, err := json.Marshal(feedActionedPayload{
-				CardID:     c.ID,
-				CardType:   c.CardType,
-				ActionType: in.ActionType,
-				Payload:    in.Payload,
-			})
-			if err != nil {
-				return fmt.Errorf("marshal outbound payload: %w", err)
-			}
-			if _, err := s.riverClient.InsertTx(ctx, tx, worker.A2AWebhookDispatchArgs{
-				OrgID:          c.OrgID,
-				EventType:      FeedCardActionedEventType,
-				Payload:        payloadBytes,
-				TraceID:        c.ID.String(), // card id doubles as trace correlator
-				IdempotencyKey: uuid.New(),
-			}, nil); err != nil {
-				return fmt.Errorf("enqueue outbound A2A: %w", err)
-			}
-		}
 
 		s.audit.Record(ctx, tx, AuditEntry{
 			OrgID:        callerOrgID,
@@ -295,16 +238,14 @@ func (s *FeedService) ActionCard(ctx context.Context, callerOrgID uuid.UUID, cal
 		return models.FeedCard{}, fmt.Errorf("action card: %w", err)
 	}
 
-	// Audit log — runs after commit so the log line never mentions a
-	// rolled-back action. Outbound A2A enqueue is implicit in the tx;
-	// when River drains the job the worker logs separately.
+	// Log line runs after commit so it never mentions a rolled-back
+	// action.
 	s.logger.InfoContext(ctx, "feed.card.actioned",
 		"card_id", out.ID,
 		"org_id", out.OrgID,
 		"card_type", out.CardType,
 		"action_type", in.ActionType,
 		"payload_bytes", len(in.Payload),
-		"a2a_enqueued", s.riverClient != nil,
 	)
 	return out, nil
 }

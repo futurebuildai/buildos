@@ -140,8 +140,7 @@ func TestVaultSecretSource_RoundTripWithRealVault(t *testing.T) {
 				t.Fatalf("kv put %s: %v", key, err)
 			}
 		}
-		mustPut("BRAIN_JWKS_URL", "https://brain.example/jwks")
-		mustPut("BRAIN_ISSUER_URL", "https://brain.example")
+		mustPut("SENTRY_DSN", "https://sentry.example/proj")
 
 		cfg, err := LoadWithSource(startCtx, src)
 		if err != nil {
@@ -150,11 +149,8 @@ func TestVaultSecretSource_RoundTripWithRealVault(t *testing.T) {
 		if cfg.DatabaseURL != secretValue {
 			t.Errorf("DatabaseURL = %q, want %q", cfg.DatabaseURL, secretValue)
 		}
-		if cfg.BrainJWKSURL != "https://brain.example/jwks" {
-			t.Errorf("BrainJWKSURL = %q", cfg.BrainJWKSURL)
-		}
-		if cfg.BrainIssuerURL != "https://brain.example" {
-			t.Errorf("BrainIssuerURL = %q", cfg.BrainIssuerURL)
+		if cfg.SentryDSN != "https://sentry.example/proj" {
+			t.Errorf("SentryDSN = %q", cfg.SentryDSN)
 		}
 	})
 }

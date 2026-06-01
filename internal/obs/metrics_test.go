@@ -5,7 +5,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -91,32 +90,11 @@ func TestHTTPMiddleware_5xxStatusClassed(t *testing.T) {
 	}
 }
 
-func TestObserveBrain_RecordsCounterAndHistogram(t *testing.T) {
-	m := NewMetrics()
-	m.ObserveBrain("POST", "/api/maestro/chat", 200, 1500*time.Millisecond)
-	m.ObserveBrain("POST", "/api/maestro/chat", 503, 200*time.Millisecond)
-	m.ObserveBrain("GET", "/api/billing/usage", 200, 50*time.Millisecond)
-
-	rec := httptest.NewRecorder()
-	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
-	body := rec.Body.String()
-	wants := []string{
-		`buildos_brain_requests_total{method="POST",path="/api/maestro/chat",status="2xx"} 1`,
-		`buildos_brain_requests_total{method="POST",path="/api/maestro/chat",status="5xx"} 1`,
-		`buildos_brain_requests_total{method="GET",path="/api/billing/usage",status="2xx"} 1`,
-	}
-	for _, w := range wants {
-		if !strings.Contains(body, w) {
-			t.Errorf("missing line %q in:\n%s", w, body)
-		}
-	}
-}
-
 func TestObserveJob_RecordsCounter(t *testing.T) {
 	m := NewMetrics()
 	m.ObserveJob("daily_briefing", "success")
 	m.ObserveJob("daily_briefing", "error")
-	m.ObserveJob("a2a_webhook_dispatch", "discarded")
+	m.ObserveJob("pipeline_analytics", "discarded")
 
 	rec := httptest.NewRecorder()
 	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
@@ -124,7 +102,7 @@ func TestObserveJob_RecordsCounter(t *testing.T) {
 	for _, w := range []string{
 		`buildos_river_job_runs_total{kind="daily_briefing",outcome="success"} 1`,
 		`buildos_river_job_runs_total{kind="daily_briefing",outcome="error"} 1`,
-		`buildos_river_job_runs_total{kind="a2a_webhook_dispatch",outcome="discarded"} 1`,
+		`buildos_river_job_runs_total{kind="pipeline_analytics",outcome="discarded"} 1`,
 	} {
 		if !strings.Contains(body, w) {
 			t.Errorf("missing line %q in:\n%s", w, body)

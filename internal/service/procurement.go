@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -12,8 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/futurebuildai/buildos/internal/a2a"
-	"github.com/futurebuildai/buildos/internal/brain"
+	"github.com/futurebuildai/buildos/internal/ai"
 	"github.com/futurebuildai/buildos/internal/currency"
 	"github.com/futurebuildai/buildos/internal/models"
 	"github.com/futurebuildai/buildos/internal/store"
@@ -35,39 +35,31 @@ var (
 	// (id + project_id + org_id mismatch). Mirrors the store sentinel.
 	ErrProcurementItemNotFound = errors.New("procurement: item not found")
 
-	// ErrMaestroUnavailable is returned by RecommendVendors when the
-	// service was constructed without a MaestroProcurementRecommender
-	// (e.g. the worker binary that only runs RecomputeStatuses). Lets
+	// ErrAIUnavailable is returned by RecommendVendors when the
+	// service was constructed without a ProcurementRecommender (e.g.
+	// the worker binary that only runs RecomputeStatuses). Lets
 	// handlers surface a clean 503 rather than panicking on a nil call.
-	ErrMaestroUnavailable = errors.New("procurement: maestro client not configured")
+	ErrAIUnavailable = errors.New("procurement: ai client not configured")
 
-	// ErrA2AEmitterUnavailable is returned by RequestVendorReview when
-	// the service was constructed without a VendorReviewEmitter. Same
-	// "worker binary doesn't need it" rationale as ErrMaestroUnavailable
-	// — only the API server triggers operator-driven review flows.
-	ErrA2AEmitterUnavailable = errors.New("procurement: a2a emitter not configured")
+	// ErrVendorReviewUnavailable is returned by RequestVendorReview
+	// when the service was constructed without a feed-card store. Same
+	// "worker binary doesn't need it" rationale as ErrAIUnavailable —
+	// only the API server triggers operator-driven review flows.
+	ErrVendorReviewUnavailable = errors.New("procurement: vendor review feed not configured")
 )
 
-// MaestroProcurementRecommender is the consumer-side interface
-// ProcurementService needs from the Brain client. Defined here so
-// tests can substitute a fake without spinning up an HTTP server,
-// and so ProcurementService doesn't transitively pin the entire
-// brain.Client surface.
+// ProcurementRecommender is the consumer-side interface
+// ProcurementService needs from the native AI client. Defined here so
+// tests can substitute a fake without spinning up an HTTP server, and
+// so ProcurementService doesn't transitively pin the entire ai.Client
+// surface.
 //
-// Wraps the typed procurement_recommend Maestro task (ADR-001 D5)
-// shipped in PR #14. CostMetadata on the response carries
-// {run_id, tokens_used, cost_cents, currency_code} for billing.
-type MaestroProcurementRecommender interface {
-	ProcurementRecommend(ctx context.Context, req brain.ProcurementRecommendRequest) (*brain.ProcurementRecommendResponse, error)
-}
-
-// VendorReviewEmitter is the consumer-side interface
-// ProcurementService needs from the a2a emitter. *a2a.Emitter
-// satisfies it; tests substitute a fake. Defined here (rather than
-// taking *a2a.Emitter directly) so this package isn't pinned to the
-// emitter struct's full surface.
-type VendorReviewEmitter interface {
-	EmitReviewMaterialQuote(ctx context.Context, tx pgx.Tx, args a2a.ReviewMaterialQuoteArgs) (uuid.UUID, error)
+// Wraps the typed procurement_recommend task dispatched natively to
+// Anthropic (internal/ai). The per-org Anthropic key is resolved from
+// the context (ai.ContextWithOrgID), which the caller sets before the
+// call.
+type ProcurementRecommender interface {
+	ProcurementRecommend(ctx context.Context, req ai.ProcurementRecommendRequest) (*ai.ProcurementRecommendResponse, error)
 }
 
 // CreateProcurementItemInput is the validated input for Create. The
@@ -98,28 +90,27 @@ type UpdateProcurementItemInput struct {
 }
 
 // ProcurementService is the business-logic surface for procurement
-// items. Reads + writes flow through here; A2A handlers create feed
-// cards (not procurement rows), so this service is the only writer
-// of procurement_items.
+// items. Reads + writes flow through here; this service is the only
+// writer of procurement_items.
 type ProcurementService struct {
-	pool    *pgxpool.Pool
-	store   *store.ProcurementStore
-	maestro MaestroProcurementRecommender
-	emitter VendorReviewEmitter
-	audit   AuditRecorder
+	pool        *pgxpool.Pool
+	store       *store.ProcurementStore
+	recommender ProcurementRecommender
+	feedStore   *store.FeedCardsStore
+	audit       AuditRecorder
 }
 
 // NewProcurementService creates a service bound to a pool + store.
-// maestro may be nil — RecommendVendors then returns
-// ErrMaestroUnavailable (worker-only deployments don't need it).
-// emitter may be nil — RequestVendorReview then returns
-// ErrA2AEmitterUnavailable (same worker-only rationale).
+// recommender may be nil — RecommendVendors then returns
+// ErrAIUnavailable (worker-only deployments don't need it).
+// feedStore may be nil — RequestVendorReview then returns
+// ErrVendorReviewUnavailable (same worker-only rationale).
 // audit may be nil; nil falls back to a no-op recorder.
-func NewProcurementService(pool *pgxpool.Pool, items *store.ProcurementStore, maestro MaestroProcurementRecommender, emitter VendorReviewEmitter, audit AuditRecorder) *ProcurementService {
+func NewProcurementService(pool *pgxpool.Pool, items *store.ProcurementStore, recommender ProcurementRecommender, feedStore *store.FeedCardsStore, audit AuditRecorder) *ProcurementService {
 	if audit == nil {
 		audit = NewNoopAuditRecorder()
 	}
-	return &ProcurementService{pool: pool, store: items, maestro: maestro, emitter: emitter, audit: audit}
+	return &ProcurementService{pool: pool, store: items, recommender: recommender, feedStore: feedStore, audit: audit}
 }
 
 // ListProcurement returns all items on a project visible to the caller's
@@ -348,31 +339,28 @@ func (s *ProcurementService) RecomputeStatuses(ctx context.Context) (int64, erro
 }
 
 // ProcurementRecommendationSet is the response shape from
-// RecommendVendors: the persisted recommendation rows plus the
-// cost-metadata block returned by Maestro (so callers can surface
-// run_id, tokens_used, cost_cents to the operator without a second
-// query).
+// RecommendVendors: the persisted recommendation rows plus the locally
+// minted batch RunID that correlates every row produced by a single
+// AI call (so callers can group "what did this call produce" without a
+// second query).
 type ProcurementRecommendationSet struct {
-	Items        []models.ProcurementRecommendation
-	RunID        uuid.UUID
-	TokensUsed   int64
-	CostCents    int64
-	CurrencyCode string
+	Items []models.ProcurementRecommendation
+	RunID uuid.UUID
 }
 
-// RecommendVendors asks Brain's Maestro `procurement_recommend` task
-// for a ranked list of vendors for the given procurement item, then
+// RecommendVendors asks the native AI `procurement_recommend` task for
+// a ranked list of vendors for the given procurement item, then
 // persists each recommendation row inside one tx alongside the audit
-// entry. The whole batch shares Maestro's RunID so future evaluation
-// can correlate "what did this Maestro call produce" with "what was
-// actually ordered" once procurement_items.vendor_id is wired.
+// entry. The whole batch shares a locally minted RunID so future
+// evaluation can correlate "what did this AI call produce" with "what
+// was actually ordered" once procurement_items.vendor_id is wired.
 //
 // Validates:
 //   - callerOrgID + procurementItemID non-zero.
 //   - The item belongs to callerOrgID (cross-org isolation).
-//   - The service was constructed with a non-nil Maestro client.
+//   - The service was constructed with a non-nil AI recommender.
 //
-// Maestro's float64 Confidence (0.0–1.0) is rounded * 100 into the
+// The model's float64 Confidence (0.0–1.0) is rounded * 100 into the
 // SMALLINT confidence_pct column to match the codebase no-floats
 // culture (CHECK constraint enforces 0..100).
 //
@@ -384,9 +372,14 @@ func (s *ProcurementService) RecommendVendors(ctx context.Context, callerOrgID u
 	if procurementItemID == uuid.Nil {
 		return ProcurementRecommendationSet{}, fmt.Errorf("%w: procurement_item_id is required", ErrInvalidInput)
 	}
-	if s.maestro == nil {
-		return ProcurementRecommendationSet{}, ErrMaestroUnavailable
+	if s.recommender == nil {
+		return ProcurementRecommendationSet{}, ErrAIUnavailable
 	}
+
+	// One run id minted locally per batch — the native AI client is
+	// single-shot and returns no server-side run id, so BuildOS owns
+	// the correlation key now.
+	batchRunID := uuid.New()
 
 	var result ProcurementRecommendationSet
 	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
@@ -397,26 +390,28 @@ func (s *ProcurementService) RecommendVendors(ctx context.Context, callerOrgID u
 			return err
 		}
 
-		// Maestro call rides outside the SQL round-trip but inside the
+		// AI call rides outside the SQL round-trip but inside the
 		// outer tx — if persistence fails we don't want a phantom
-		// recommendation tracked only in Brain's ai_runs. The
-		// trade-off is that a slow Maestro response holds a tx open
-		// briefly; acceptable for an interactive recommend flow.
-		resp, err := s.maestro.ProcurementRecommend(ctx, brain.ProcurementRecommendRequest{
+		// recommendation. The trade-off is that a slow model response
+		// holds a tx open briefly; acceptable for an interactive
+		// recommend flow. The per-org Anthropic key is resolved from
+		// the context.
+		aiCtx := ai.ContextWithOrgID(ctx, callerOrgID.String())
+		resp, err := s.recommender.ProcurementRecommend(aiCtx, ai.ProcurementRecommendRequest{
 			MaterialRequestID: item.ID,
 			BudgetCents:       item.EstimatedCostCents,
 			CurrencyCode:      item.EstimatedCostCurrencyCode,
 		})
 		if err != nil {
-			return fmt.Errorf("maestro procurement_recommend: %w", err)
+			return fmt.Errorf("ai procurement_recommend: %w", err)
 		}
 		if resp == nil {
-			return fmt.Errorf("maestro procurement_recommend: nil response")
+			return fmt.Errorf("ai procurement_recommend: nil response")
 		}
 
 		recs := make([]models.ProcurementRecommendation, 0, len(resp.Recommendations))
 		for _, r := range resp.Recommendations {
-			// vendor_id is nullable: Maestro may recommend vendors
+			// vendor_id is nullable: the model may recommend vendors
 			// that don't exist in BuildOS's vendor table yet. Treat
 			// uuid.Nil as "no canonical id".
 			var vendorIDPtr *uuid.UUID
@@ -433,7 +428,7 @@ func (s *ProcurementService) RecommendVendors(ctx context.Context, callerOrgID u
 			rec, err := s.store.CreateProcurementRecommendation(ctx, tx, store.CreateProcurementRecommendationParams{
 				ProcurementItemID:          item.ID,
 				OrgID:                      callerOrgID,
-				RunID:                      resp.RunID,
+				RunID:                      batchRunID,
 				VendorID:                   vendorIDPtr,
 				VendorName:                 r.VendorName,
 				PredictedSpendCents:        r.PredictedSpendCents,
@@ -450,8 +445,7 @@ func (s *ProcurementService) RecommendVendors(ctx context.Context, callerOrgID u
 		// One audit row for the whole batch — the resource is the
 		// recommendation set (keyed by procurement_item_id; run_id
 		// goes in metadata for replay). Per-row audit would create
-		// 3-5 nearly-identical rows per Maestro call with no extra
-		// signal.
+		// 3-5 nearly-identical rows per AI call with no extra signal.
 		s.audit.Record(ctx, tx, AuditEntry{
 			OrgID:        callerOrgID,
 			UserSub:      callerUserSub,
@@ -459,20 +453,14 @@ func (s *ProcurementService) RecommendVendors(ctx context.Context, callerOrgID u
 			ResourceType: AuditResourceProcurementRecommendation,
 			ResourceID:   item.ID,
 			Metadata: marshalAudit(map[string]any{
-				"run_id":               resp.RunID,
+				"run_id":               batchRunID,
 				"recommendation_count": len(recs),
-				"tokens_used":          resp.TokensUsed,
-				"cost_cents":           resp.CostCents,
-				"currency_code":        resp.CurrencyCode,
 			}),
 		})
 
 		result = ProcurementRecommendationSet{
-			Items:        recs,
-			RunID:        resp.RunID,
-			TokensUsed:   resp.TokensUsed,
-			CostCents:    resp.CostCents,
-			CurrencyCode: resp.CurrencyCode,
+			Items: recs,
+			RunID: batchRunID,
 		}
 		return nil
 	})
@@ -490,34 +478,46 @@ func (s *ProcurementService) RecommendVendors(ctx context.Context, callerOrgID u
 
 // RequestVendorReviewInput is the validated input for
 // RequestVendorReview. RFQID and Reasoning are optional (uuid.Nil /
-// empty string omit them on the wire — see emitter docs).
+// empty string omit them).
 type RequestVendorReviewInput struct {
 	ProcurementItemID uuid.UUID
-	RFQID             uuid.UUID // optional — uuid.Nil for Maestro-driven (no formal RFQ)
+	RFQID             uuid.UUID // optional — uuid.Nil for AI-driven (no formal RFQ)
 	Vendor            string
 	TotalCents        int64
 	CurrencyCode      string
-	Reasoning         string // optional Maestro narrative
+	Reasoning         string // optional AI narrative
 }
 
-// RequestVendorReview enqueues an outbound A2A `review_material_quote`
-// event so Brain can dispatch the quote to the org's review queue.
-// The whole flow runs in one tx: ownership check, emit (River
-// InsertTx on the same tx), audit row. Returns the idempotency key
-// minted by the emitter so the caller can correlate enqueue →
-// delivery via the river_job table.
+// vendorReviewAction is the single feed-card action attached to a
+// vendor_review_requested card. The frontend renders an "approve /
+// route" affordance from it; the payload carries everything needed to
+// act on the quote without a second fetch.
+type vendorReviewAction struct {
+	Label             string    `json:"label"`
+	Action            string    `json:"action"`
+	ProcurementItemID uuid.UUID `json:"procurement_item_id"`
+	RFQID             uuid.UUID `json:"rfq_id,omitempty"`
+	Vendor            string    `json:"vendor"`
+	TotalCents        int64     `json:"total_cents"`
+	CurrencyCode      string    `json:"currency_code"`
+	Reasoning         string    `json:"reasoning,omitempty"`
+}
+
+// RequestVendorReview surfaces a vendor's material quote for human
+// review by creating a local `vendor_review_requested` feed card.
+// The whole flow runs in one tx: ownership check, feed-card insert,
+// audit row. Returns the new feed card id so the caller can correlate
+// the request with the card the operator will action.
 //
 // Validates:
 //   - callerOrgID + ProcurementItemID non-zero.
+//   - vendor non-empty, total_cents non-negative, currency_code in USD/CAD.
 //   - The item belongs to callerOrgID (cross-org isolation via store.GetProcurementItem).
-//   - The service was constructed with a non-nil VendorReviewEmitter.
+//   - The service was constructed with a non-nil feed-card store.
 //
-// Wire-shape validation (vendor non-empty, total_cents non-negative,
-// currency_code in USD/CAD) is delegated to the emitter — its
-// ErrInvalidArgs is wrapped as ErrInvalidInput so handlers see the
-// uniform service-layer sentinel.
-//
-// callerUserSub is recorded on the audit row.
+// The card targets the `owner` role — vendor selection is an
+// owner-level decision — and carries the quote details in its action
+// payload. callerUserSub is recorded on the audit row.
 func (s *ProcurementService) RequestVendorReview(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, in RequestVendorReviewInput) (uuid.UUID, error) {
 	if callerOrgID == uuid.Nil {
 		return uuid.Nil, fmt.Errorf("%w: caller org_id is required", ErrInvalidInput)
@@ -525,32 +525,64 @@ func (s *ProcurementService) RequestVendorReview(ctx context.Context, callerOrgI
 	if in.ProcurementItemID == uuid.Nil {
 		return uuid.Nil, fmt.Errorf("%w: procurement_item_id is required", ErrInvalidInput)
 	}
-	if s.emitter == nil {
-		return uuid.Nil, ErrA2AEmitterUnavailable
+	if strings.TrimSpace(in.Vendor) == "" {
+		return uuid.Nil, fmt.Errorf("%w: vendor is required", ErrInvalidInput)
+	}
+	if in.TotalCents < 0 {
+		return uuid.Nil, fmt.Errorf("%w: total_cents must be non-negative", ErrInvalidInput)
+	}
+	if err := currency.Validate(in.CurrencyCode); err != nil {
+		return uuid.Nil, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+	}
+	if s.feedStore == nil {
+		return uuid.Nil, ErrVendorReviewUnavailable
 	}
 
-	var idempotencyKey uuid.UUID
+	var cardID uuid.UUID
 	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		// Ownership check + cross-org isolation. Returns
 		// ErrProcurementItemNotFound if the item doesn't exist or
-		// belongs to a different org.
-		if _, err := s.store.GetProcurementItem(ctx, tx, in.ProcurementItemID, callerOrgID); err != nil {
+		// belongs to a different org. The project_id is read off the
+		// item so the card scopes to the right project.
+		item, err := s.store.GetProcurementItem(ctx, tx, in.ProcurementItemID, callerOrgID)
+		if err != nil {
 			return err
 		}
 
-		idem, err := s.emitter.EmitReviewMaterialQuote(ctx, tx, a2a.ReviewMaterialQuoteArgs{
-			OrgID:             callerOrgID,
+		actions, err := json.Marshal([]vendorReviewAction{{
+			Label:             "Review quote",
+			Action:            "review_material_quote",
 			ProcurementItemID: in.ProcurementItemID,
 			RFQID:             in.RFQID,
 			Vendor:            in.Vendor,
 			TotalCents:        in.TotalCents,
 			CurrencyCode:      in.CurrencyCode,
 			Reasoning:         in.Reasoning,
+		}})
+		if err != nil {
+			return fmt.Errorf("marshal vendor review action: %w", err)
+		}
+
+		projectID := item.ProjectID
+		// Target the owner role — vendor selection is an owner-level
+		// decision. Role strings are the RBAC vocabulary ("owner" >
+		// "admin" > …); the literal avoids importing the api/middleware
+		// constant into the service layer.
+		ownerRole := "owner"
+		card, err := s.feedStore.CreateFeedCard(ctx, tx, store.CreateFeedCardParams{
+			OrgID:      callerOrgID,
+			ProjectID:  &projectID,
+			CardType:   "vendor_review_requested",
+			Title:      "Vendor quote ready for review: " + in.Vendor,
+			Body:       vendorReviewBody(item.Name, in.Vendor, in.TotalCents, in.CurrencyCode),
+			Priority:   models.FeedPriorityUrgent,
+			TargetRole: &ownerRole,
+			Actions:    actions,
 		})
 		if err != nil {
 			return err
 		}
-		idempotencyKey = idem
+		cardID = card.ID
 
 		s.audit.Record(ctx, tx, AuditEntry{
 			OrgID:        callerOrgID,
@@ -559,12 +591,12 @@ func (s *ProcurementService) RequestVendorReview(ctx context.Context, callerOrgI
 			ResourceType: AuditResourceProcurementItem,
 			ResourceID:   in.ProcurementItemID,
 			Metadata: marshalAudit(map[string]any{
-				"idempotency_key": idem,
-				"vendor":          in.Vendor,
-				"total_cents":     in.TotalCents,
-				"currency_code":   in.CurrencyCode,
-				"rfq_id":          in.RFQID,
-				"has_reasoning":   strings.TrimSpace(in.Reasoning) != "",
+				"feed_card_id":  card.ID,
+				"vendor":        in.Vendor,
+				"total_cents":   in.TotalCents,
+				"currency_code": in.CurrencyCode,
+				"rfq_id":        in.RFQID,
+				"has_reasoning": strings.TrimSpace(in.Reasoning) != "",
 			}),
 		})
 		return nil
@@ -575,19 +607,36 @@ func (s *ProcurementService) RequestVendorReview(ctx context.Context, callerOrgI
 			return uuid.Nil, ErrProcurementItemNotFound
 		case errors.Is(err, store.ErrNotFound):
 			return uuid.Nil, ErrNotFound
-		case errors.Is(err, a2a.ErrInvalidArgs):
-			// Wire-shape validation from the emitter (vendor empty,
-			// total_cents negative, unsupported currency). Surface
-			// as the uniform service-layer sentinel so handlers
-			// don't have to know about the emitter's error type.
-			return uuid.Nil, fmt.Errorf("%w: %v", ErrInvalidInput, err)
 		}
 		return uuid.Nil, fmt.Errorf("request vendor review: %w", err)
 	}
-	return idempotencyKey, nil
+	return cardID, nil
 }
 
-// confidenceToPct converts Maestro's float64 confidence (0.0–1.0) to
+// vendorReviewBody renders the human-readable feed-card body for a
+// vendor review request. Kept tiny + dependency-free; the structured
+// payload lives in the card's action JSON. The amount is rendered from
+// integer cents (no floats) per the Composite Currency Pattern.
+func vendorReviewBody(itemName, vendor string, totalCents int64, currencyCode string) string {
+	return fmt.Sprintf("%s quoted %s %s for %q. Review and approve or route to another vendor.",
+		vendor, formatCents(totalCents), currencyCode, itemName)
+}
+
+// formatCents renders integer cents as a fixed-2-decimal string
+// (e.g. 50000 → "500.00") without ever converting to a float.
+func formatCents(cents int64) string {
+	neg := cents < 0
+	if neg {
+		cents = -cents
+	}
+	s := fmt.Sprintf("%d.%02d", cents/100, cents%100)
+	if neg {
+		return "-" + s
+	}
+	return s
+}
+
+// confidenceToPct converts the model's float64 confidence (0.0–1.0) to
 // the SMALLINT 0..100 column the schema uses. Rounds half-up; clamps
 // out-of-range inputs so a buggy Brain response can't violate the
 // CHECK constraint and roll back the whole tx.

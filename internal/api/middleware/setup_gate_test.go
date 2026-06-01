@@ -45,7 +45,6 @@ func TestSetupGate_ExemptPaths_BypassGate(t *testing.T) {
 		"/api/v1/setup",
 		"/api/v1/setup/state",
 		"/api/v1/setup/company-info",
-		"/api/v1/a2a/webhook",
 	} {
 		req := httptest.NewRequest(http.MethodGet, p, nil)
 		rr := httptest.NewRecorder()

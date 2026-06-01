@@ -10,7 +10,6 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/futurebuildai/buildos/internal/brain"
 	"github.com/futurebuildai/buildos/internal/pii"
 )
 
@@ -110,17 +109,12 @@ func (h *CorrelatingHandler) WithGroup(name string) slog.Handler {
 	return &CorrelatingHandler{inner: h.inner.WithGroup(name)}
 }
 
-// requestIDFromContext mirrors the brain package's helper. We reach
-// across the package boundary intentionally: the request_id is the
-// SAME value BuildOS sends to Brain, so reading it from the brain
-// context key keeps a single source of truth — no risk of "logs say
-// X, Brain header says Y."
+// requestIDFromContext reads the request_id installed by
+// ContextWithRequestID (defined in reqid.go). obs owns the request_id
+// context key outright now that The Brain — and its outbound
+// X-Request-ID header — has been removed.
 func requestIDFromContext(ctx context.Context) string {
-	// Reuse brain.ContextWithRequestID/get via a small re-export
-	// pattern: we can't import an unexported symbol, so we expose a
-	// thin getter on the brain package. To avoid a dependency-cycle
-	// risk, the brain package owns the context key.
-	return brain.RequestIDFromContext(ctx)
+	return RequestIDFromContext(ctx)
 }
 
 // scrubAttr returns a copy of a with its value masked when the attr

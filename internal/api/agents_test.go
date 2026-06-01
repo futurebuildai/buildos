@@ -10,13 +10,13 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/futurebuildai/buildos/internal/brain"
+	"github.com/futurebuildai/buildos/internal/ai"
 	"github.com/futurebuildai/buildos/internal/service"
 )
 
 // mockAgentsService implements AgentsServicer for handler tests. The
 // daily-briefing surface stays out of test scope here (covered by the
-// service's own validation tests + the existing brain client tests);
+// service's own validation tests + the existing ai client tests);
 // only the new RecommendScheduleAdjustments path is exercised below.
 type mockAgentsService struct {
 	briefingResult service.DailyBriefing
@@ -49,19 +49,14 @@ func (m *mockAgentsService) RecommendScheduleAdjustments(_ context.Context, call
 }
 
 func TestRecommendScheduleAdjustments_HappyPath(t *testing.T) {
-	runID := uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 	five := 5
 	svc := &mockAgentsService{
 		recResult: service.ScheduleAdjustmentSet{
-			Adjustments: []brain.ScheduleAdjustment{
+			Adjustments: []ai.ScheduleAdjustment{
 				{TaskID: uuid.MustParse(testTaskID), NewDurationDays: &five, Rationale: "weather slip"},
 			},
 			AppliedDeltas:        1,
 			SkippedRationaleOnly: 0,
-			RunID:                runID,
-			TokensUsed:           420,
-			CostCents:            13,
-			CurrencyCode:         "USD",
 		},
 	}
 	h := NewAgentsHandler(svc)
@@ -83,7 +78,7 @@ func TestRecommendScheduleAdjustments_HappyPath(t *testing.T) {
 		t.Errorf("service got user_sub=%q, want test-sub", svc.lastRecUserSub)
 	}
 	body := w.Body.String()
-	for _, want := range []string{`"applied_deltas":1`, `"run_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"`, `"cost_cents":13`, `"currency_code":"USD"`} {
+	for _, want := range []string{`"applied_deltas":1`, `"skipped_rationale_only":0`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("response missing %q: %s", want, body)
 		}
@@ -123,8 +118,8 @@ func TestRecommendScheduleAdjustments_InvalidInputReturns400(t *testing.T) {
 	}
 }
 
-func TestRecommendScheduleAdjustments_MaestroUnavailableReturns503(t *testing.T) {
-	h := NewAgentsHandler(&mockAgentsService{recErr: service.ErrAgentsMaestroUnavailable})
+func TestRecommendScheduleAdjustments_AIUnavailableReturns503(t *testing.T) {
+	h := NewAgentsHandler(&mockAgentsService{recErr: service.ErrAgentsAIUnavailable})
 	r := buildRequest(t, "POST", "/api/v1/projects/"+testProjID+"/schedule/recommend-adjustments",
 		testOrgID, map[string]string{"projectID": testProjID}, nil)
 	w := httptest.NewRecorder()
@@ -148,8 +143,8 @@ func TestRecommendScheduleAdjustments_ScheduleServiceUnavailableReturns503(t *te
 	}
 }
 
-func TestRecommendScheduleAdjustments_BrainTransientReturns502(t *testing.T) {
-	h := NewAgentsHandler(&mockAgentsService{recErr: brain.ErrTransient})
+func TestRecommendScheduleAdjustments_AITransientReturns502(t *testing.T) {
+	h := NewAgentsHandler(&mockAgentsService{recErr: ai.ErrTransient})
 	r := buildRequest(t, "POST", "/api/v1/projects/"+testProjID+"/schedule/recommend-adjustments",
 		testOrgID, map[string]string{"projectID": testProjID}, nil)
 	w := httptest.NewRecorder()
@@ -165,14 +160,11 @@ func TestRecommendScheduleAdjustments_RecalcDeferredReturns200(t *testing.T) {
 	// surface 200 with the result body — the deltas were persisted;
 	// reporting 5xx would mislead the caller into thinking the
 	// adjustments weren't applied.
-	runID := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 	three := 3
 	svc := &mockAgentsService{
 		recResult: service.ScheduleAdjustmentSet{
-			Adjustments:   []brain.ScheduleAdjustment{{TaskID: uuid.MustParse(testTaskID), NewDurationDays: &three}},
+			Adjustments:   []ai.ScheduleAdjustment{{TaskID: uuid.MustParse(testTaskID), NewDurationDays: &three}},
 			AppliedDeltas: 1,
-			RunID:         runID,
-			CurrencyCode:  "USD",
 		},
 		recErr: errors.New("apply succeeded; recalc deferred: deadline exceeded"),
 	}

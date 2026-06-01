@@ -1,0 +1,329 @@
+//go:build integration
+
+package service
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"errors"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/futurebuildai/buildos/internal/auth"
+	"github.com/futurebuildai/buildos/internal/mailer"
+	"github.com/futurebuildai/buildos/internal/store"
+	"github.com/futurebuildai/buildos/internal/testdb"
+)
+
+// capturingMailer records every Send call so reset-email tests can assert
+// the message was composed and addressed correctly. Not safe for concurrent
+// use; the auth service sends sequentially per request.
+type capturingMailer struct {
+	mu   sync.Mutex
+	sent []capturedMail
+}
+
+type capturedMail struct {
+	OrgID string
+	Msg   mailer.Message
+}
+
+func (m *capturingMailer) Send(_ context.Context, orgID string, msg mailer.Message) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sent = append(m.sent, capturedMail{OrgID: orgID, Msg: msg})
+	return nil
+}
+
+func (m *capturingMailer) last() (capturedMail, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.sent) == 0 {
+		return capturedMail{}, false
+	}
+	return m.sent[len(m.sent)-1], true
+}
+
+// newAuthService builds an AuthService against a fresh pool with a freshly
+// generated RSA key, a capturing mailer, and an injected clock. Returns the
+// service, the seeded org id, and the mailer so tests can inspect sent mail.
+func newAuthService(t *testing.T, clock func() time.Time) (*AuthService, uuid.UUID, *capturingMailer) {
+	t.Helper()
+	pool := testdb.NewPool(t)
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Kelbrook Construction")
+
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key: %v", err)
+	}
+	issuer, err := auth.NewTokenIssuer(priv, "test-kid", "buildos", "buildos")
+	if err != nil {
+		t.Fatalf("new token issuer: %v", err)
+	}
+
+	mail := &capturingMailer{}
+	svc, err := NewAuthService(AuthServiceConfig{
+		Pool:       pool,
+		Users:      store.NewUserStore(),
+		Setup:      store.NewSetupStore(),
+		Issuer:     issuer,
+		Mailer:     mail,
+		Clock:      clock,
+		AppBaseURL: "https://app.example.test",
+	})
+	if err != nil {
+		t.Fatalf("new auth service: %v", err)
+	}
+	return svc, orgID, mail
+}
+
+// issueBootstrap mints a bootstrap token for orgID via the setup service so
+// ClaimFirstOwner has a real active token to redeem.
+func issueBootstrap(t *testing.T, svc *AuthService, orgID uuid.UUID, clock func() time.Time) string {
+	t.Helper()
+	setupSvc := NewSetupService(svc.pool, store.NewSetupStore(), NewNoopAuditRecorder(), clock)
+	issued, err := setupSvc.IssueBootstrapToken(context.Background(), orgID, "operator", 0)
+	if err != nil {
+		t.Fatalf("issue bootstrap token: %v", err)
+	}
+	return issued.Cleartext
+}
+
+func TestAuthService_ClaimFirstOwner_HappyPath(t *testing.T) {
+	svc, orgID, _ := newAuthService(t, nil)
+	ctx := context.Background()
+	token := issueBootstrap(t, svc, orgID, nil)
+
+	pair, err := svc.ClaimFirstOwner(ctx, token, "owner@kelbrook.test", "correct horse battery staple", "Owner One")
+	if err != nil {
+		t.Fatalf("ClaimFirstOwner: %v", err)
+	}
+	if pair.AccessToken == "" || pair.RefreshToken == "" {
+		t.Fatal("expected non-empty access and refresh tokens")
+	}
+	if pair.User.Role != "owner" {
+		t.Errorf("Role = %q, want owner", pair.User.Role)
+	}
+	if pair.User.OrgID != orgID {
+		t.Errorf("OrgID = %s, want %s", pair.User.OrgID, orgID)
+	}
+	if pair.ExpiresIn <= 0 {
+		t.Errorf("ExpiresIn = %d, want > 0", pair.ExpiresIn)
+	}
+
+	// The new owner can now log in with the same credentials.
+	loginPair, err := svc.Login(ctx, "owner@kelbrook.test", "correct horse battery staple")
+	if err != nil {
+		t.Fatalf("Login after claim: %v", err)
+	}
+	if loginPair.User.ID != pair.User.ID {
+		t.Errorf("login user id = %s, want %s", loginPair.User.ID, pair.User.ID)
+	}
+}
+
+func TestAuthService_ClaimFirstOwner_SecondClaimRejected(t *testing.T) {
+	svc, orgID, _ := newAuthService(t, nil)
+	ctx := context.Background()
+
+	token1 := issueBootstrap(t, svc, orgID, nil)
+	if _, err := svc.ClaimFirstOwner(ctx, token1, "owner@kelbrook.test", "correct horse battery staple", ""); err != nil {
+		t.Fatalf("first claim: %v", err)
+	}
+
+	// A second token for the same org cannot create a second owner.
+	token2 := issueBootstrap(t, svc, orgID, nil)
+	_, err := svc.ClaimFirstOwner(ctx, token2, "intruder@kelbrook.test", "another long password here", "")
+	if !errors.Is(err, ErrFirstOwnerExists) {
+		t.Fatalf("second claim err = %v, want ErrFirstOwnerExists", err)
+	}
+}
+
+func TestAuthService_ClaimFirstOwner_InvalidToken(t *testing.T) {
+	svc, _, _ := newAuthService(t, nil)
+	_, err := svc.ClaimFirstOwner(context.Background(), "not-a-real-token", "owner@kelbrook.test", "correct horse battery staple", "")
+	if !errors.Is(err, ErrInvalidBootstrapToken) {
+		t.Fatalf("err = %v, want ErrInvalidBootstrapToken", err)
+	}
+}
+
+func TestAuthService_ClaimFirstOwner_RejectsShortPassword(t *testing.T) {
+	svc, orgID, _ := newAuthService(t, nil)
+	token := issueBootstrap(t, svc, orgID, nil)
+	_, err := svc.ClaimFirstOwner(context.Background(), token, "owner@kelbrook.test", "short", "")
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("err = %v, want ErrInvalidInput", err)
+	}
+}
+
+func TestAuthService_Login_WrongPassword(t *testing.T) {
+	svc, orgID, _ := newAuthService(t, nil)
+	ctx := context.Background()
+	token := issueBootstrap(t, svc, orgID, nil)
+	if _, err := svc.ClaimFirstOwner(ctx, token, "owner@kelbrook.test", "correct horse battery staple", ""); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	_, err := svc.Login(ctx, "owner@kelbrook.test", "wrong password entirely")
+	if !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("err = %v, want ErrInvalidCredentials", err)
+	}
+}
+
+func TestAuthService_Login_UnknownEmail(t *testing.T) {
+	svc, _, _ := newAuthService(t, nil)
+	_, err := svc.Login(context.Background(), "nobody@kelbrook.test", "any password at all here")
+	if !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("err = %v, want ErrInvalidCredentials", err)
+	}
+}
+
+func TestAuthService_Refresh_RotatesAndInvalidatesOld(t *testing.T) {
+	svc, orgID, _ := newAuthService(t, nil)
+	ctx := context.Background()
+	token := issueBootstrap(t, svc, orgID, nil)
+	pair, err := svc.ClaimFirstOwner(ctx, token, "owner@kelbrook.test", "correct horse battery staple", "")
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+
+	rotated, err := svc.Refresh(ctx, pair.RefreshToken)
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if rotated.RefreshToken == pair.RefreshToken {
+		t.Fatal("refresh token was not rotated")
+	}
+	if rotated.AccessToken == "" {
+		t.Fatal("rotated access token is empty")
+	}
+
+	// The original refresh token is now revoked.
+	if _, err := svc.Refresh(ctx, pair.RefreshToken); !errors.Is(err, ErrInvalidRefreshToken) {
+		t.Fatalf("reuse old token err = %v, want ErrInvalidRefreshToken", err)
+	}
+	// The rotated token still works.
+	if _, err := svc.Refresh(ctx, rotated.RefreshToken); err != nil {
+		t.Fatalf("refresh with rotated token: %v", err)
+	}
+}
+
+func TestAuthService_Logout_RevokesAndIsIdempotent(t *testing.T) {
+	svc, orgID, _ := newAuthService(t, nil)
+	ctx := context.Background()
+	token := issueBootstrap(t, svc, orgID, nil)
+	pair, err := svc.ClaimFirstOwner(ctx, token, "owner@kelbrook.test", "correct horse battery staple", "")
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+
+	if err := svc.Logout(ctx, pair.RefreshToken); err != nil {
+		t.Fatalf("Logout: %v", err)
+	}
+	// Token no longer refreshes.
+	if _, err := svc.Refresh(ctx, pair.RefreshToken); !errors.Is(err, ErrInvalidRefreshToken) {
+		t.Fatalf("refresh after logout err = %v, want ErrInvalidRefreshToken", err)
+	}
+	// Logging out again is a no-op success.
+	if err := svc.Logout(ctx, pair.RefreshToken); err != nil {
+		t.Fatalf("second Logout: %v", err)
+	}
+	// Unknown token is also a no-op.
+	if err := svc.Logout(ctx, "never-existed"); err != nil {
+		t.Fatalf("Logout unknown: %v", err)
+	}
+}
+
+func TestAuthService_PasswordReset_RoundTrip(t *testing.T) {
+	svc, orgID, mail := newAuthService(t, nil)
+	ctx := context.Background()
+	token := issueBootstrap(t, svc, orgID, nil)
+	pair, err := svc.ClaimFirstOwner(ctx, token, "owner@kelbrook.test", "correct horse battery staple", "")
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+
+	if err := svc.RequestPasswordReset(ctx, "owner@kelbrook.test"); err != nil {
+		t.Fatalf("RequestPasswordReset: %v", err)
+	}
+	sent, ok := mail.last()
+	if !ok {
+		t.Fatal("no reset email was sent")
+	}
+	if sent.Msg.To != "owner@kelbrook.test" {
+		t.Errorf("reset email To = %q", sent.Msg.To)
+	}
+
+	// Extract the cleartext token from the link in the email.
+	resetToken := extractResetToken(t, sent.Msg.TextBody)
+	if err := svc.ResetPassword(ctx, resetToken, "a brand new password here"); err != nil {
+		t.Fatalf("ResetPassword: %v", err)
+	}
+
+	// Old password no longer works; new one does.
+	if _, err := svc.Login(ctx, "owner@kelbrook.test", "correct horse battery staple"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("login old password err = %v, want ErrInvalidCredentials", err)
+	}
+	if _, err := svc.Login(ctx, "owner@kelbrook.test", "a brand new password here"); err != nil {
+		t.Fatalf("login new password: %v", err)
+	}
+
+	// All pre-reset refresh tokens were revoked.
+	if _, err := svc.Refresh(ctx, pair.RefreshToken); !errors.Is(err, ErrInvalidRefreshToken) {
+		t.Fatalf("pre-reset refresh err = %v, want ErrInvalidRefreshToken", err)
+	}
+
+	// The reset token is single-use.
+	if err := svc.ResetPassword(ctx, resetToken, "yet another password value"); !errors.Is(err, ErrInvalidResetToken) {
+		t.Fatalf("reused reset token err = %v, want ErrInvalidResetToken", err)
+	}
+}
+
+func TestAuthService_RequestPasswordReset_UnknownEmailIsSilentSuccess(t *testing.T) {
+	svc, _, mail := newAuthService(t, nil)
+	if err := svc.RequestPasswordReset(context.Background(), "nobody@kelbrook.test"); err != nil {
+		t.Fatalf("RequestPasswordReset: %v", err)
+	}
+	if _, ok := mail.last(); ok {
+		t.Fatal("a reset email was sent for an unknown address — enumeration leak")
+	}
+}
+
+func TestAuthService_ResetPassword_InvalidToken(t *testing.T) {
+	svc, _, _ := newAuthService(t, nil)
+	err := svc.ResetPassword(context.Background(), "bogus-token", "a perfectly fine password")
+	if !errors.Is(err, ErrInvalidResetToken) {
+		t.Fatalf("err = %v, want ErrInvalidResetToken", err)
+	}
+}
+
+// extractResetToken pulls the token query-param value out of the reset link
+// embedded in the email text body.
+func extractResetToken(t *testing.T, body string) string {
+	t.Helper()
+	const marker = "token="
+	i := indexOf(body, marker)
+	if i < 0 {
+		t.Fatalf("reset link not found in email body: %q", body)
+	}
+	tok := body[i+len(marker):]
+	// Trim at the first whitespace/newline.
+	for j := 0; j < len(tok); j++ {
+		if tok[j] == '\n' || tok[j] == ' ' || tok[j] == '\r' {
+			return tok[:j]
+		}
+	}
+	return tok
+}
+
+func indexOf(s, sub string) int {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return i
+		}
+	}
+	return -1
+}

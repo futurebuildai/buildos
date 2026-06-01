@@ -51,10 +51,10 @@ func (m *mockProcurementService) RequestVendorReview(_ context.Context, callerOr
 	return m.rvrResult, m.rvrErr
 }
 
-func TestRequestVendorReview_HappyPathReturns202(t *testing.T) {
-	idem := uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc")
+func TestRequestVendorReview_HappyPathReturns201(t *testing.T) {
+	feedCardID := uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc")
 	rfq := uuid.MustParse("dddddddd-dddd-dddd-dddd-dddddddddddd")
-	svc := &mockProcurementService{rvrResult: idem}
+	svc := &mockProcurementService{rvrResult: feedCardID}
 	h := NewProcurementHandler(svc)
 
 	body := strings.NewReader(`{
@@ -69,8 +69,8 @@ func TestRequestVendorReview_HappyPathReturns202(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.RequestVendorReview(w, r)
 
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("status=%d, want 202; body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status=%d, want 201; body=%s", w.Code, w.Body.String())
 	}
 	// Service args propagate.
 	if svc.lastOrg.String() != testOrgID {
@@ -88,19 +88,19 @@ func TestRequestVendorReview_HappyPathReturns202(t *testing.T) {
 	if svc.lastInput.Vendor != "Acme Lumber" || svc.lastInput.TotalCents != 50000 || svc.lastInput.CurrencyCode != "USD" || svc.lastInput.Reasoning != "lowest bid by 8%" {
 		t.Errorf("service got input=%+v, want vendor/total/currency/reasoning to round-trip", svc.lastInput)
 	}
-	// Response body carries the idempotency key.
-	if !strings.Contains(w.Body.String(), `"idempotency_key":"cccccccc-cccc-cccc-cccc-cccccccccccc"`) {
-		t.Errorf("response missing idempotency_key: %s", w.Body.String())
+	// Response body carries the created feed-card id.
+	if !strings.Contains(w.Body.String(), `"feed_card_id":"cccccccc-cccc-cccc-cccc-cccccccccccc"`) {
+		t.Errorf("response missing feed_card_id: %s", w.Body.String())
 	}
 }
 
 func TestRequestVendorReview_OmitRFQIDStaysNil(t *testing.T) {
-	// Maestro-driven flow: caller doesn't supply rfq_id, so service
+	// AI-driven flow: caller doesn't supply rfq_id, so service
 	// must see uuid.Nil (the wire-omit marker). Pin this contract so
 	// future schema changes can't accidentally promote uuid.Nil to a
 	// non-zero default.
-	idem := uuid.MustParse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
-	svc := &mockProcurementService{rvrResult: idem}
+	feedCardID := uuid.MustParse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
+	svc := &mockProcurementService{rvrResult: feedCardID}
 	h := NewProcurementHandler(svc)
 
 	body := strings.NewReader(`{"vendor":"Acme","total_cents":1000,"currency_code":"USD"}`)
@@ -109,8 +109,8 @@ func TestRequestVendorReview_OmitRFQIDStaysNil(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.RequestVendorReview(w, r)
 
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("status=%d, want 202; body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status=%d, want 201; body=%s", w.Code, w.Body.String())
 	}
 	if svc.lastInput.RFQID != uuid.Nil {
 		t.Errorf("rfq_id=%s, want uuid.Nil when JSON field omitted", svc.lastInput.RFQID)
@@ -184,13 +184,13 @@ func TestRequestVendorReview_ItemNotFoundReturns404(t *testing.T) {
 	}
 }
 
-func TestRequestVendorReview_EmitterUnavailableReturns503(t *testing.T) {
-	// The worker binary constructs ProcurementService without an a2a
-	// emitter; if it ever reaches this handler (it shouldn't — worker
-	// doesn't mount the router), 503 is the right answer because the
-	// caller should retry against a server binary, not treat it as a
+func TestRequestVendorReview_VendorReviewUnavailableReturns503(t *testing.T) {
+	// The worker binary constructs ProcurementService without a
+	// feed-card store; if it ever reaches this handler (it shouldn't —
+	// worker doesn't mount the router), 503 is the right answer because
+	// the caller should retry against a server binary, not treat it as a
 	// permanent input error.
-	h := NewProcurementHandler(&mockProcurementService{rvrErr: service.ErrA2AEmitterUnavailable})
+	h := NewProcurementHandler(&mockProcurementService{rvrErr: service.ErrVendorReviewUnavailable})
 	body := strings.NewReader(`{"vendor":"Acme","total_cents":1,"currency_code":"USD"}`)
 	r := buildRequest(t, "POST", "/api/v1/projects/"+testProjID+"/procurement/"+testItemID+"/request-review",
 		testOrgID, map[string]string{"projectID": testProjID, "itemID": testItemID}, body)

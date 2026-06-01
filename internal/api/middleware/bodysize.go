@@ -18,12 +18,6 @@ const (
 	// without forcing an audit pass to bump the cap.
 	DefaultMaxBodyBytes = 10 << 20 // 10 MiB
 
-	// A2AInboundMaxBodyBytes is the cap on inbound A2A webhooks from
-	// Brain. Already enforced inline in the handler; kept here so the
-	// router can remind operators of the value via the typed
-	// constant.
-	A2AInboundMaxBodyBytes = 1 << 20 // 1 MiB
-
 	// FileUploadMaxBodyBytes is the cap reserved for endpoints that
 	// accept binary uploads (none today, but the next sprint's
 	// proof-of-progress photo upload will land here). 25 MiB is a
@@ -44,8 +38,7 @@ const (
 //     413 instead of 500.
 //
 // Mount per-route group rather than globally when an endpoint needs
-// a tighter or looser cap (e.g. A2A inbound is 1 MiB, file upload
-// will be 25 MiB).
+// a tighter or looser cap (e.g. file upload will be 25 MiB).
 func MaxBodySize(limit int64) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

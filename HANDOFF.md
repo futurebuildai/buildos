@@ -18,8 +18,20 @@ Companion docs:
 
 ---
 
+> **⚠️ ARCHITECTURE PIVOT (2026-06-01).** BuildOS is now a **self-contained
+> standalone deployment**. "The Brain" hub-and-spoke model is paused: auth,
+> AI, 3rd-party credentials, and billing are all native and admin-configurable
+> inside the fork now. Many "Last shipped" entries below (PRs #13-#26 — Brain
+> client, Maestro envelopes, A2A emitter/receiver, billing) describe code that
+> has since been **removed**. They're retained as a historical record. The
+> current architecture is in [CLAUDE.md](./CLAUDE.md) and
+> [.agents/handoff/API_CONTRACT.md](./.agents/handoff/API_CONTRACT.md). The
+> "Cross-repo coordination" section below is obsolete and marked as such.
+
 ## Last shipped (most recent → older)
 
+- **2026-06-01** Projects CRUD — replaced the four `writeNotImplemented` stubs in `internal/api/projects.go` with real handlers wired through the canonical trio (handler → `ProjectServicer` interface → `service.ProjectService` → stateless `store.ProjectStore`). **Store** (`internal/store/projects.go`): added `ProjectStore` CRUD next to the existing `VerifyProjectInOrg` helper — `ListByOrg` (optional status filter, `created_at DESC, id DESC`, LIMIT/OFFSET), `GetByID` (cross-org → `ErrNotFound`, no existence leak), `Create` (INSERT, DB applies `status='active'` default + timestamps), `Update` (COALESCE partial patch on name/address/status/gsf, `updated_at=now()`, scoped by id+org). Nullable `address` scanned through a `*string` local so SQL NULL → `""`. **Service** (`internal/service/projects.go`, new): one-tx-per-mutation + audit (`project.created` / `project.updated`), read-only tx for List/Get; validates closed status enum {active, completed, archived}, GSF range [1500,6000] when present, name non-blank; `paginate` clamps per_page to [1,200] and page≥1; create defaults status (not settable), update requires ≥1 field; dates not editable on update (create-only per API contract). **Handler** (`internal/api/projects.go`): `List` (?status/page/per_page, malformed paging → 0 → service defaults, stable `[]`), `Create` (parses `permit_issued_date`/`project_start_date` via shared `parseOptionalDate`, 400 on bad date, 201), `Get`/`Update` (parse `projectID` from URL, 404 on miss). `writeProjectError` maps `ErrNotFound`→404, `ErrInvalidInput`→400, default→500 (no DB leak). Wired `ProjectService` into `RouterConfig` + `cmd/server/main.go`; routes/RBAC were already in `router.go` (List/Get any authed; Create/Update owner/admin). Tests: 17 handler units (`internal/api/projects_test.go`, fake `ProjectServicer` — success/validation/not-found/bad-JSON/bad-date/401/500-no-leak/stable-`[]`) + 7 store integration tests (`internal/store/projects_integration_test.go`, `//go:build integration` — create round-trip, null address, cross-org get/update → NotFound, status filter + org isolation, pagination, COALESCE partial patch). Verify green: `go build ./...`, `go vet ./...`, unit tests, store integration suite (8.1s), `make build-prod`. Reused existing `parseOptionalDate` (financials.go) and `strPtr` (setup_integration_test.go) to avoid redeclaration.
+- **2026-06-01** Standalone pivot (native-stack cutover, two waves). Abandoned the Brain hub-and-spoke. **Native auth** (`internal/auth` + `internal/service/auth.go`): email/password with argon2id, BuildOS-issued RS256 JWTs (`iss=buildos`, `aud=buildos`), server-revocable opaque refresh tokens, bootstrap-token first-owner claim at `POST /api/v1/auth/claim`, password reset via Resend. **Native AI** (`internal/ai`): direct Anthropic Messages API client (BYOK), default model claude-opus-4-6 / fast claude-sonnet-4-5, circuit breaker, image input, soft-fail `503` when no key. **Encrypted vault** (`internal/cryptobox` + `internal/service/VaultService`): AES-256-GCM BYOK store keyed by `VAULT_MASTER_KEY`, admin-gated `/api/v1/integrations` surface (metadata only, never secret bytes). **Mailer** (`internal/mailer`): Resend transactional email. Procurement vendor review now creates a local `vendor_review_requested` feed card (`201 {feed_card_id}`) instead of emitting A2A. **Wave 2 deletion**: removed `internal/brain`, `internal/a2a`, `internal/a2asigner`, billing, `cmd/dev-idp`; `migration 013` drops `a2a_inbound_log` + `a2a_outbound_dlq`; `cmd/buildos-fork-init` now emits JWT keypair + vault master key + bootstrap token (no JWKS/Brain registration). `go.mod` `replace ... futurebuild-brain` removed. Docs refreshed (CLAUDE.md, API_CONTRACT.md, TECH_STACK.md, this file). Build/vet/test green in both default and `-tags=prod`; migration linter + regression suite pass.
 - **2026-05-06** PR #26 [`4573379`] S4 9.1 follow-up — `RecommendScheduleAdjustments` HTTP handler + RBAC. Closes the loop on PR #25's service method by exposing it over HTTP. New route `POST /api/v1/projects/{projectID}/schedule/recommend-adjustments` mounts under the existing `/schedule` sub-route, double-gated: `RequireMinRole(RoleSuperintendent)` (CPM-affecting; matches `/recalculate`'s gate) + `RequirePlanTier(PlanTierPro)` (consumes metered AI tokens). Conditional on `cfg.AgentsService != nil`, matching the pattern already in place under `/api/v1/agents/*` so the worker binary doesn't fail to start. `AgentsServicer` interface extended with `RecommendScheduleAdjustments`. Handler reads `project_id` from URL + caller org/sub from JWT claims; returns the full `ScheduleAdjustmentSet` (`run_id`, `tokens_used`, `cost_cents`, `currency_code`, `adjustments[]`, `applied_deltas`, `skipped_rationale_only`) on 200. Error map: `400 VALIDATION_ERROR` (invalid project_id / `ErrInvalidInput`); `404 NOT_FOUND` (`ErrNotFound`); `503 SERVICE_UNAVAILABLE` (`ErrAgentsMaestroUnavailable` / `ErrAgentsScheduleServiceUnavailable` — worker-binary path; tells callers to retry against server binary rather than treating as permanent input error); `502 UPSTREAM_ERROR` (`brain.ErrTransient` / Brain 5xx); `401 UNAUTHORIZED` (Brain rejected token). Subtle: the service's `"apply succeeded; recalc deferred"` path returns `(result, err)` where deltas were persisted but post-tx CPM re-run failed — handler detects via non-zero `RunID` on the result and returns `200` with the body (reporting 5xx would mislead the caller into thinking deltas weren't applied; next `/schedule/recalculate` re-runs CPM). New `internal/api/agents_test.go` with 7 tests: happy-path (asserts service args + envelope shape: run_id, applied_deltas, cost_cents, currency_code), bad project_id → 400, `ErrNotFound` → 404, `ErrInvalidInput` → 400, both 503 sentinels, `brain.ErrTransient` → 502, and the recalc-deferred regression guard (asserts 200 with applied_deltas in body). `make audit` ALL PASSED. CPM80=144µs, CPM200=374µs.
 - **2026-05-06** PR #25 [`2426c2b`] S4 Session 9.1 — DailyFocusAgent calls Maestro `update_schedule` (closes the first agent-driven CPM-edit flow under the ADR-003 two-event constraint). New typed Maestro task `update_schedule` in `internal/brain/maestro_tasks.go` (`UpdateScheduleRequest{ProjectID, ProjectStartDate, Tasks[], Dependencies[]}` + `UpdateScheduleResponse{CostMetadata + ScheduleAdjustment[]}` where `ScheduleAdjustment.NewDurationDays *int` so rationale-only recommendations serialize cleanly). Validates `ProjectID` non-zero + tasks non-empty client-side. `internal/store/schedule.go` extends `UpdateTaskParams` with `DurationDays *int` (operator path leaves nil — DHSM-derived; only the agent path writes through it) + `COALESCE($6, duration_days)` in the UPDATE. `internal/service/agents.go` adds `MaestroScheduleAdjuster` interface, extends `AgentsService` with `scheduleStore`+`scheduleService`+`scheduleAdjuster`, constructor signature now `(pool, fields, feed, scheduleStore, scheduleService, briefer, adjuster, audit)`. New `RecommendScheduleAdjustments(ctx, callerOrgID, callerUserSub, projectID)`: single tx wraps `VerifyProjectInOrg` → `GetProjectTasks/Dependencies/StartDate` → `Maestro.UpdateSchedule` (held inside tx, mirrors `ProcurementService.RecommendVendors` pattern so recommendation+audit+duration writes commit/rollback atomically) → loops `Adjustments`, applies via `UpdateTask` (skips nil/negative `NewDurationDays`; defensive guard against a buggy Brain response) → batch audit row `schedule.maestro_edit` / `AuditResourceSchedule` keyed by `project_id` with metadata `{run_id, tokens_used, cost_cents, currency_code, recommended_delta_count, applied_deltas, skipped_rationale_only, adjustments[]}`. After tx commit, synchronously calls `ScheduleService.RecalculateSchedule` (its own tx) so CPM physics re-validates with the new durations; on recalc failure returns the result + wrapped `"apply succeeded; recalc deferred"` error (eventual-consistency degradation — durations + audit are persisted, physics catches up at next manual recalc). Skip when `AppliedDeltas == 0` to avoid double-audit on no-op. Two new sentinels: `ErrAgentsMaestroUnavailable` (nil adjuster — worker binary doesn't expose agent endpoints) + `ErrAgentsScheduleServiceUnavailable` (nil scheduleStore/scheduleService). `cmd/server/main.go` wired with the new 8-arg signature; worker passes nil for the schedule trio. ADR-003 note: this is the OUTBOUND BuildOS → Brain Maestro call — Brain's reply rides the synchronous HTTP envelope; the inbound-A2A two-event constraint applies to round-trips this flow does not exercise. Tests: `maestro_tasks_test.go` validation matrix + round-trip (envelope discriminator, project_id, FS dependency, two adjustments incl. rationale-only with nil pointer); `agents_test.go` constructor migration + new validation matrix (nil org, nil project, nil adjuster → sentinel, nil schedule trio → sentinel). One follow-up gofmt commit (`3c323f9`) for indentation alignment after the initial push. `make audit` ALL PASSED. CPM80=184µs, CPM200=460µs.
 - **2026-05-06** Gate 2 ratified by owner. New [ADR-003](./.agents/handoff/ADR-003-gate-2-ratification.md) codifies the decision: ADR-001 D14 (LocalBlue auto-flow) ACCEPTED unconditionally; ADR-001 D7 (A2A receiver scope) ACCEPTED with payload-alignment caveat (Option A — envelope + event-type list locked, per-event payload schemas deferred). Status lines added inline at ADR-001 D7 and D14. Four Brain-side backlog items surfaced in "Cross-repo coordination" below (P0 OrgID, P0 LocalblueLeadCapturedPayload re-derivation, P1 create_feed_card target_role, P2 Issuer cutover). S4 Session 9.1 unblocked with a two-event constraint (`update_schedule` + `delivery_confirmation` only). Docs-only diff; no production code touched.
@@ -54,8 +66,20 @@ govulncheck clean. PRs #9 onward also have CI green at merge time
 
 ## In flight
 
-Nothing in flight. PR #25 + PR #26 (S4 Session 9.1 service +
-HTTP handler) merged this session.
+**Standalone pivot — docs pass in progress.** Native-stack code is shipped
+and the Wave 2 deletion is complete (see top "Last shipped" entry). Remaining:
+- Docs sweep (this file, CLAUDE.md, API_CONTRACT.md, TECH_STACK.md done;
+  `docs/fork-onboarding.md` + `ESCALATION_LOG.md` next).
+- **Deployment teardown** of the `buildos-kelbrook` instance for a clean-slate
+  redeploy — **awaits explicit owner confirmation before any `kubectl delete`.**
+- Final full verify (`make build` / `build-prod` / `test` / `test-prod` /
+  `lint-migrations` / `bench-physics` / `audit`). Note: `golangci-lint` not
+  installed on the current box — CI covers `make lint`.
+
+---
+
+<details>
+<summary>Historical Brain-era status (obsolete — pre-pivot)</summary>
 
 **Gate 2 ratified by owner (2026-05-06).** Per
 [ADR-003](./.agents/handoff/ADR-003-gate-2-ratification.md):
@@ -120,6 +144,8 @@ The first agent-driven CPM-edit flow is now in production code with
 the ADR-003 two-event constraint preserved (this is the outbound
 BuildOS → Brain call; the inbound-A2A constraint applies elsewhere).
 
+</details>
+
 ## Blocked
 
 Nothing blocked right now. (PR #9 cleared the workflow-activation
@@ -133,29 +159,41 @@ Known follow-up surfaced by PR #9 (not blocking, queued):
 
 ## Next up (prioritized — pick from the top)
 
-See [.agents/handoff/NEXT_STEPS.md](./.agents/handoff/NEXT_STEPS.md)
-for the full prioritized backlog with entry-point file paths.
+Post-pivot backlog:
 
-Top three an L8 PE would queue (S1.5 + S2 5.1 + S3 7.1 + S3 7.2 +
-S3 7.2 caller wiring + Vault SecretSource + S3 8.1 receiver tests +
-S3 8.2 LocalBlue inbound tests + S4 9.1 Maestro `update_schedule`
-service + HTTP handler shipped; S2 5.2 materially complete in prod
-code; **Gate 2 ratified 2026-05-06 — see ADR-003**):
-
-1. **HTTP handler / RBAC for `RequestVendorReview`** — small
-   follow-up to PR #20. Add a
-   `POST /api/v1/projects/{projectID}/procurement/{itemID}/request-review`
-   handler that calls `ProcurementService.RequestVendorReview`,
-   gated to `superintendent` or higher. Returns `{idempotency_key}`
-   on 202. Integration test asserts the river_job row hits with
-   the correct event_type and payload. Closes the loop so an
-   operator can actually trigger a review request from the API.
-2. **Phase D — security headers + CSP + dependency updates**
-   (parallel-eligible). Audit
-   `internal/api/middleware/` for missing security headers
-   (HSTS, X-Content-Type-Options, X-Frame-Options, Referrer-Policy,
-   CSP for the JSON API surface); `go list -u -m all` audit and
-   bump direct deps that have non-breaking patches available.
+1. ~~**Finish the docs sweep**~~ ✅ DONE (2026-06-01) — `API_CONTRACT.md`,
+   `TECH_STACK.md`, `HANDOFF.md`, `docs/fork-onboarding.md` (new artifacts:
+   JWT keypair + vault master key + bootstrap token; no JWKS/Brain
+   registration) all rewritten for the standalone pivot;
+   `.agents/handoff/ESCALATION_LOG.md` created (ESC-001 logs the pivot as a
+   resolved decision).
+2. ~~**`buildos-kelbrook` teardown**~~ ✅ DONE (2026-06-01, owner-confirmed) —
+   the live deployment was the obsolete Brain-era build (its k8s secrets still
+   carried `A2A_SIGNING_KEY`, `BRAIN_ISSUER_URL`, `BRAIN_JWKS_URL`,
+   `DEFAULT_ORG_ID`, `DEV_AUTH_MODE`). `kubectl delete namespace
+   buildos-kelbrook` on `do-nyc3-kelbrook-production` removed all of it (2
+   server pods + 1 worker, 2 deployments, service, ingress
+   `kelbrook-os.futurebuild.ai`, 2 configmaps, 4 secrets). **No PVCs** → no
+   in-cluster data lost. The external managed Postgres (`DATABASE_URL`) and the
+   shared nginx LB were left intact; the brain cluster (separate kube context)
+   was untouched. Repo deploy artifacts already native: Dockerfile entrypoint
+   reads `JWT_*_KEY_PEM` from env (no A2A materialization); `.env.example` lists
+   only native vars. **Clean slate ready for native redeploy.**
+   - ⚠️ Follow-ups for the redeploy operator: the managed Postgres still holds
+     Brain-era data — drop/recreate or run a fresh migration if a truly clean DB
+     is wanted. DNS `kelbrook-os.futurebuild.ai → 209.38.49.16` still resolves to
+     the (now ruleless) LB. New secrets needed: `JWT_PRIVATE_KEY_PEM`,
+     `JWT_PUBLIC_KEY_PEM`, `VAULT_MASTER_KEY`, `BUILDOS_BOOTSTRAP_TOKEN`,
+     `MAIL_FROM`, `APP_BASE_URL` (via `make fork-init`).
+3. ~~**Final full verify**~~ ✅ DONE (2026-06-01) on the post-pivot tree:
+   `make build`, `build-prod`, `lint-migrations`, `lint-migrations-test`,
+   `test`, `test-prod`, `bench-physics` (188µs/416µs — well under the
+   200ms/500ms gates), `go vet`, and `test-integration` (Testcontainers
+   Postgres) all PASS. Only `make lint` (golangci-lint) was skipped —
+   not installed locally; CI covers it.
+4. **Frontend hand-off** — the companion Lit/Flutter repos consume
+   `.agents/handoff/API_CONTRACT.md` (now reflecting native auth + BYOK
+   integrations + AI 503 surfaces) and `DESIGN_SYSTEM.md`.
 
 ## Working agreement (L8 self-audit gate)
 
@@ -187,9 +225,9 @@ When in doubt, open the PR but don't merge — let the human review.
   tenant per deployment.
 - **Don't use `git push origin --force` or rewrite published history**
   on main. Force-push to feature branches only when strictly necessary.
-- **Don't commit secrets**. The fork-init tool writes `private.pem`
-  with mode 0600; document that it goes into a secret store, not the
-  repo.
+- **Don't commit secrets**. The fork-init tool writes `private.pem` and
+  `vault_master_key.txt` with mode 0600; document that they go into a
+  secret store, not the repo.
 - **Don't try to push `.github/workflows/*`** with the current Claude
   Code OAuth token — it doesn't have `workflow` scope. Push from a
   user clone or via the UI.
@@ -198,29 +236,18 @@ When in doubt, open the PR but don't merge — let the human review.
   migration linter is hard CI.
 - **Don't bypass D8** by adding new dev-only auth paths without the
   `//go:build !prod` tag.
+- **Don't reintroduce Brain/A2A/billing.** The pivot removed them
+  deliberately. Auth, AI, credentials, and email are native now.
 
-## Cross-repo coordination (BuildOS ↔ The Brain)
+## Cross-repo coordination (BuildOS ↔ The Brain) — OBSOLETE
 
-These items live across both repos; tracked here because they're easy
-to forget when working on one side only. The Brain repo lives at
-`../futurebuild-brain` (per `replace` directive in `go.mod`).
-
-| Item | Side | Status | Notes |
-|---|---|---|---|
-| OIDC issuer + JWKS | Brain | live | stable wire protocol; `iss="fb-brain"` `aud="fb-os"` legacy values, do not rename without coordination |
-| A2A inbound webhook | BuildOS | live | `/api/v1/a2a/webhook`; JWS-verified |
-| A2A outbound webhook | BuildOS | live (signing key per fork) | each fork signs with its own RSA-2048; public key registers in Brain's JWKS |
-| `WebhookEvent.OrgID` field | Brain | optional today, should become required | when Brain enforces this, BuildOS continues to send it as it does now |
-| Maestro Chat | Brain | live | called from `internal/service/agents.go` DailyBriefing |
-| Billing usage | Brain | live | proxied at `/api/v1/billing/usage` |
-| LocalBlue → Brain → BuildOS | Brain | partial | BuildOS handler shipped (`internal/service/a2a.go` `handleLocalblueLeadCaptured`); Brain-side type definitions deleted 2026-05-04 (orphan branch never merged). When Brain emitter wiring resumes, re-derive `LocalblueLeadCapturedPayload` from BuildOS's `localblueLeadCapturedPayload` struct as the canonical reference. |
-| **[ADR-003 P0]** `OrgID` on emitted A2A envelope | Brain | TODO | Add `OrgID` field to `WebhookEvent` envelope in `brain/internal/a2a/types.go`. Populate on every emitted event from the source org context. BuildOS receiver-side already accepts it and falls back to `defaultOrgID` until Brain emits — forward-compatible. |
-| **[ADR-003 P0]** Re-derive `LocalblueLeadCapturedPayload` Brain-side | Brain | TODO | Re-add `EventLocalblueLeadCaptured` constant + `LocalblueLeadCapturedPayload` type in `brain/internal/a2a/types.go`, mirroring BuildOS canonical at `internal/service/a2a.go:360-371`. PR #23 atomicity tests pin the BuildOS-side decoder so the Brain-side re-derivation is safe. |
-| **[ADR-003 P1]** `create_feed_card` `target_role` resolution | Brain | TODO | Decide between (a) Brain adds `target_role` (`string`, optional) to `CreateFeedCardPayload` (recommended; preserves operator-targeting semantics) or (b) BuildOS removes the expectation. BuildOS today defaults to `"owner"` if absent. Owner decision needed. |
-| **[ADR-003 P2]** `Issuer` field cutover | Brain | TODO | Coordinate `iss="fb-brain"` literal cutover to URI form per ADR-001 D4. Dual-emit window required so neither side breaks during transition. Same coordination applies to `aud="fb-os"`. |
-| **[ADR-003] Receiver decoder follow-on** | BuildOS | queued | Once Brain ships items P0 + P1 above, BuildOS lands the receiver-side `LineItems` (`review_material_quote`) + `AIAnalysis` (`review_labor_bid`) + `target_role` decoder additions in a single follow-on PR. |
-| Stripe billing engine | Brain | not yet | gating G1 |
-| Vault / SecretsManager backends for SecretSource | BuildOS | env+file shipped; vault next when first customer fork needs it | `internal/config/secrets.go` interface ready |
+> This entire section is obsolete as of the 2026-06-01 standalone pivot.
+> There is no longer a Brain repo dependency: `internal/brain`,
+> `internal/a2a`, `internal/a2asigner`, and the `go.mod` `replace
+> ... futurebuild-brain` directive have all been removed. Auth (native
+> RS256 JWTs), AI (direct Anthropic BYOK), credentials (encrypted vault),
+> and transactional email (Resend) are all owned inside the fork. Retained
+> only so links from older notes don't dangle.
 
 ---
 
@@ -233,11 +260,9 @@ already clean — this list is for the new environment.
 ### One-time setup on the new workstation
 
 ```bash
-# 1. Clone both repos as siblings (the go.mod replace directive expects
-#    futurebuild-brain at ../futurebuild-brain relative to buildos):
+# 1. Clone the repo (self-contained now — no sibling Brain checkout needed):
 mkdir ~/repos && cd ~/repos
 git clone https://github.com/futurebuildai/buildos.git
-git clone https://github.com/futurebuildai/futurebuild-brain.git
 
 # 2. Toolchain:
 #    - Go 1.26+        (for build + tests)
@@ -279,8 +304,9 @@ gh pr create --base main --title "ci: activate CI + release workflows"
 3. [.agents/handoff/NEXT_STEPS.md](./.agents/handoff/NEXT_STEPS.md) —
    pick from Tier 1 to start work.
 4. [.agents/handoff/ADR-002-single-tenant-fork-model.md](./.agents/handoff/ADR-002-single-tenant-fork-model.md)
-   — the most recent strategic decision. Keep this top-of-mind: BuildOS
-   is single-tenant per customer fork, not multi-tenant SaaS.
+   — single-tenant per customer fork, not multi-tenant SaaS. Note the
+   2026-06-01 standalone pivot supersedes the Brain-dependency parts of
+   the older ADRs: BuildOS is now self-contained (native auth/AI/vault).
 
 ### Things you don't need to bring with you
 

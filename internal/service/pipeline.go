@@ -31,98 +31,14 @@ var (
 	ErrNotImplemented    = errors.New("pipeline: not yet implemented")
 )
 
-// EventTypeProspectPromoted is the A2A event_type emitted on a
-// successful PROSPECT → PROJECT atomic promotion. Brain consumes it
-// to disseminate the new project across the ecosystem (LocalBlue
-// lead origin write-back, GableLBM portfolio refresh, Tribunal
-// onboarding, etc.). The payload is feed-card-shaped per
-// ADR-001 D14: card_type + title + body + priority + actions, with
-// the prospect/project IDs in metadata so downstream consumers can
-// follow the FK without re-querying.
-const EventTypeProspectPromoted = "buildos.prospect_promoted"
-
-// prospectPromotedPayload is the typed input to marshalProspectPromotedPayload.
-// Carries every field a downstream consumer needs to reconcile state
-// without re-querying BuildOS — IDs for FK lookups, name + address +
-// gsf for projection rendering, permit_issued_date for schedule
-// anchoring (it's the project_start_date on the BuildOS side).
-type prospectPromotedPayload struct {
-	ProspectID       uuid.UUID
-	ProjectID        uuid.UUID
-	OrgID            uuid.UUID
-	Name             string
-	Address          *string
-	GSF              int
-	PermitIssuedDate time.Time
-}
-
-// marshalProspectPromotedPayload renders the buildos.prospect_promoted
-// A2A payload as a feed-card-shaped JSON envelope (ADR-001 D14).
-//
-// Shape:
-//
-//	{
-//	  "card_type": "pipeline.prospect_promoted",
-//	  "title":     "Project created: <name>",
-//	  "body":      "Permit issued for <name> · <gsf> GSF",
-//	  "priority":  "normal",
-//	  "actions":   [],
-//	  "metadata": {
-//	    "prospect_id":        "<uuid>",
-//	    "project_id":         "<uuid>",
-//	    "org_id":             "<uuid>",
-//	    "gsf":                <int>,
-//	    "permit_issued_date": "<RFC3339>",
-//	    "address":            "<optional>"
-//	  }
-//	}
-//
-// `actions` is intentionally empty — promotion is informational; Brain
-// dispatches to the right downstream consumer (LocalBlue, GableLBM,
-// etc.) and consumers decide their own next action. Address is only
-// included when present so we don't leak nil-as-"" into Brain's
-// dedup/ETL.
-func marshalProspectPromotedPayload(p prospectPromotedPayload) (json.RawMessage, error) {
-	metadata := map[string]any{
-		"prospect_id":        p.ProspectID,
-		"project_id":         p.ProjectID,
-		"org_id":             p.OrgID,
-		"gsf":                p.GSF,
-		"permit_issued_date": p.PermitIssuedDate.UTC().Format(time.RFC3339),
-	}
-	if p.Address != nil {
-		metadata["address"] = *p.Address
-	}
-
-	envelope := map[string]any{
-		"card_type": "pipeline.prospect_promoted",
-		"title":     fmt.Sprintf("Project created: %s", p.Name),
-		"body":      fmt.Sprintf("Permit issued for %s · %d GSF", p.Name, p.GSF),
-		"priority":  "normal",
-		"actions":   []any{},
-		"metadata":  metadata,
-	}
-
-	out, err := json.Marshal(envelope)
-	if err != nil {
-		// json.Marshal of a map[string]any with primitive values
-		// shouldn't fail; bubble the (genuinely unexpected) error
-		// rather than silently shipping an empty payload.
-		return nil, fmt.Errorf("marshal prospect_promoted envelope: %w", err)
-	}
-	return out, nil
-}
-
 // PipelineService orchestrates pre-construction prospect operations:
 // CRUD, stage transitions, estimate/permit attachments, and the atomic
 // Kanban→CPM transition.
 //
-// The RiverClient is held to enqueue HydrateProject + outbound A2A
-// dispatch jobs from inside the transition tx (river.InsertTx) so the
-// project insert + prospect update + WBS-hydration enqueue + A2A
-// emit all commit together — no phantom jobs referencing rows that
-// never made it, and no "promoted" A2A events Brain receives for
-// prospects that don't actually exist on the BuildOS side.
+// The RiverClient is held to enqueue the HydrateProject job from
+// inside the transition tx (river.InsertTx) so the project insert +
+// prospect update + WBS-hydration enqueue all commit together — no
+// phantom jobs referencing rows that never made it.
 type PipelineService struct {
 	pool        *pgxpool.Pool
 	store       *store.PipelineStore
@@ -443,36 +359,6 @@ func (s *PipelineService) transitionToPermitIssued(ctx context.Context, callerUs
 
 		if _, err := s.riverClient.InsertTx(ctx, tx, worker.HydrateProjectArgs{ProjectID: projectID}, nil); err != nil {
 			return fmt.Errorf("enqueue hydrate_project: %w", err)
-		}
-
-		// Outbound A2A: announce the promotion to Brain so other
-		// products in the ecosystem can react (LocalBlue lead-origin
-		// write-back, GableLBM portfolio refresh, etc.). The
-		// idempotency key is freshly minted per emit; Brain dedups by
-		// (org_id, event_type, idempotency_key). Enqueued in the same
-		// tx as the project + prospect writes via river.InsertTx so a
-		// rollback past this point also unwinds the queued event —
-		// Brain never sees a "promoted" message for a project row
-		// that didn't land.
-		a2aPayload, err := marshalProspectPromotedPayload(prospectPromotedPayload{
-			ProspectID:       in.ProspectID,
-			ProjectID:        projectID,
-			OrgID:            in.OrgID,
-			Name:             updated.Name,
-			Address:          current.Address,
-			GSF:              *current.GSF,
-			PermitIssuedDate: *in.PermitIssuedDate,
-		})
-		if err != nil {
-			return fmt.Errorf("marshal prospect_promoted payload: %w", err)
-		}
-		if _, err := s.riverClient.InsertTx(ctx, tx, worker.A2AWebhookDispatchArgs{
-			OrgID:          in.OrgID,
-			EventType:      EventTypeProspectPromoted,
-			Payload:        a2aPayload,
-			IdempotencyKey: uuid.New(),
-		}, nil); err != nil {
-			return fmt.Errorf("enqueue a2a prospect_promoted: %w", err)
 		}
 
 		prospect = updated

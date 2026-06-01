@@ -2,32 +2,72 @@
 
 **System:** BuildOS (System of Execution)
 **Pipeline Stage:** 07 - Architecture Spec
-**Date:** 2026-04-02
+**Date:** 2026-04-02 (rev. 2026-06-01 — standalone pivot: native auth, BYOK vault, native AI; Brain/A2A/billing removed)
 **Status:** COMPLETE
 **Base URL:** `/api/v1`
-**Auth:** All endpoints (except /health) require Bearer JWT issued by The Brain OIDC Provider
+**Auth:** Native email/password. BuildOS owns identity — it mints and validates its own RS256 JWTs (no external OIDC provider). All endpoints require a Bearer access token EXCEPT the public probes (`/health`, `/ready`, `/metrics`) and the unauthenticated `/api/v1/auth/*` surface that issues the tokens.
 
 ---
 
 ## 1. Authentication & Authorization
 
-### 1.1 JWT Claims (from The Brain)
+BuildOS is a self-contained standalone deployment. It issues native access tokens (RS256, signed with the fork's `JWT_PRIVATE_KEY_PEM`) and server-revocable opaque refresh tokens. There is no external identity provider.
+
+### 1.1 Native Auth Endpoints (unauthenticated)
+
+These mint the credentials the rest of the API requires, so they mount OUTSIDE the auth middleware and are exempt from the SetupGate.
+
+#### POST /api/v1/auth/claim
+- **Purpose:** Redeem a one-time bootstrap token to create the fork's first owner with a native credential.
+- **Body:** `{ token, email, password, display_name }`
+- **Response:** `201 { data: { access_token, token_type, expires_in, refresh_token, user } }`
+- **Errors:** `401 INVALID_BOOTSTRAP_TOKEN` (uniform on any bootstrap-token failure), `409 FIRST_OWNER_EXISTS`, `400 VALIDATION_ERROR`
+
+#### POST /api/v1/auth/login
+- **Body:** `{ email, password }`
+- **Response:** `200 { data: { access_token, token_type, expires_in, refresh_token, user } }`
+- **Errors:** `401 INVALID_CREDENTIALS`
+
+#### POST /api/v1/auth/refresh
+- **Body:** `{ refresh_token }` (rotated — the presented token is consumed and a new one returned)
+- **Response:** `200 { data: { access_token, token_type, expires_in, refresh_token, user } }`
+- **Errors:** `401 INVALID_REFRESH_TOKEN`
+
+#### POST /api/v1/auth/logout
+- **Body:** `{ refresh_token }`
+- **Response:** `204 No Content` (idempotent — 204 even if the token was already revoked)
+
+#### POST /api/v1/auth/password-reset/request
+- **Body:** `{ email }`
+- **Response:** `202 Accepted` — always 202, never reveals whether the email matched a user (no enumeration). Delivery is via the org's configured Resend key.
+
+#### POST /api/v1/auth/password-reset/confirm
+- **Body:** `{ token, password }`
+- **Response:** `204 No Content` — consumes the reset token and revokes all of the user's active sessions.
+- **Errors:** `400 INVALID_RESET_TOKEN`
+
+**Token shape:** `token_type` is `"Bearer"`; `expires_in` is the access-token lifetime in seconds (default 900 = 15 min). Refresh tokens default to 30 days; password-reset tokens to 1 hour.
+
+### 1.2 JWT Claims (BuildOS-issued)
 
 | Claim | Type | Description |
 |-------|------|-------------|
-| `sub` | string | OIDC subject (user ID in Brain) |
+| `sub` | string | User ID (subject) |
 | `org_id` | string | Organization ID |
 | `role` | string | `owner`, `admin`, `superintendent`, `field_worker` |
-| `plan_tier` | string | `free`, `pro`, `enterprise` |
-| `iss` | string | The Brain issuer URL |
-| `aud` | string | `fb-os` |
+| `plan_tier` | string | `free`, `pro`, `enterprise` (gates AI endpoints) |
+| `iss` | string | `buildos` |
+| `aud` | string | `buildos` |
 | `exp` | int | Expiry timestamp |
 | `iat` | int | Issued-at timestamp |
 
-### 1.2 Role-Based Access Control
+### 1.3 Role-Based Access Control
 
 | Endpoint Group | owner | admin | superintendent | field_worker |
 |---------------|-------|-------|----------------|-------------|
+| Auth endpoints (`/auth/*`) | Public (unauthenticated) | | | |
+| Setup wizard (`/setup/*`) | ✓ | ✓ | ✗ | ✗ |
+| Integrations vault (`/integrations/*`) | ✓ | ✓ | ✗ | ✗ |
 | Financial endpoints | ✓ | ✓ | Read-only | ✗ |
 | Schedule endpoints | ✓ | ✓ | ✓ | Read-only |
 | Pipeline endpoints | ✓ | ✓ | Read-only | ✗ |
@@ -35,7 +75,9 @@
 | HR endpoints | ✓ | ✓ | Read-only | ✗ |
 | Feed endpoints | ✓ | ✓ | ✓ | ✓ |
 | Field endpoints | ✓ | ✓ | ✓ | ✓ |
-| A2A webhook | System (JWS verification, no JWT) | | | |
+| AI agent endpoints (`/agents/*`) | pro plan-tier + role gate per route | | | |
+
+**SetupGate:** every authenticated request to an org with `onboarding_complete=false` gets `403 SETUP_INCOMPLETE`, except the exempt prefixes `/api/v1/setup`, `/health`, `/ready`, `/metrics`.
 
 ---
 
@@ -404,6 +446,18 @@ ALL monetary fields follow the Composite Currency Pattern:
 - **Body:** `{ status?, po_number?, ordered_at? }`
 - **Response:** `200 { data: { item: ProcurementItem } }`
 
+### POST /api/v1/projects/{projectID}/procurement/{itemID}/request-review
+- **Auth:** JWT (superintendent+)
+- **Purpose:** Surface a vendor's material quote for human review by creating a local `vendor_review_requested` feed card. Fully self-contained — no outbound webhook.
+- **Body:** `{ vendor, total_cents, currency_code, rfq_id?, reasoning? }`
+  - `vendor`: required, non-empty.
+  - `total_cents`: required, non-negative integer (Composite Currency Pattern).
+  - `currency_code`: required, `USD` or `CAD`.
+  - `rfq_id`: optional UUID; omit for AI-driven flows with no formal RFQ.
+  - `reasoning`: optional AI narrative.
+- **Response:** `201 { data: { feed_card_id: "uuid" } }` — the id of the feed card the operator will action.
+- **Errors:** `400 VALIDATION_ERROR`, `404 NOT_FOUND` (item missing or in another org), `503 SERVICE_UNAVAILABLE` (flow not available on the worker binary).
+
 ### ProcurementItem Object
 ```json
 {
@@ -446,7 +500,7 @@ ALL monetary fields follow the Composite Currency Pattern:
   "id": "uuid",
   "org_id": "uuid",
   "project_id": "uuid",
-  "card_type": "weather_alert|procurement|sub_confirmation|progress|delay|permit_update",
+  "card_type": "weather_alert|procurement|vendor_review_requested|sub_confirmation|progress|delay|permit_update",
   "title": "string",
   "body": "string",
   "priority": "critical|urgent|normal|low",
@@ -520,101 +574,114 @@ ALL monetary fields follow the Composite Currency Pattern:
 
 ---
 
-## 12. A2A Webhook Receiver
+## 12. AI Agent Endpoints
 
-### POST /api/v1/a2a/webhook
-- **Auth:** JWS detached signature (X-JWS-Signature header, verified with The Brain public key)
-- **No JWT required** — this is a system-to-system endpoint
-- **Headers:**
-  - `X-JWS-Signature`: RS256 JWS detached compact serialization
-  - `X-Idempotency-Key`: UUID for deduplication
-  - `Content-Type`: application/json
-- **Body:**
+Native-AI-backed endpoints. BuildOS calls the Anthropic Messages API directly using the org's own key stored in the encrypted vault (BYOK). Gated by `plan_tier=pro` and up. When no key is configured, or the key is rejected by Anthropic, these endpoints **soft-fail** with `503 SERVICE_UNAVAILABLE` (`AI_UNCONFIGURED`-class) rather than erroring at boot — the server runs without keys.
+
+### POST /api/v1/agents/daily-briefing
+- **Auth:** JWT (pro plan-tier)
+- **Purpose:** Generate a morning briefing for the authenticated caller. Synchronous; the mobile app calls this on launch.
+- **Response:** `200 { data: { briefing: { ... } } }`
+- **Errors:** `503 SERVICE_UNAVAILABLE` (no AI key configured), `429 RATE_LIMITED` (provider throttled), `502 UPSTREAM_ERROR` (provider transient / 5xx).
+
+### POST /api/v1/projects/{projectID}/schedule/recommend-adjustments
+- **Auth:** JWT (superintendent+, pro plan-tier)
+- **Purpose:** Ask the AI client to suggest task duration nudges, apply them, and re-run CPM physics so floats/critical-path stay coherent.
+- **Response:** `200 { adjustments, applied_deltas, skipped_rationale_only }`
+  - If deltas applied but the CPM re-run was deferred, still returns `200` with the applied deltas (the next `/schedule/recalculate` catches up).
+- **Errors:** `400 VALIDATION_ERROR` (project has no tasks), `404 NOT_FOUND`, `503 SERVICE_UNAVAILABLE` (no AI key / flow not available on worker binary), `429 RATE_LIMITED`, `502 UPSTREAM_ERROR`.
+
+**AI error mapping (both endpoints):**
+
+| Condition | HTTP | Code |
+|-----------|------|------|
+| No Anthropic key set for the org | 503 | `SERVICE_UNAVAILABLE` |
+| Anthropic rejected the stored key (401 upstream) | 503 | `SERVICE_UNAVAILABLE` |
+| Provider rate limited | 429 | `RATE_LIMITED` |
+| Provider transient / circuit-open / 5xx | 502 | `UPSTREAM_ERROR` |
+
+---
+
+## 13. Integrations Vault (BYOK)
+
+Admin-gated encrypted credential store. Per-org 3rd-party API keys (Anthropic, Resend, named vendors such as Gable/LocalBlue) are AES-256-GCM encrypted at rest with the fork's `VAULT_MASTER_KEY`. The API only ever exposes **metadata** — secret bytes are never returned.
+
+### GET /api/v1/integrations
+- **Auth:** JWT (admin+)
+- **Response:** `200 { data: { integrations: []IntegrationCredential } }`
+
+### PUT /api/v1/integrations/{provider}
+- **Auth:** JWT (admin+)
+- **Purpose:** Store or rotate the active credential for a provider (e.g. `anthropic`, `resend`). `{provider}` is lowercased server-side.
+- **Body:** `{ label, key }` (`key` required, non-empty — the raw secret; encrypted before storage)
+- **Response:** `200 { data: { integration: IntegrationCredential } }`
+
+### DELETE /api/v1/integrations/{provider}
+- **Auth:** JWT (admin+)
+- **Purpose:** Deactivate the active credential for a provider.
+- **Response:** `204 No Content`
+- **Errors:** `404 NOT_FOUND`
+
+### IntegrationCredential Object
 ```json
 {
-  "event_type": "review_material_quote|review_labor_bid|update_schedule|delivery_confirmation|create_feed_card",
-  "payload": { ... },
-  "trace_id": "otel-trace-id",
-  "idempotency_key": "uuid",
-  "timestamp": "2026-04-02T14:30:00Z",
-  "iss": "fb-brain"
-}
-```
-- **Response:** `200 OK` | `401 Invalid Signature` | `409 Duplicate (idempotency_key)`
-
-### Event Payloads (Composite Currency Pattern)
-
-#### review_material_quote
-```json
-{
-  "rfq_id": "uuid",
-  "line_items": [{ "name": "2x4 Lumber", "quantity": 500, "unit_price_cents": 450, "currency_code": "USD" }],
-  "total_cents": 225000,
-  "currency_code": "USD",
-  "vendor": "GableERP"
-}
-```
-
-#### review_labor_bid
-```json
-{
-  "rfq_id": "uuid",
-  "bidder": "Apex Roofing",
-  "amount_cents": 1200000,
-  "currency_code": "USD",
-  "timeline": "14 days",
-  "ai_analysis": "Competitive bid, strong safety record"
-}
-```
-
-#### update_schedule
-```json
-{
-  "event_type": "material_delivery",
-  "delivery_date": "2026-05-15",
-  "constraints": { "wbs_codes": ["9.1", "9.2"] }
-}
-```
-
-#### delivery_confirmation
-```json
-{
-  "materials_ordered": true,
-  "labor_approved": false,
-  "convergence_status": "partial"
-}
-```
-
-#### create_feed_card
-```json
-{
-  "card_type": "procurement",
-  "title": "Quote Ready for Review",
-  "body": "GableERP quote #Q-2026-0042 is ready",
-  "actions": [{ "label": "Review", "action_type": "open_quote", "payload": { "rfq_id": "uuid" } }],
-  "priority": "urgent"
+  "id": "uuid",
+  "provider": "anthropic",
+  "label": "Production key",
+  "last4": "x9f2",
+  "is_active": true,
+  "created_by": "user-sub",
+  "created_at": "timestamp",
+  "updated_at": "timestamp"
 }
 ```
 
 ---
 
-## 13. Error Codes
+## 14. Setup Wizard
+
+Embedded onboarding. Every fork must complete the wizard before the SetupGate opens operational traffic. All steps require admin minimum. The first-owner claim happens earlier at `POST /api/v1/auth/claim`.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/v1/setup/state` | Current wizard progress |
+| POST | `/api/v1/setup/company-info` | Legal name / company info |
+| POST | `/api/v1/setup/trades` | Add a trade |
+| POST | `/api/v1/setup/cost-codes` | Add a cost code |
+| POST | `/api/v1/setup/calendars` | Create a working calendar |
+| POST | `/api/v1/setup/calendars/{calendarID}/holidays` | Add a holiday |
+| POST | `/api/v1/setup/jurisdictions` | Add a permit jurisdiction |
+| POST | `/api/v1/setup/complete` | Finalize (requires legal name, ≥1 trade, ≥1 cost code, a default calendar; idempotent) |
+
+Every step writes a `setup.*` audit action.
+
+---
+
+## 15. Error Codes
 
 | HTTP Status | Code | Description |
 |-------------|------|-------------|
 | 400 | `VALIDATION_ERROR` | Request body validation failed |
-| 401 | `UNAUTHORIZED` | Missing or invalid JWT / JWS signature |
+| 400 | `INVALID_RESET_TOKEN` | Password-reset token invalid or expired |
+| 401 | `UNAUTHORIZED` | Missing or invalid JWT |
+| 401 | `INVALID_CREDENTIALS` | Email/password login failed |
+| 401 | `INVALID_REFRESH_TOKEN` | Refresh token invalid or expired |
+| 401 | `INVALID_BOOTSTRAP_TOKEN` | Bootstrap token invalid/expired (uniform — no probe leak) |
 | 403 | `FORBIDDEN` | Insufficient role for this operation |
+| 403 | `SETUP_INCOMPLETE` | Onboarding wizard not yet complete for this org |
 | 404 | `NOT_FOUND` | Resource does not exist or not in user's org |
-| 409 | `CONFLICT` | Duplicate idempotency_key or resource conflict |
+| 409 | `CONFLICT` | Resource conflict |
+| 409 | `FIRST_OWNER_EXISTS` | An owner already exists for this deployment |
 | 409 | `INVALID_TRANSITION` | Invalid pipeline stage transition |
 | 422 | `CROSS_CURRENCY_ERROR` | Attempted cross-currency arithmetic |
-| 429 | `RATE_LIMITED` | Too many requests |
+| 429 | `RATE_LIMITED` | Too many requests (or AI provider throttled) |
+| 502 | `UPSTREAM_ERROR` | AI provider transient / 5xx |
+| 503 | `SERVICE_UNAVAILABLE` | AI not configured/unreachable, or flow unavailable on this binary |
 | 500 | `INTERNAL_ERROR` | Server error |
 
 ---
 
-## 14. Rate Limits
+## 16. Rate Limits
 
 | Tier | Requests/min | Burst |
 |------|-------------|-------|
@@ -626,7 +693,7 @@ Rate limit headers: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-R
 
 ---
 
-## 15. Versioning
+## 17. Versioning
 
 - API version is embedded in the URL path (`/api/v1/...`)
 - Breaking changes will increment the version (`/api/v2/...`)

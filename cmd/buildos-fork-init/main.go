@@ -1,53 +1,54 @@
 // Command buildos-fork-init generates the cryptographic identity for
-// a new customer fork. Each fork needs its own RSA keypair for
-// signing outbound A2A webhooks; The Brain verifies signatures against
-// the public half published in the fork's JWKS endpoint.
+// a new customer fork. BuildOS is self-contained: it mints and
+// validates its own RS256 JWTs against a per-fork RSA keypair, and
+// encrypts the BYOK credential vault with a per-fork AES-256 master
+// key. This tool provisions both, plus the one-shot bootstrap token
+// the onboarding wizard needs to claim the first owner.
 //
 // Outputs (all in OUT_DIR):
 //
-//	private.pem        PKCS#8 RSA private key. Operator must move this
-//	                   into their secret store (Vault / AWS Secrets Manager
-//	                   / kubernetes Secret) and reference it via the
-//	                   SecretSource as A2A_SIGNING_KEY_PATH or
-//	                   A2A_SIGNING_KEY (depending on the source kind).
-//	                   NEVER commit this file.
+//	private.pem        PKCS#8 RSA private key — the JWT signing key.
+//	                   Operator must move this into their secret store
+//	                   (Vault / AWS Secrets Manager / kubernetes Secret)
+//	                   and reference it via the SecretSource as
+//	                   JWT_PRIVATE_KEY_PEM. NEVER commit this file.
 //
-//	public.pem         PEM-encoded public key. Safe to commit; useful for
-//	                   docs / external verifiers that don't speak JWKS.
+//	public.pem         PKIX/SPKI RSA public key — the JWT verification
+//	                   key. Configure as JWT_PUBLIC_KEY_PEM. Safe to
+//	                   commit.
 //
-//	jwks.json          JSON Web Key Set with the public key, ready to
-//	                   paste into Brain's per-fork registration. The `kid`
-//	                   header value matches what BuildOS will stamp on
-//	                   every JWS produced by the matching private key.
+//	vault_master_key.txt  Standard-base64 32-byte AES-256 key for the
+//	                   encrypted credential vault. Configure as
+//	                   VAULT_MASTER_KEY. NEVER commit — losing or
+//	                   rotating it makes existing sealed credentials
+//	                   undecryptable.
 //
 //	bootstrap_token.txt One-shot cleartext for the onboarding wizard's
-//	                   first-admin claim. 32 bytes of CSPRNG, base64url-
+//	                   first-owner claim. 32 bytes of CSPRNG, base64url-
 //	                   encoded. The operator copies this into deploy
 //	                   secrets as BUILDOS_BOOTSTRAP_TOKEN; cmd/server
 //	                   seeds the hash into setup_bootstrap_tokens on
-//	                   first boot, and the first admin presents the
-//	                   cleartext to POST /api/v1/setup/bootstrap to
-//	                   claim owner role. NEVER commit. Disable with
+//	                   first boot, and the first owner presents the
+//	                   cleartext to POST /api/v1/auth/claim to claim
+//	                   owner role. NEVER commit. Disable with
 //	                   --skip-bootstrap-token when rotating only the
-//	                   signing key.
+//	                   JWT keypair.
 //
-//	fork.yaml          Operator-readable summary of the keypair: kid,
-//	                   creation timestamp, fingerprints, and the env-var
-//	                   names BuildOS expects to find each value under at
-//	                   runtime. This is the artifact that lives in the
-//	                   customer fork's repo (committable).
+//	fork.yaml          Operator-readable summary: kid, creation
+//	                   timestamp, public-key fingerprint, and the
+//	                   env-var names BuildOS expects to find each value
+//	                   under at runtime. Committable.
 //
 // Usage:
 //
 //	go run ./cmd/buildos-fork-init \
 //	  --out ./forks/acme-construction/secrets \
-//	  --kid acme-2026-q2 \
-//	  --org-id 11111111-1111-1111-1111-111111111111
+//	  --kid acme-2026-q2
 //
-// The operator copies private.pem into their secret store, copies
-// jwks.json + the kid into Brain's per-fork registration UI / API,
-// commits public.pem + fork.yaml to the customer's BuildOS fork repo,
-// and sets A2A_KEY_ID=<kid> in the deployment environment.
+// The operator copies private.pem + vault_master_key.txt +
+// bootstrap_token.txt into their secret store, commits public.pem +
+// fork.yaml to the customer's BuildOS fork repo, and sets
+// JWT_KEY_ID=<kid> in the deployment environment.
 //
 // Reproducibility: pass --seed to derive the keypair from a stable
 // seed (testing only — production deployments must use the default
@@ -60,12 +61,10 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
 	"encoding/pem"
 	"flag"
 	"fmt"
 	"io"
-	"math/big"
 	mathrand "math/rand"
 	"os"
 	"path/filepath"
@@ -84,10 +83,10 @@ func main() {
 	var (
 		outDir             = flag.String("out", "", "output directory for generated artifacts (required)")
 		kid                = flag.String("kid", "", "JWS key id; defaults to a fresh uuid")
-		orgID              = flag.String("org-id", "", "fork's default org id (uuid); written to fork.yaml")
+		orgID              = flag.String("org-id", "", "fork's org id (uuid); informational, written to fork.yaml")
 		bits               = flag.Int("bits", defaultKeyBits, "RSA key size in bits (2048 minimum)")
 		seed               = flag.Int64("seed", 0, "deterministic seed for testing; ZERO uses crypto/rand (production)")
-		skipBootstrapToken = flag.Bool("skip-bootstrap-token", false, "do NOT emit bootstrap_token.txt (use when rotating only the signing key on a fork that has already finished onboarding)")
+		skipBootstrapToken = flag.Bool("skip-bootstrap-token", false, "do NOT emit bootstrap_token.txt (use when rotating only the JWT keypair on a fork that has already finished onboarding)")
 	)
 	flag.Parse()
 
@@ -116,25 +115,25 @@ func main() {
 	}
 	fmt.Printf("\nfork identity written to %s\n", *outDir)
 	fmt.Println("next steps:")
-	fmt.Println("  1. move private.pem into your secret store; configure A2A_SIGNING_KEY_PATH")
-	fmt.Println("  2. paste jwks.json into Brain's per-fork registration")
-	fmt.Println("  3. set A2A_KEY_ID=" + *kid + " in the deployment environment")
+	fmt.Println("  1. move private.pem into your secret store; configure JWT_PRIVATE_KEY_PEM")
+	fmt.Println("  2. configure JWT_PUBLIC_KEY_PEM from public.pem and set JWT_KEY_ID=" + *kid)
+	fmt.Println("  3. move vault_master_key.txt into your secret store; configure VAULT_MASTER_KEY")
 	if !*skipBootstrapToken {
 		fmt.Println("  4. move bootstrap_token.txt into your secret store; configure BUILDOS_BOOTSTRAP_TOKEN")
 		fmt.Println("     (cmd/server seeds the hash into setup_bootstrap_tokens on first boot;")
-		fmt.Println("      the first admin presents this cleartext at POST /api/v1/setup/bootstrap)")
+		fmt.Println("      the first owner presents this cleartext at POST /api/v1/auth/claim)")
 		fmt.Println("  5. commit public.pem + fork.yaml to your customer's BuildOS fork repo")
-		fmt.Println("  6. NEVER commit private.pem or bootstrap_token.txt — verify .gitignore")
+		fmt.Println("  6. NEVER commit private.pem, vault_master_key.txt, or bootstrap_token.txt")
 	} else {
 		fmt.Println("  4. commit public.pem + fork.yaml to your customer's BuildOS fork repo")
-		fmt.Println("  5. NEVER commit private.pem — verify it's in your fork's .gitignore")
+		fmt.Println("  5. NEVER commit private.pem or vault_master_key.txt — verify .gitignore")
 	}
 }
 
 // run is the testable entrypoint. seed is 0 in production and uses
 // crypto/rand; non-zero seeds derive the keypair deterministically
 // for unit tests. emitBootstrapToken=true also emits the one-shot
-// cleartext used by the onboarding wizard's first-admin claim.
+// cleartext used by the onboarding wizard's first-owner claim.
 func run(outDir, kid, orgID string, bits int, seed int64, emitBootstrapToken bool) error {
 	if err := os.MkdirAll(outDir, 0o700); err != nil {
 		return fmt.Errorf("create out dir: %w", err)
@@ -158,7 +157,7 @@ func run(outDir, kid, orgID string, bits int, seed int64, emitBootstrapToken boo
 	if err := writePublicPEM(filepath.Join(outDir, "public.pem"), &priv.PublicKey); err != nil {
 		return err
 	}
-	if err := writeJWKS(filepath.Join(outDir, "jwks.json"), &priv.PublicKey, kid); err != nil {
+	if err := writeVaultMasterKey(filepath.Join(outDir, "vault_master_key.txt"), randSrc); err != nil {
 		return err
 	}
 	if emitBootstrapToken {
@@ -170,6 +169,23 @@ func run(outDir, kid, orgID string, bits int, seed int64, emitBootstrapToken boo
 		return err
 	}
 	return nil
+}
+
+// vaultMasterKeyByteLen is the AES-256 key length. cryptobox seals the
+// credential vault with AES-256-GCM, which requires a 32-byte key.
+const vaultMasterKeyByteLen = 32
+
+// writeVaultMasterKey emits a standard-base64 (padded) 32-byte AES-256
+// key at path with file mode 0600. The operator copies this into
+// deploy secrets as VAULT_MASTER_KEY; config decodes it with
+// base64.StdEncoding.
+func writeVaultMasterKey(path string, randSrc io.Reader) error {
+	buf := make([]byte, vaultMasterKeyByteLen)
+	if _, err := io.ReadFull(randSrc, buf); err != nil {
+		return fmt.Errorf("read csprng for vault master key: %w", err)
+	}
+	key := base64.StdEncoding.EncodeToString(buf)
+	return os.WriteFile(path, []byte(key+"\n"), 0o600)
 }
 
 // bootstrapTokenByteLen MUST match
@@ -229,27 +245,6 @@ func writePublicPEM(path string, key *rsa.PublicKey) error {
 	return pem.Encode(f, &pem.Block{Type: "PUBLIC KEY", Bytes: der})
 }
 
-// writeJWKS emits a JSON Web Key Set with one RSA public key. Format
-// matches RFC 7517; the inbound JWS verifier in BuildOS already
-// parses this shape. Field encoding follows go-jose's conventions
-// (base64url, no padding) — the same library both sides use.
-func writeJWKS(path string, key *rsa.PublicKey, kid string) error {
-	jwk := jwkRSA{
-		KeyType:   "RSA",
-		KeyID:     kid,
-		Use:       "sig",
-		Algorithm: "RS256",
-		N:         base64URLEncode(key.N),
-		E:         base64URLEncode(big.NewInt(int64(key.E))),
-	}
-	out := jwksDoc{Keys: []jwkRSA{jwk}}
-	body, err := json.MarshalIndent(out, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal jwks: %w", err)
-	}
-	return os.WriteFile(path, append(body, '\n'), 0o644)
-}
-
 // writeForkYAML emits an operator-readable artifact. YAML by hand
 // rather than gopkg.in/yaml.v3 to avoid a dep just for this; the
 // shape is small and stable.
@@ -261,20 +256,20 @@ func writeForkYAML(path string, key *rsa.PublicKey, kid, orgID string, hasBootst
 	fingerprint := sha256.Sum256(der)
 	fpHex := hexLower(fingerprint[:])
 	if orgID == "" {
-		orgID = "<set DEFAULT_ORG_ID at deploy time>"
+		orgID = "<assigned during onboarding>"
 	}
 	bootstrapStanza := ""
 	if hasBootstrapToken {
-		bootstrapStanza = `#   BUILDOS_BOOTSTRAP_TOKEN: <from bootstrap_token.txt; one-shot, claim via POST /api/v1/setup/bootstrap>
+		bootstrapStanza = `#   BUILDOS_BOOTSTRAP_TOKEN: <from bootstrap_token.txt; one-shot, claim via POST /api/v1/auth/claim>
 `
 	}
 	content := fmt.Sprintf(`# BuildOS fork identity — generated by buildos-fork-init
 #
 # This file is committed to the customer's BuildOS fork repo. The
-# matching private key (private.pem) is NOT — it lives in the
-# fork's secret store and is referenced via A2A_SIGNING_KEY_PATH.
+# matching private key (private.pem), the vault master key, and the
+# bootstrap token are NOT — they live in the fork's secret store.
 #
-# To rotate the signing key only (keep onboarding state):
+# To rotate the JWT keypair only (keep onboarding state):
 #   buildos-fork-init --out … --kid <new> --skip-bootstrap-token
 #
 # To rotate everything (fresh tenant): regenerate without
@@ -283,39 +278,18 @@ func writeForkYAML(path string, key *rsa.PublicKey, kid, orgID string, hasBootst
 
 kid:               %q
 created_at:        %q
-default_org_id:    %q
+org_id:            %q
 public_key_sha256: %q
 key_size_bits:     %d
 bootstrap_token_emitted: %t
 
 # Environment variables BuildOS expects at runtime:
-#   A2A_KEY_ID:           %s
-#   A2A_SIGNING_KEY_PATH: <path-from-secret-store>/private.pem
-#   DEFAULT_ORG_ID:       %s
-%s`, kid, time.Now().UTC().Format(time.RFC3339), orgID, fpHex, key.N.BitLen(), hasBootstrapToken, kid, orgID, bootstrapStanza)
+#   JWT_KEY_ID:           %s
+#   JWT_PRIVATE_KEY_PEM:  <contents of private.pem, from secret store>
+#   JWT_PUBLIC_KEY_PEM:   <contents of public.pem>
+#   VAULT_MASTER_KEY:     <from vault_master_key.txt, in secret store>
+%s`, kid, time.Now().UTC().Format(time.RFC3339), orgID, fpHex, key.N.BitLen(), hasBootstrapToken, kid, bootstrapStanza)
 	return os.WriteFile(path, []byte(content), 0o644)
-}
-
-// jwksDoc / jwkRSA are the wire-format types for a JWKS containing
-// one or more RSA public keys.
-type jwksDoc struct {
-	Keys []jwkRSA `json:"keys"`
-}
-
-type jwkRSA struct {
-	KeyType   string `json:"kty"`
-	KeyID     string `json:"kid"`
-	Use       string `json:"use"`
-	Algorithm string `json:"alg"`
-	N         string `json:"n"`
-	E         string `json:"e"`
-}
-
-// base64URLEncode applies RFC 7515 base64url-no-pad encoding to a
-// big-endian unsigned-int representation of n. Matches the wire
-// format every JWK consumer expects for RSA modulus / exponent.
-func base64URLEncode(n *big.Int) string {
-	return base64.RawURLEncoding.EncodeToString(n.Bytes())
 }
 
 // hexLower formats bytes as a fixed-width lowercase hex string.

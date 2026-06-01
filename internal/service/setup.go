@@ -28,9 +28,8 @@ import (
 //
 // Reuses ErrNotFound, ErrInvalidInput from budget.go (same package).
 var (
-	ErrSetupAlreadyComplete        = errors.New("setup: onboarding already complete")
-	ErrInvalidBootstrapToken       = errors.New("setup: invalid bootstrap token")
-	ErrBootstrapUserNotProvisioned = errors.New("setup: bootstrap redeemer not yet provisioned in users table")
+	ErrSetupAlreadyComplete  = errors.New("setup: onboarding already complete")
+	ErrInvalidBootstrapToken = errors.New("setup: invalid bootstrap token")
 )
 
 // Setup audit-log resource type / action constants. Wizard rows are
@@ -780,86 +779,6 @@ func (s *SetupService) RedeemBootstrapToken(ctx context.Context, cleartext strin
 		return nil
 	})
 	if err != nil {
-		return RedeemedBootstrapToken{}, mapSetupStoreError(err)
-	}
-	return out, nil
-}
-
-// RedeemBootstrapTokenForSubject is the HTTP-facing wrapper around
-// RedeemBootstrapToken. It resolves the caller's OIDC subject to a
-// users.id via SetupStore.LookupUserIDBySubject, verifies the token
-// belongs to the caller's org (so a cross-org user cannot burn another
-// org's token), then redeems atomically.
-//
-// Failure semantics (matching the HTTP error mapping in W3):
-//   - subject not in users          → ErrBootstrapUserNotProvisioned (412)
-//   - token not found / expired     → ErrInvalidBootstrapToken (401)
-//   - token belongs to a different org than the JWT claim
-//     → ErrInvalidBootstrapToken (401; NOT consumed)
-//   - any redeem-time race          → ErrInvalidBootstrapToken (401)
-//
-// callerOrgID must be the org_id claim on the redeemer's JWT — used
-// for both the user-lookup scope and the cross-org safety check.
-func (s *SetupService) RedeemBootstrapTokenForSubject(ctx context.Context, cleartext, subject string, callerOrgID uuid.UUID) (RedeemedBootstrapToken, error) {
-	if cleartext == "" {
-		return RedeemedBootstrapToken{}, ErrInvalidBootstrapToken
-	}
-	if callerOrgID == uuid.Nil {
-		return RedeemedBootstrapToken{}, fmt.Errorf("%w: caller org_id required", ErrInvalidInput)
-	}
-	if subject == "" {
-		return RedeemedBootstrapToken{}, fmt.Errorf("%w: subject required", ErrInvalidInput)
-	}
-	hash := hashBootstrapToken(cleartext)
-	now := s.now()
-
-	var out RedeemedBootstrapToken
-	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		userID, err := s.store.LookupUserIDBySubject(ctx, tx, subject, callerOrgID)
-		if err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				return ErrBootstrapUserNotProvisioned
-			}
-			return err
-		}
-
-		tok, err := s.store.GetActiveBootstrapTokenByHash(ctx, tx, hash, now)
-		if err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				return ErrInvalidBootstrapToken
-			}
-			return err
-		}
-		// Cross-org safety: if the JWT claimer's org doesn't match
-		// the token's org, refuse — and do NOT consume the token.
-		// An attacker with a valid (different-org) JWT and a guessed
-		// cleartext must not be able to burn a victim's token.
-		if tok.OrgID != callerOrgID {
-			return ErrInvalidBootstrapToken
-		}
-		if err := s.store.RedeemBootstrapToken(ctx, tx, tok.ID, userID, now); err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				return ErrInvalidBootstrapToken
-			}
-			return err
-		}
-		out = RedeemedBootstrapToken{ID: tok.ID, OrgID: tok.OrgID}
-		s.audit.Record(ctx, tx, AuditEntry{
-			OrgID:        tok.OrgID,
-			UserSub:      subject,
-			Action:       AuditActionSetupBootstrapClaim,
-			ResourceType: AuditResourceOrganization,
-			ResourceID:   tok.ID,
-		})
-		return nil
-	})
-	if err != nil {
-		// Pass-through sentinel errors; only map storage-shaped ones.
-		if errors.Is(err, ErrInvalidBootstrapToken) ||
-			errors.Is(err, ErrBootstrapUserNotProvisioned) ||
-			errors.Is(err, ErrInvalidInput) {
-			return RedeemedBootstrapToken{}, err
-		}
 		return RedeemedBootstrapToken{}, mapSetupStoreError(err)
 	}
 	return out, nil

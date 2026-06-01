@@ -10,17 +10,17 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/futurebuildai/buildos/internal/brain"
+	"github.com/futurebuildai/buildos/internal/ai"
 	"github.com/futurebuildai/buildos/internal/store"
 )
 
-// ErrAgentsMaestroUnavailable is returned by agent flows when the
-// service was constructed without a corresponding Maestro client (e.g.
-// the worker binary doesn't wire DailyBriefer/ScheduleAdjuster). Lets
-// handlers surface a clean 503 rather than panicking on a nil call.
-// Mirrors procurement.ErrMaestroUnavailable but is package-private to
-// the agents flows so the two error sites stay distinct in audit logs.
-var ErrAgentsMaestroUnavailable = errors.New("agents: maestro client not configured")
+// ErrAgentsAIUnavailable is returned by agent flows when the service
+// was constructed without a corresponding AI client (e.g. the worker
+// binary doesn't wire DailyBriefer/ScheduleAdjuster). Lets handlers
+// surface a clean 503 rather than panicking on a nil call. Mirrors
+// procurement.ErrAIUnavailable but is package-private to the agents
+// flows so the two error sites stay distinct in audit logs.
+var ErrAgentsAIUnavailable = errors.New("agents: ai client not configured")
 
 // ErrAgentsScheduleServiceUnavailable is returned when the service was
 // constructed without a ScheduleService — RecommendScheduleAdjustments
@@ -29,39 +29,30 @@ var ErrAgentsMaestroUnavailable = errors.New("agents: maestro client not configu
 // from a job today).
 var ErrAgentsScheduleServiceUnavailable = errors.New("agents: schedule service not configured")
 
-// MaestroDailyBriefer is the consumer-side interface AgentsService
-// needs from the Brain client. Defined here so tests can substitute a
-// fake without spinning up an HTTP server, and so AgentsService
-// doesn't transitively pin the entire brain.Client surface.
+// DailyBriefer is the consumer-side interface AgentsService needs from
+// the native AI client. Defined here so tests can substitute a fake
+// without spinning up an HTTP server, and so AgentsService doesn't
+// transitively pin the entire ai.Client surface.
 //
-// Wraps the typed daily_briefing Maestro task (ADR-001 D5) shipped in
-// PR #14. Replaces the earlier free-form MaestroChatter so callers get
-// structured cost metadata back on every invocation.
-type MaestroDailyBriefer interface {
-	DailyBriefing(ctx context.Context, req brain.DailyBriefingRequest) (*brain.DailyBriefingResponse, error)
+// Wraps the typed daily_briefing task dispatched natively to Anthropic
+// (internal/ai). The per-org Anthropic key is resolved from the
+// context (ai.ContextWithOrgID), which the caller sets before the call.
+type DailyBriefer interface {
+	DailyBriefing(ctx context.Context, req ai.DailyBriefingRequest) (*ai.DailyBriefingResponse, error)
 }
 
-// MaestroScheduleAdjuster is the consumer-side interface
-// AgentsService needs for the update_schedule flow (ADR-001 D5; S4
-// Session 9.1). Brain reads the task graph snapshot, applies its
-// scheduling heuristics, and returns recommended duration adjustments;
-// BuildOS owns the CPM physics engine and re-validates every
-// recommendation by re-running ForwardPass + BackwardPass.
-//
-// Constraint per ADR-003 (Gate 2 ratification 2026-05-06): the agent
-// is permitted to consume the inbound A2A `update_schedule` and
-// `delivery_confirmation` events only — those are the two payload
-// schemas already aligned across BuildOS and Brain. This typed Maestro
-// task is the OUTBOUND BuildOS → Brain call; the constraint applies
-// to any future round-trip through the inbound A2A receiver, which
-// this flow does not exercise (Brain's reply rides the synchronous
-// HTTP response).
-type MaestroScheduleAdjuster interface {
-	UpdateSchedule(ctx context.Context, req brain.UpdateScheduleRequest) (*brain.UpdateScheduleResponse, error)
+// ScheduleAdjuster is the consumer-side interface AgentsService needs
+// for the update_schedule flow (S4 Session 9.1). The model reads the
+// task graph snapshot, applies its scheduling heuristics, and returns
+// recommended duration adjustments; BuildOS owns the CPM physics
+// engine and re-validates every recommendation by re-running
+// ForwardPass + BackwardPass.
+type ScheduleAdjuster interface {
+	UpdateSchedule(ctx context.Context, req ai.UpdateScheduleRequest) (*ai.UpdateScheduleResponse, error)
 }
 
-// AgentsService orchestrates Brain Maestro calls for BuildOS-side
-// agent endpoints. Today: DailyBriefing, RecommendScheduleAdjustments.
+// AgentsService orchestrates native AI calls for BuildOS-side agent
+// endpoints. Today: DailyBriefing, RecommendScheduleAdjustments.
 // Future: SubLiaison, ProcurementNarrative, etc. — same shape, same
 // orchestration.
 type AgentsService struct {
@@ -70,8 +61,8 @@ type AgentsService struct {
 	feedStore        *store.FeedCardsStore
 	scheduleStore    *store.ScheduleStore
 	scheduleService  *ScheduleService
-	maestro          MaestroDailyBriefer
-	scheduleAdjuster MaestroScheduleAdjuster
+	briefer          DailyBriefer
+	scheduleAdjuster ScheduleAdjuster
 	audit            AuditRecorder
 }
 
@@ -83,16 +74,16 @@ type AgentsService struct {
 // scheduleStore + scheduleService + scheduleAdjuster may be nil — the
 // worker binary doesn't expose the agent endpoints, so it's allowed to
 // pass nil for the schedule trio. RecommendScheduleAdjustments returns
-// ErrAgentsScheduleServiceUnavailable / ErrAgentsMaestroUnavailable
-// on a nil call rather than panicking.
+// ErrAgentsScheduleServiceUnavailable / ErrAgentsAIUnavailable on a nil
+// call rather than panicking.
 func NewAgentsService(
 	pool *pgxpool.Pool,
 	fields *store.FieldStore,
 	feed *store.FeedCardsStore,
 	scheduleStore *store.ScheduleStore,
 	scheduleService *ScheduleService,
-	maestro MaestroDailyBriefer,
-	scheduleAdjuster MaestroScheduleAdjuster,
+	briefer DailyBriefer,
+	scheduleAdjuster ScheduleAdjuster,
 	audit AuditRecorder,
 ) *AgentsService {
 	if audit == nil {
@@ -104,7 +95,7 @@ func NewAgentsService(
 		feedStore:        feed,
 		scheduleStore:    scheduleStore,
 		scheduleService:  scheduleService,
-		maestro:          maestro,
+		briefer:          briefer,
 		scheduleAdjuster: scheduleAdjuster,
 		audit:            audit,
 	}
@@ -128,13 +119,11 @@ type DailyBriefing struct {
 // (RequirePlanTier), not here — keeping the service free of HTTP
 // concerns.
 //
-// On success, writes a billing-audit row carrying the metered cost
-// (run_id, tokens_used, cost_cents, currency_code) — this is the
-// per-call meter that rolls into the org's monthly AI usage line per
-// ADR-001 D5. The audit write happens AFTER the Maestro call so failed
-// invocations don't pollute the bill; if the audit insert itself
-// fails, the briefing still returns to the caller (audit is logged at
-// WARN by AuditService.Record but not propagated).
+// On success, writes an audit row recording the invocation. The audit
+// write happens AFTER the AI call so failed invocations don't leave a
+// trace; if the audit insert itself fails, the briefing still returns
+// to the caller (audit is logged at WARN by AuditService.Record but
+// not propagated).
 //
 // The function does NOT persist the briefing as a feed card today;
 // that's a follow-up PR once we want push-style delivery. For now the
@@ -199,17 +188,20 @@ func (s *AgentsService) GenerateDailyBriefing(ctx context.Context, callerOrgID u
 		return DailyBriefing{}, fmt.Errorf("daily briefing: load context: %w", err)
 	}
 
-	// Token plumbing happens via ctx — auth middleware stashed it.
-	// Brain's daily_briefing task assembles the prompt from the
-	// structured context; BuildOS no longer builds the prompt
-	// itself.
-	resp, err := s.maestro.DailyBriefing(ctx, brain.DailyBriefingRequest{
+	if s.briefer == nil {
+		return DailyBriefing{}, ErrAgentsAIUnavailable
+	}
+
+	// The per-org Anthropic key is resolved from the context; stash
+	// the org id so the ai client's KeyResolver can find it.
+	aiCtx := ai.ContextWithOrgID(ctx, callerOrgID.String())
+	resp, err := s.briefer.DailyBriefing(aiCtx, ai.DailyBriefingRequest{
 		Tasks:    lc.taskNames,
 		Alerts:   lc.alertTitles,
 		UserRole: callerRole,
 	})
 	if err != nil {
-		return DailyBriefing{}, fmt.Errorf("daily briefing: maestro: %w", err)
+		return DailyBriefing{}, fmt.Errorf("daily briefing: ai: %w", err)
 	}
 
 	s.recordDailyBriefingAudit(ctx, callerOrgID, callerOIDCSubject, resp, len(lc.taskNames), len(lc.alertTitles))
@@ -222,12 +214,10 @@ func (s *AgentsService) GenerateDailyBriefing(ctx context.Context, callerOrgID u
 	}, nil
 }
 
-// recordDailyBriefingAudit writes the per-call billing-audit row in a
-// short standalone tx. Resource type is "ai_run" (a Maestro
-// invocation, not a domain object); resource id is the Brain-issued
-// run_id. Metadata carries the cost_cents / tokens_used block per
-// ADR-001 D5. *_cents fields are Confidential-class per the PII
-// catalog so the existing audit scrubber preserves them.
+// recordDailyBriefingAudit writes the per-call audit row in a short
+// standalone tx. Resource type is "ai_run" (an AI invocation, not a
+// domain object); resource id is the response session id (the native
+// client is single-shot — there is no server-issued run id).
 //
 // A standalone tx is used (rather than wrapping the load-context tx
 // or some other surrounding mutation) because daily_briefing is a
@@ -235,25 +225,17 @@ func (s *AgentsService) GenerateDailyBriefing(ctx context.Context, callerOrgID u
 // tx itself fails to begin, AuditService.Record still falls through
 // to its log-and-swallow path; we never fail the user's briefing
 // because audit couldn't be written.
-func (s *AgentsService) recordDailyBriefingAudit(ctx context.Context, orgID uuid.UUID, userSub string, resp *brain.DailyBriefingResponse, taskCount, alertCount int) {
+func (s *AgentsService) recordDailyBriefingAudit(ctx context.Context, orgID uuid.UUID, userSub string, resp *ai.DailyBriefingResponse, taskCount, alertCount int) {
 	metadata, err := json.Marshal(struct {
-		RunID        uuid.UUID `json:"run_id"`
-		SessionID    uuid.UUID `json:"session_id"`
-		TokensUsed   int64     `json:"tokens_used"`
-		CostCents    int64     `json:"cost_cents"`
-		CurrencyCode string    `json:"currency_code"`
-		TaskCount    int       `json:"task_count"`
-		AlertCount   int       `json:"alert_count"`
-		Task         string    `json:"task"`
+		SessionID  uuid.UUID `json:"session_id"`
+		TaskCount  int       `json:"task_count"`
+		AlertCount int       `json:"alert_count"`
+		Task       string    `json:"task"`
 	}{
-		RunID:        resp.RunID,
-		SessionID:    resp.SessionID,
-		TokensUsed:   resp.TokensUsed,
-		CostCents:    resp.CostCents,
-		CurrencyCode: resp.CurrencyCode,
-		TaskCount:    taskCount,
-		AlertCount:   alertCount,
-		Task:         "daily_briefing",
+		SessionID:  resp.SessionID,
+		TaskCount:  taskCount,
+		AlertCount: alertCount,
+		Task:       "daily_briefing",
 	})
 	if err != nil {
 		// Marshal failures here are programmer error (the struct
@@ -268,7 +250,7 @@ func (s *AgentsService) recordDailyBriefingAudit(ctx context.Context, orgID uuid
 			UserSub:      userSub,
 			Action:       "ai.daily_briefing.invoked",
 			ResourceType: AuditResourceAIRun,
-			ResourceID:   resp.RunID,
+			ResourceID:   resp.SessionID,
 			Metadata:     metadata,
 		})
 		return nil
@@ -279,17 +261,13 @@ func (s *AgentsService) recordDailyBriefingAudit(ctx context.Context, orgID uuid
 // RecommendScheduleAdjustments. AppliedDeltas counts only adjustments
 // whose NewDurationDays was non-nil and successfully applied via
 // UpdateTask. SkippedRationaleOnly counts adjustments whose
-// NewDurationDays was nil (Brain returned a "review only" rationale
-// without a numeric delta — the row is preserved in the audit metadata
-// for transparency but no UPDATE fires). Cost block per ADR-001 D5.
+// NewDurationDays was nil (the model returned a "review only"
+// rationale without a numeric delta — the row is preserved in the
+// audit metadata for transparency but no UPDATE fires).
 type ScheduleAdjustmentSet struct {
-	Adjustments          []brain.ScheduleAdjustment `json:"adjustments"`
-	AppliedDeltas        int                        `json:"applied_deltas"`
-	SkippedRationaleOnly int                        `json:"skipped_rationale_only"`
-	RunID                uuid.UUID                  `json:"run_id"`
-	TokensUsed           int64                      `json:"tokens_used"`
-	CostCents            int64                      `json:"cost_cents"`
-	CurrencyCode         string                     `json:"currency_code"`
+	Adjustments          []ai.ScheduleAdjustment `json:"adjustments"`
+	AppliedDeltas        int                     `json:"applied_deltas"`
+	SkippedRationaleOnly int                     `json:"skipped_rationale_only"`
 }
 
 // RecommendScheduleAdjustments runs the DailyFocusAgent's schedule-tuning
@@ -297,16 +275,15 @@ type ScheduleAdjustmentSet struct {
 //
 //  1. Loads the project's task graph + dependencies (ownership-checked
 //     via VerifyProjectInOrg → ErrNotFound on cross-org access).
-//  2. Calls Brain Maestro update_schedule with the snapshot.
+//  2. Calls the native AI update_schedule task with the snapshot.
 //  3. Applies recommended duration deltas via ScheduleStore.UpdateTask
 //     inside the same tx. Adjustments with nil NewDurationDays are
 //     preserved in the audit metadata but not written.
 //  4. Writes one batch audit row keyed by project_id with
 //     Action="schedule.maestro_edit", ResourceType=AuditResourceSchedule,
-//     metadata {run_id, tokens_used, cost_cents, currency_code,
-//     recommended_delta_count, applied_deltas, skipped_rationale_only,
-//     adjustments[]}. Per-adjustment audit would create N nearly-identical
-//     rows per Maestro call with no extra signal.
+//     metadata {recommended_delta_count, applied_deltas,
+//     skipped_rationale_only, adjustments[]}. Per-adjustment audit would
+//     create N nearly-identical rows per AI call with no extra signal.
 //  5. Commits the deltas-and-audit tx.
 //  6. Synchronously re-runs ScheduleService.RecalculateSchedule (its
 //     own tx) so CPM physics re-validates with the new durations and
@@ -333,7 +310,7 @@ func (s *AgentsService) RecommendScheduleAdjustments(ctx context.Context, caller
 		return ScheduleAdjustmentSet{}, fmt.Errorf("%w: project_id is required", ErrInvalidInput)
 	}
 	if s.scheduleAdjuster == nil {
-		return ScheduleAdjustmentSet{}, ErrAgentsMaestroUnavailable
+		return ScheduleAdjustmentSet{}, ErrAgentsAIUnavailable
 	}
 	if s.scheduleStore == nil || s.scheduleService == nil {
 		return ScheduleAdjustmentSet{}, ErrAgentsScheduleServiceUnavailable
@@ -361,9 +338,9 @@ func (s *AgentsService) RecommendScheduleAdjustments(ctx context.Context, caller
 			return fmt.Errorf("load project start: %w", err)
 		}
 
-		taskSnaps := make([]brain.ScheduleTaskSnapshot, 0, len(tasks))
+		taskSnaps := make([]ai.ScheduleTaskSnapshot, 0, len(tasks))
 		for _, t := range tasks {
-			taskSnaps = append(taskSnaps, brain.ScheduleTaskSnapshot{
+			taskSnaps = append(taskSnaps, ai.ScheduleTaskSnapshot{
 				TaskID:          t.ID,
 				WBSCode:         t.WBSCode,
 				Name:            t.Name,
@@ -373,9 +350,9 @@ func (s *AgentsService) RecommendScheduleAdjustments(ctx context.Context, caller
 				IsCritical:      t.IsCritical,
 			})
 		}
-		depSnaps := make([]brain.ScheduleDepSnapshot, 0, len(deps))
+		depSnaps := make([]ai.ScheduleDepSnapshot, 0, len(deps))
 		for _, d := range deps {
-			depSnaps = append(depSnaps, brain.ScheduleDepSnapshot{
+			depSnaps = append(depSnaps, ai.ScheduleDepSnapshot{
 				PredecessorID:  d.PredecessorID,
 				SuccessorID:    d.SuccessorID,
 				DependencyType: string(d.DependencyType),
@@ -383,22 +360,23 @@ func (s *AgentsService) RecommendScheduleAdjustments(ctx context.Context, caller
 			})
 		}
 
-		// Maestro call inside the tx — a slow Brain response holds the
-		// tx open briefly. Same trade-off as ProcurementService.RecommendVendors:
+		// AI call inside the tx — a slow model response holds the tx
+		// open briefly. Same trade-off as ProcurementService.RecommendVendors:
 		// keeps the recommendation + audit + duration writes atomic so we
-		// can't end up with a recommendation tracked in Brain's ai_runs but
-		// missing on BuildOS, or a SQL update with no audit trail.
-		resp, err := s.scheduleAdjuster.UpdateSchedule(ctx, brain.UpdateScheduleRequest{
+		// can't end up with a SQL update applied but no audit trail. The
+		// per-org Anthropic key is resolved from the context.
+		aiCtx := ai.ContextWithOrgID(ctx, callerOrgID.String())
+		resp, err := s.scheduleAdjuster.UpdateSchedule(aiCtx, ai.UpdateScheduleRequest{
 			ProjectID:        projectID,
 			ProjectStartDate: projectStart.Format("2006-01-02T15:04:05Z07:00"),
 			Tasks:            taskSnaps,
 			Dependencies:     depSnaps,
 		})
 		if err != nil {
-			return fmt.Errorf("maestro update_schedule: %w", err)
+			return fmt.Errorf("ai update_schedule: %w", err)
 		}
 		if resp == nil {
-			return fmt.Errorf("maestro update_schedule: nil response")
+			return fmt.Errorf("ai update_schedule: nil response")
 		}
 
 		applied := 0
@@ -409,10 +387,11 @@ func (s *AgentsService) RecommendScheduleAdjustments(ctx context.Context, caller
 				continue
 			}
 			if *adj.NewDurationDays < 0 {
-				// Defensive — Brain shouldn't return negative durations,
-				// but if it does we drop the row rather than violating the
-				// CHECK constraint downstream and rolling back the whole
-				// batch. Skipped rows still appear in audit metadata.
+				// Defensive — the model shouldn't return negative
+				// durations, but if it does we drop the row rather than
+				// violating the CHECK constraint downstream and rolling
+				// back the whole batch. Skipped rows still appear in
+				// audit metadata.
 				skipped++
 				continue
 			}
@@ -433,10 +412,6 @@ func (s *AgentsService) RecommendScheduleAdjustments(ctx context.Context, caller
 			ResourceType: AuditResourceSchedule,
 			ResourceID:   projectID,
 			Metadata: marshalAudit(map[string]any{
-				"run_id":                  resp.RunID,
-				"tokens_used":             resp.TokensUsed,
-				"cost_cents":              resp.CostCents,
-				"currency_code":           resp.CurrencyCode,
 				"recommended_delta_count": len(resp.Adjustments),
 				"applied_deltas":          applied,
 				"skipped_rationale_only":  skipped,
@@ -448,10 +423,6 @@ func (s *AgentsService) RecommendScheduleAdjustments(ctx context.Context, caller
 			Adjustments:          resp.Adjustments,
 			AppliedDeltas:        applied,
 			SkippedRationaleOnly: skipped,
-			RunID:                resp.RunID,
-			TokensUsed:           resp.TokensUsed,
-			CostCents:            resp.CostCents,
-			CurrencyCode:         resp.CurrencyCode,
 		}
 		return nil
 	})

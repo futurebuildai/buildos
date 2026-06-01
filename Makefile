@@ -1,4 +1,4 @@
-.PHONY: build build-server build-worker build-migrate build-dev-idp dev-idp build-prod build-fork-init fork-init test test-integration test-prod lint lint-migrations lint-migrations-test migrate migrate-down db-up db-down audit bench-physics docker-build docker-run clean
+.PHONY: build build-server build-worker build-migrate build-prod build-fork-init fork-init test test-integration test-prod lint lint-migrations lint-migrations-test migrate migrate-down db-up db-down audit bench-physics docker-build docker-run clean
 
 # Default DATABASE_URL for local dev (docker-compose db on port 5433)
 DATABASE_URL ?= postgres://fb_user:fb_pass@localhost:5433/futurebuild_os?sslmode=disable
@@ -15,13 +15,9 @@ build-worker:
 build-migrate:
 	go build -o bin/migrate ./cmd/migrate
 
-# Mock OIDC issuer for staging and sales demos. NOT for production.
-build-dev-idp:
-	go build -o bin/dev-idp ./cmd/dev-idp
-
-# Fork lifecycle bootstrap tool — generates a fresh A2A signing
-# keypair + JWKS for a new customer fork. Run once per fork during
-# initial provisioning.
+# Fork lifecycle bootstrap tool — generates the JWT signing keypair,
+# AES-256 vault master key, and bootstrap token for a new customer
+# fork. Run once per fork during initial provisioning.
 build-fork-init:
 	go build -o bin/buildos-fork-init ./cmd/buildos-fork-init
 
@@ -35,14 +31,8 @@ fork-init: build-fork-init
 		$(if $(KID),--kid "$(KID)") \
 		$(if $(ORG_ID),--org-id "$(ORG_ID)")
 
-# Run the dev-idp on :8083. Point BuildOS at it with:
-#   BRAIN_JWKS_URL=http://localhost:8083/jwks BRAIN_ISSUER_URL=http://localhost:8083
-dev-idp: build-dev-idp
-	./bin/dev-idp
-
 ## Production build — same flags the Dockerfile uses.
-## - tags=prod compiles out the DEV_AUTH_MODE=header bypass (D8) and
-##   excludes cmd/dev-idp from the build set entirely.
+## - tags=prod compiles out the DEV_AUTH_MODE=header bypass (D8).
 ## - trimpath strips local paths from the binary for reproducibility.
 ## - ldflags '-s -w' strips debug info; ~30% smaller binary, no
 ##   gdb/delve attaches in prod.
@@ -132,8 +122,6 @@ docker-build:
 docker-run:
 	docker run --rm -p 8080:8080 \
 		-e DATABASE_URL=postgres://disabled \
-		-e BRAIN_ISSUER_URL=http://disabled \
-		-e BRAIN_JWKS_URL=http://disabled/jwks \
 		$(DOCKER_IMAGE):$(DOCKER_TAG)
 
 ## Clean

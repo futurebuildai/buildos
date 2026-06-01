@@ -9,8 +9,6 @@ import (
 	"testing"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-
-	"github.com/futurebuildai/buildos/internal/brain"
 )
 
 // newTestLogger returns a logger writing JSON to a buffer the test can
@@ -61,7 +59,7 @@ func TestCorrelatingHandler_StampsRequestIDFromContext(t *testing.T) {
 	var buf bytes.Buffer
 	logger := newTestLogger(&buf)
 
-	ctx := brain.ContextWithRequestID(context.Background(), "req-abc-123")
+	ctx := ContextWithRequestID(context.Background(), "req-abc-123")
 	logger.InfoContext(ctx, "test message", "extra", "value")
 
 	var record map[string]any
@@ -97,7 +95,7 @@ func TestCorrelatingHandler_EmptyRequestIDNotStamped(t *testing.T) {
 	var buf bytes.Buffer
 	logger := newTestLogger(&buf)
 
-	ctx := brain.ContextWithRequestID(context.Background(), "")
+	ctx := ContextWithRequestID(context.Background(), "")
 	logger.InfoContext(ctx, "empty id")
 
 	out := buf.String()
@@ -113,7 +111,7 @@ func TestCorrelatingHandler_PreservesWithAttrs(t *testing.T) {
 	// Logger-level attrs should survive wrapping.
 	logger = logger.With("component", "agents")
 
-	ctx := brain.ContextWithRequestID(context.Background(), "req-xyz")
+	ctx := ContextWithRequestID(context.Background(), "req-xyz")
 	logger.InfoContext(ctx, "test")
 
 	var record map[string]any
@@ -201,7 +199,7 @@ func TestCorrelatingHandler_PreservesInternalCorrelationAttrs(t *testing.T) {
 	var buf bytes.Buffer
 	logger := newTestLogger(&buf)
 
-	ctx := brain.ContextWithRequestID(context.Background(), "req-correlation-123")
+	ctx := ContextWithRequestID(context.Background(), "req-correlation-123")
 	logger.InfoContext(ctx, "test", "event_type", "feed.card.actioned", "action", "approve_quote")
 
 	var record map[string]any
@@ -278,7 +276,7 @@ func TestCorrelatingHandler_ScrubAndCorrelationCoexist(t *testing.T) {
 	tracer := tp.Tracer("test")
 	ctx, span := tracer.Start(context.Background(), "test.op")
 	defer span.End()
-	ctx = brain.ContextWithRequestID(ctx, "req-coex-1")
+	ctx = ContextWithRequestID(ctx, "req-coex-1")
 
 	logger.InfoContext(ctx, "user action",
 		"email", "alice@example.com",
@@ -325,7 +323,7 @@ func TestCorrelatingHandler_GroupScopesRequestID(t *testing.T) {
 	logger := newTestLogger(&buf)
 	logger = logger.WithGroup("svc")
 
-	ctx := brain.ContextWithRequestID(context.Background(), "req-grp")
+	ctx := ContextWithRequestID(context.Background(), "req-grp")
 	logger.InfoContext(ctx, "test", "key", "val")
 
 	var record map[string]any

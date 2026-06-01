@@ -34,7 +34,7 @@ This file is the single source of truth for the project's technology choices. Al
 
 - **Style:** REST
 - **Spec Format:** OpenAPI 3.1
-- **Auth Model:** Centralized JWT — delegates all identity and authentication to The Brain (OIDC Provider). BuildOS validates JWTs issued by The Brain and enforces local authorization (roles, permissions, resource-level access). BuildOS never stores credentials or manages login flows.
+- **Auth Model:** Native email/password. BuildOS owns identity end-to-end — argon2id password hashing, its own RS256 JWT issuer/verifier (`JWT_PRIVATE_KEY_PEM`/`JWT_PUBLIC_KEY_PEM`, `iss=buildos`, `aud=buildos`), server-revocable opaque refresh tokens, and bootstrap-token first-owner claim. No external OIDC provider. Local RBAC (`owner` > `admin` > `superintendent` > `field_worker`) plus `plan_tier` gating for AI endpoints.
 
 ## Infrastructure & Deployment
 
@@ -67,9 +67,9 @@ This file is the single source of truth for the project's technology choices. Al
 
 ## AI Service Layer
 
-- **Primary Provider:** Anthropic — Claude Opus 4.6 (reasoning, agent orchestration, complex decisions) and Claude Sonnet 4.5 (high-throughput tasks, classification, summarization)
-- **Autonomous Agents:** DailyFocus, Procurement, SubLiaison agents powered by Claude with tool use
-- **FutureShade/Tribunal:** Claude-powered decision engine for autonomous procurement approval
+- **Integration Model:** Native + BYOK. BuildOS calls the Anthropic Messages API directly (`internal/ai`) using the org's own key stored in the encrypted vault. No external AI gateway/broker. Missing/invalid key soft-fails (`503 SERVICE_UNAVAILABLE`) — the server boots without keys.
+- **Primary Provider:** Anthropic — Claude Opus 4.6 (default model: reasoning, agent orchestration, complex decisions) and Claude Sonnet 4.5 (fast model: high-throughput tasks, classification, summarization)
+- **Agent endpoints:** Daily briefing + schedule-adjustment recommendations, plan-tier gated. Procurement vendor review surfaces as a local feed card (no autonomous approval engine, no agent-to-agent webhooks).
 - **Embeddings:** Anthropic if available; fall back to open-source (e.g., nomic-embed, BGE) for pgvector ingestion if needed
 - **On-Device (Flutter):** Open-source small models permitted for offline field scenarios only (e.g., on-device OCR, photo classification)
 - **Open Source Policy:** Open-source models permitted ONLY for edge/niche use cases — on-device Flutter inference, domain-specific embeddings, or capabilities Anthropic does not offer. All core intelligence routes through Anthropic.
@@ -83,8 +83,9 @@ This file is the single source of truth for the project's technology choices. Al
   - **TypeScript ESLint Rule:** Custom rule flags `number` type annotations on properties matching monetary name patterns unless the property name ends in `Cents`. Properties ending in `Cents` must have a sibling property ending in `CurrencyCode`. Enforced via `eslint-plugin-fb` in frontend lint config.
 - **Numerical Typography:** JetBrains Mono for all numerical data fields in the UI.
 - **AI-First Principle:** Anthropic Claude is the default AI provider across the ecosystem. Do not introduce Google Vertex, OpenAI, or other commercial LLM providers unless Anthropic cannot serve the use case. Open-source models are acceptable for edge cases only.
-- **Identity Delegation:** BuildOS is a relying party. All authentication flows (login, signup, password reset, MFA) are handled by The Brain. BuildOS receives JWTs, validates them against The Brain's JWKS endpoint, and enforces local RBAC.
-- **Polyrepo:** The Brain and BuildOS are separate repositories with separate deployment lifecycles.
+- **Native Identity:** BuildOS handles all authentication flows itself (claim, login, refresh, logout, password reset). It mints and validates its own RS256 JWTs and enforces local RBAC. No external identity provider.
+- **Transactional Email:** Resend — password-reset delivery (`internal/mailer`). API key set in-app via the encrypted integrations vault; absent key soft-fails.
+- **Standalone Deployment:** Each customer runs their own forked BuildOS repo as a self-contained spoke. No external proprietary service dependency.
 - **pgvector:** Used for AI-powered features (semantic search, document similarity, recommendation). Vectors stored alongside relational data in the same PostgreSQL instance.
 - **Asynq:** Redis-backed task queue for background jobs (report generation, notification delivery, AI inference pipelines). No separate message broker needed.
 - **Flutter Scope:** Mobile app covers field-only surfaces. All administrative, planning, and management workflows are web-only.

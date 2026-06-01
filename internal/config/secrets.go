@@ -24,7 +24,7 @@ import (
 // without forking the secret-loading logic.
 type SecretSource interface {
 	// LookupSecret resolves a secret by its logical key (e.g.
-	// "BRAIN_DSN", "A2A_SIGNING_KEY"). The key namespace is
+	// "DATABASE_URL", "VAULT_MASTER_KEY"). The key namespace is
 	// flat — sources are responsible for mapping it to whatever
 	// hierarchy their backend uses (Vault path, IAM resource ARN, …).
 	//

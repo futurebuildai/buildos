@@ -15,11 +15,13 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
-	"github.com/futurebuildai/buildos/internal/a2a"
+	"github.com/futurebuildai/buildos/internal/ai"
 	"github.com/futurebuildai/buildos/internal/api"
 	"github.com/futurebuildai/buildos/internal/api/middleware"
-	"github.com/futurebuildai/buildos/internal/brain"
+	"github.com/futurebuildai/buildos/internal/auth"
 	"github.com/futurebuildai/buildos/internal/config"
+	"github.com/futurebuildai/buildos/internal/cryptobox"
+	"github.com/futurebuildai/buildos/internal/mailer"
 	"github.com/futurebuildai/buildos/internal/obs"
 	"github.com/futurebuildai/buildos/internal/service"
 	"github.com/futurebuildai/buildos/internal/store"
@@ -89,9 +91,6 @@ func run(logger *slog.Logger) error {
 
 	logger.Info("database connected", "max_conns", cfg.DBPoolMax)
 
-	// JWKS provider for JWT validation and JWS verification
-	jwks := middleware.NewJWKSProvider(cfg.BrainJWKSURL, logger)
-
 	if cfg.DevAuthMode != "" {
 		if middleware.IsProdBuild() {
 			// Fail-fast: prod build with dev auth set is almost
@@ -115,58 +114,82 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("creating river insert client: %w", err)
 	}
 
-	// Brain client — typed wrapper for The Brain's REST API (Maestro
-	// AI, billing, future Hub/MCP). Each method takes a ctx that carries
-	// the caller's Bearer token (auth middleware stashes it). The Ping
-	// method is unauth and powers the /ready readiness probe; service-
-	// layer agents land in Phase B.
 	// Process-level metrics. One Prometheus registry per process.
-	// Metrics are wired into the brain client (per-attempt counters
-	// + duration), the HTTP middleware stack (request count + duration
+	// Metrics are wired into the AI client (per-attempt counters +
+	// duration), the HTTP middleware stack (request count + duration
 	// by route), and exposed via GET /metrics.
 	metrics := obs.NewMetrics()
-
-	brainClient, err := brain.NewClient(brain.Config{
-		BaseURL: cfg.BrainIssuerURL, // Brain's API + OIDC live on the same host
-		Logger:  logger,
-		Metrics: metrics,
-	})
-	if err != nil {
-		return fmt.Errorf("creating brain client: %w", err)
-	}
-	logger.Info("brain client initialized", "base_url", cfg.BrainIssuerURL)
 
 	// Stores + services. Audit service first so domain services can
 	// receive it as a dependency.
 	auditStore := store.NewAuditStore()
 	auditService := service.NewAuditService(auditStore, logger)
 
+	// ----------------------------------------------------------------
+	// Encrypted BYOK vault (WS3). When VAULT_MASTER_KEY is configured
+	// the vault feeds the native AI client (Anthropic key) and the
+	// Resend mailer (Resend key), both resolving the per-org key at
+	// call time. When unset everything soft-fails: no AI, no email,
+	// no /integrations routes — the server still boots and serves the
+	// core domain. This is the "missing key → soft-fail / 503" posture.
+	// ----------------------------------------------------------------
+	var (
+		vaultService  *service.VaultService
+		aiClient      *ai.Client
+		resendMailer  mailer.Mailer
+		aiRecommender service.ProcurementRecommender
+		aiBriefer     service.DailyBriefer
+		aiAdjuster    service.ScheduleAdjuster
+	)
+	if cfg.VaultMasterKey != "" {
+		masterKey, err := cryptobox.ParseMasterKey(cfg.VaultMasterKey)
+		if err != nil {
+			return fmt.Errorf("parsing vault master key: %w", err)
+		}
+		cipher, err := cryptobox.NewCipher(masterKey, cfg.VaultKeyVersion)
+		if err != nil {
+			return fmt.Errorf("building vault cipher: %w", err)
+		}
+		credStore := store.NewIntegrationCredentialStore()
+		vaultService = service.NewVaultService(pool, credStore, cipher, auditService, logger, nil)
+
+		aiClient, err = ai.NewClient(ai.Config{KeyResolver: vaultService, Metrics: metrics})
+		if err != nil {
+			return fmt.Errorf("building ai client: %w", err)
+		}
+		aiRecommender = aiClient
+		aiBriefer = aiClient
+		aiAdjuster = aiClient
+
+		resendMailer = mailer.NewResendMailer(vaultService, cfg.MailFrom, cfg.MailFromName, mailer.WithLogger(logger))
+		logger.Info("vault enabled", "key_version", cfg.VaultKeyVersion)
+	} else {
+		logger.Warn("VAULT_MASTER_KEY not set — AI, email, and integrations vault are disabled")
+	}
+
+	projectStore := store.NewProjectStore()
+	projectService := service.NewProjectService(pool, projectStore, auditService)
 	financialsStore := store.NewFinancialsStore()
 	budgetService := service.NewBudgetService(pool, financialsStore, auditService)
 	pipelineStore := store.NewPipelineStore()
 	pipelineService := service.NewPipelineService(pool, pipelineStore, riverClient, auditService)
 	scheduleStore := store.NewScheduleStore()
 	scheduleService := service.NewScheduleService(pool, scheduleStore, riverClient, auditService)
-	a2aStore := store.NewA2AStore()
 	feedCardsStore := store.NewFeedCardsStore()
-	feedService := service.NewFeedService(pool, feedCardsStore, logger, riverClient, auditService)
-	// Outbound A2A emitter — typed-payload surface for queueing
-	// review_material_quote / review_labor_bid events on a pgx.Tx.
-	// Backed by the same River insert client; signing + delivery
-	// happen later in the worker via service.A2AOutboundService.
-	a2aEmitter := a2a.NewEmitter(riverClient)
+	feedService := service.NewFeedService(pool, feedCardsStore, logger, auditService)
 
 	procurementStore := store.NewProcurementStore()
-	procurementService := service.NewProcurementService(pool, procurementStore, brainClient.Maestro, a2aEmitter, auditService)
+	// recommender soft-fails to ErrAIUnavailable when the vault (hence
+	// AI client) is unconfigured; the vendor-review feed-card path
+	// works regardless via feedCardsStore.
+	procurementService := service.NewProcurementService(pool, procurementStore, aiRecommender, feedCardsStore, auditService)
 	fleetStore := store.NewFleetStore()
 	fleetService := service.NewFleetService(pool, fleetStore, auditService)
 	hrStore := store.NewHRStore()
 	hrService := service.NewHRService(pool, hrStore)
 	fieldStore := store.NewFieldStore()
 	fieldService := service.NewFieldService(pool, fieldStore, feedCardsStore, auditService)
-	agentsService := service.NewAgentsService(pool, fieldStore, feedCardsStore, scheduleStore, scheduleService, brainClient.Maestro, brainClient.Maestro, auditService)
-	a2aService := service.NewA2AService(pool, a2aStore, feedCardsStore, pipelineStore, cfg.DefaultOrgID)
-	a2aVerifier := api.NewJWKSVerifier(jwks) // verifies Brain's JWS using the same JWKS used for JWT validation
+	agentsService := service.NewAgentsService(pool, fieldStore, feedCardsStore, scheduleStore, scheduleService, aiBriefer, aiAdjuster, auditService)
 
 	// Onboarding wizard (MB-7). The same *service.SetupService
 	// satisfies both api.SetupServicer (wizard handlers) and
@@ -188,31 +211,86 @@ func run(logger *slog.Logger) error {
 		logger.Info("bootstrap token seeded for first-run wizard claim")
 	}
 
+	// ----------------------------------------------------------------
+	// Native auth (WS1). BuildOS mints + validates its own RS256 JWTs
+	// against a per-fork keypair. The TokenIssuer signs; the Verifier
+	// powers the Auth middleware. The AuthService owns the
+	// claim/login/refresh/logout/password-reset surface. The keypair
+	// is REQUIRED in production; the dev-header rig (DEV_AUTH_MODE=
+	// header) injects claims directly and needs no keys.
+	// ----------------------------------------------------------------
+	var (
+		verifier    *auth.Verifier
+		authService api.AuthServicer
+	)
+	if cfg.JWTPrivateKeyPEM != "" || cfg.JWTPublicKeyPEM != "" {
+		priv, err := auth.ParseRSAPrivateKeyPEM([]byte(cfg.JWTPrivateKeyPEM))
+		if err != nil {
+			return fmt.Errorf("parsing JWT private key: %w", err)
+		}
+		pub, err := auth.ParseRSAPublicKeyPEM([]byte(cfg.JWTPublicKeyPEM))
+		if err != nil {
+			return fmt.Errorf("parsing JWT public key: %w", err)
+		}
+		issuer, err := auth.NewTokenIssuer(priv, cfg.JWTKeyID, cfg.JWTIssuer, cfg.JWTAudience)
+		if err != nil {
+			return fmt.Errorf("building token issuer: %w", err)
+		}
+		verifier, err = auth.NewVerifier(pub, cfg.JWTIssuer, cfg.JWTAudience)
+		if err != nil {
+			return fmt.Errorf("building token verifier: %w", err)
+		}
+		userStore := store.NewUserStore()
+		as, err := service.NewAuthService(service.AuthServiceConfig{
+			Pool:       pool,
+			Users:      userStore,
+			Setup:      setupStore,
+			Issuer:     issuer,
+			Mailer:     resendMailer, // nil → AuthService falls back to no-op mailer
+			Audit:      auditService,
+			Logger:     logger,
+			RefreshTTL: cfg.AuthRefreshTTL,
+			ResetTTL:   cfg.AuthResetTTL,
+			AppBaseURL: cfg.AppBaseURL,
+		})
+		if err != nil {
+			return fmt.Errorf("building auth service: %w", err)
+		}
+		authService = as
+		logger.Info("native auth enabled", "issuer", cfg.JWTIssuer, "audience", cfg.JWTAudience)
+	} else if cfg.DevAuthMode != "header" {
+		return fmt.Errorf("JWT_PRIVATE_KEY_PEM and JWT_PUBLIC_KEY_PEM are required unless DEV_AUTH_MODE=header")
+	}
+
+	// Integrations vault servicer — interface-typed so a nil vault
+	// stays a nil interface (router guards on != nil).
+	var integrationsSvc api.IntegrationsServicer
+	if vaultService != nil {
+		integrationsSvc = vaultService
+	}
+
 	// Build the router with all route groups
 	router := api.NewRouter(api.RouterConfig{
-		Pool:               pool,
-		JWKS:               jwks,
-		IssuerURL:          cfg.BrainIssuerURL,
-		DevAuthMode:        cfg.DevAuthMode,
-		Logger:             logger,
-		BudgetService:      budgetService,
-		PipelineService:    pipelineService,
-		ScheduleService:    scheduleService,
-		FeedService:        feedService,
-		ProcurementService: procurementService,
-		FleetService:       fleetService,
-		HRService:          hrService,
-		FieldService:       fieldService,
-		A2AService:         a2aService,
-		A2AVerifier:        a2aVerifier,
-		BrainPinger:        brainClient,
-		JWKSReporter:       jwks,
-		Metrics:            metrics,
-		BillingClient:      brainClient.Billing,
-		AgentsService:      agentsService,
-		SetupService:       setupService,
-		SentryEnabled:      sentryOK,
-		RateLimiter:        middleware.NewIPRateLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst),
+		Pool:                pool,
+		Verifier:            verifier,
+		DevAuthMode:         cfg.DevAuthMode,
+		Logger:              logger,
+		AuthService:         authService,
+		ProjectService:      projectService,
+		BudgetService:       budgetService,
+		PipelineService:     pipelineService,
+		ScheduleService:     scheduleService,
+		FeedService:         feedService,
+		ProcurementService:  procurementService,
+		FleetService:        fleetService,
+		HRService:           hrService,
+		FieldService:        fieldService,
+		IntegrationsService: integrationsSvc,
+		Metrics:             metrics,
+		AgentsService:       agentsService,
+		SetupService:        setupService,
+		SentryEnabled:       sentryOK,
+		RateLimiter:         middleware.NewIPRateLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst),
 	})
 
 	srv := &http.Server{

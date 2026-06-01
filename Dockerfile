@@ -93,13 +93,10 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # BUILDOS_ROLE. Single image, dual purpose, no shell needed in the
 # runtime stage (the entrypoint is a Go binary too).
 #
-# Also handles env-to-file secret materialization for platforms that
-# lack a native file-secret mount (Railway, Fly, Render):
-#   A2A_SIGNING_KEY (multi-line PEM env)
-#     -> writes to /tmp/a2a-private.pem with 0600
-#     -> sets A2A_SIGNING_KEY_PATH if unset
-# A pre-existing file at A2A_SIGNING_KEY_PATH is never clobbered, so
-# Kubernetes / Vault Agent / Docker Secret mounts keep working.
+# Secrets reach the process via env vars or a file-secret mount
+# (resolved by internal/config.SecretSource). Multi-line PEM values
+# (JWT_PRIVATE_KEY_PEM, JWT_PUBLIC_KEY_PEM) are read directly from the
+# environment — no env-to-file materialization needed.
 COPY <<'EOF' /src/cmd/buildos-entrypoint/main.go
 package main
 
@@ -117,40 +114,7 @@ var (
 	buildDate = "unknown"
 )
 
-// materializeA2APrivateKey writes the contents of A2A_SIGNING_KEY
-// (multi-line PEM env) to a file on tmpfs and exports A2A_SIGNING_KEY_PATH
-// pointing at it. No-op when the env var is empty or the target path
-// already exists (so K8s secret mounts, Vault Agent files, etc. take
-// precedence). Intended for PaaS targets (Railway, Fly, Render) that
-// don't expose a file-secret primitive.
-func materializeA2APrivateKey() error {
-	pem := os.Getenv("A2A_SIGNING_KEY")
-	if pem == "" {
-		return nil
-	}
-	path := os.Getenv("A2A_SIGNING_KEY_PATH")
-	if path == "" {
-		path = "/tmp/a2a-private.pem"
-	}
-	if _, err := os.Stat(path); err == nil {
-		// File already present — operator-provided mount wins.
-		return nil
-	}
-	if err := os.WriteFile(path, []byte(pem), 0o600); err != nil {
-		return fmt.Errorf("write A2A key to %s: %w", path, err)
-	}
-	if err := os.Setenv("A2A_SIGNING_KEY_PATH", path); err != nil {
-		return fmt.Errorf("set A2A_SIGNING_KEY_PATH: %w", err)
-	}
-	fmt.Fprintf(os.Stderr, "buildos-entrypoint: materialized A2A_SIGNING_KEY env to %s (0600)\n", path)
-	return nil
-}
-
 func main() {
-	if err := materializeA2APrivateKey(); err != nil {
-		fmt.Fprintf(os.Stderr, "buildos-entrypoint: %v\n", err)
-		os.Exit(1)
-	}
 	role := os.Getenv("BUILDOS_ROLE")
 	if role == "" {
 		role = "server"

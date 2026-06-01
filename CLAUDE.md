@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-**BuildOS** — a Go backend (the "system of execution") for residential construction project management. **Single-tenant per customer fork** (see ADR-002), REST API + River job queue, with auth/AI/3rd-party APIs/billing all delegated to a proprietary central service called **The Brain** (see "The Brain dependency" below). The core domain object is a project schedule computed by a deterministic **Critical Path Method (CPM) physics engine**.
+**BuildOS** — a Go backend (the "system of execution") for residential construction project management. **Single-tenant per customer fork** (see ADR-002), REST API + River job queue. It is a **self-contained standalone deployment**: auth, AI, and 3rd-party credentials are all native and admin-configurable inside BuildOS (no external "Brain" service, no A2A webhooks, no billing engine). The core domain object is a project schedule computed by a deterministic **Critical Path Method (CPM) physics engine**.
 
 Companion frontends (Lit web, Flutter mobile for field surfaces) live in other repos. This repo is backend-only.
 
 **Deployment model (per [ADR-002](.agents/handoff/ADR-002-single-tenant-fork-model.md)):** every customer gets their own forked BuildOS repo and their own deployment instance — they own the core code and data. **Tenant isolation = deployment isolation.** No Postgres RLS, no per-tenant rate limiting, no multi-region routing logic in the application. A possible future co-op variant runs multi-tenant within one deployment; ships only if/when the product roadmap calls for it.
 
-Status (as of 2026-05-01): Sprints 1-5 done + Phase F core (production Dockerfile, D8 build-tag hardening, cmd/buildos-fork-init keypair generator) + observability (Prometheus /metrics, OpenTelemetry tracing, Sentry with PII masking) + secret-source abstraction. See [HANDOFF.md](HANDOFF.md) for current per-session state and [.agents/handoff/NEXT_STEPS.md](.agents/handoff/NEXT_STEPS.md) for the prioritized backlog.
+Status: Sprints 1-5 done + Phase F core (production Dockerfile, D8 build-tag hardening, cmd/buildos-fork-init keypair/vault-key generator) + observability (Prometheus /metrics, OpenTelemetry tracing, Sentry with PII masking) + secret-source abstraction + the embedded onboarding wizard (migration 010, SetupGate, bootstrap tokens — see "Onboarding wizard" below) + the standalone pivot (native email/password auth, native Anthropic AI, encrypted BYOK vault; Brain/A2A/billing removed, migration 013). See [HANDOFF.md](HANDOFF.md) for current per-session state and [.agents/handoff/NEXT_STEPS.md](.agents/handoff/NEXT_STEPS.md) for the prioritized backlog.
 
 ## Common commands
 
@@ -47,8 +47,8 @@ Integration tests live behind the `//go:build integration` build tag. They spawn
 ## Architecture
 
 Three binaries under `cmd/`:
-- `cmd/server` — Chi HTTP API on `$PORT` (default 8080). Loads config, opens pgxpool, builds JWKS provider for JWT validation, mounts routes, graceful shutdown.
-- `cmd/worker` — River job daemon. Same DB pool. Registers job kinds (DailyBriefing, ProcurementCheck, HydrateProject, DelayCascade, A2AWebhookDispatch, etc.) defined in [internal/worker/jobs.go](internal/worker/jobs.go).
+- `cmd/server` — Chi HTTP API on `$PORT` (default 8080). Loads config, opens pgxpool, builds the `auth.Verifier` from the RSA public key for JWT validation, mounts routes, graceful shutdown.
+- `cmd/worker` — River job daemon. Same DB pool. Registers job kinds defined in [internal/worker/jobs.go](internal/worker/jobs.go): `daily_briefing`, `procurement_check`, `hydrate_project`, `corporate_rollup`, `certification_alerts`, `maintenance_reminders`, `field_notification_retry`, `delay_cascade`, `pipeline_analytics`, `permit_issued_transition`.
 - `cmd/migrate` — runs River's internal migrations first, then `migrations/NNN_*.up.sql` / `.down.sql` against `schema_migrations`.
 
 Internal package layout:
@@ -59,6 +59,12 @@ Internal package layout:
 - [internal/worker](internal/worker/) — River client setup and job arg types.
 - [internal/models](internal/models/) — domain structs.
 - [internal/config](internal/config/) — env loading.
+- [internal/auth](internal/auth/) — native auth primitives: argon2id password hashing ([password.go](internal/auth/password.go)) and the RS256 JWT `TokenIssuer` / `Verifier` ([token.go](internal/auth/token.go)). BuildOS mints AND validates its own access tokens against the per-fork RSA keypair.
+- [internal/ai](internal/ai/) — native Anthropic client. Calls the Anthropic Messages API directly with the BYOK key resolved from the encrypted vault. [image.go](internal/ai/image.go) handles image input (InvoiceExtract); [resilience.go](internal/ai/resilience.go) adds retry/backoff.
+- [internal/cryptobox](internal/cryptobox/) — AES-256-GCM seal/open for the encrypted credential vault, keyed by `VAULT_MASTER_KEY`. Holds the Anthropic key, the Resend key, and 3rd-party vendor credentials — never leaves the deployment.
+- [internal/mailer](internal/mailer/) — transactional email via Resend ([resend.go](internal/mailer/resend.go)). Used for password-reset emails; the Resend API key is set in-app via the vault.
+- [internal/currency](internal/currency/) — safe integer-cents arithmetic for the Composite Currency Pattern (USD/CAD only). `ErrCrossCurrency` is the sentinel for forbidden cross-currency math.
+- [internal/setup](internal/setup/)-adjacent code — the embedded onboarding wizard (see "Onboarding wizard" below). Spans `service/setup.go`, `store/setup.go`, `api/setup.go`, `models/setup.go`, and `api/middleware/setup_gate.go`.
 
 Request flow for a schedule recalc: HTTP → JWT middleware → RBAC middleware → handler → `ScheduleService.RecalculateSchedule` (begins tx) → `ScheduleStore` loads tasks/deps → `physics.ForwardPass` + `BackwardPass` → `ScheduleStore.UpdateSchedule` writes `early_start`, `late_finish`, `total_float`, `is_critical` → if critical path changed, enqueue `DelayCascadeArgs` River job → commit.
 
@@ -71,39 +77,27 @@ Request flow for a schedule recalc: HTTP → JWT middleware → RBAC middleware 
 2. Any `_cents` column without a `currency_code` column in the same `CREATE TABLE`.
 3. **Paired up/down**: every `migrations/NNN_name.up.sql` must have a matching `.down.sql`. For irreversible migrations the down can be a single comment line documenting why.
 4. **Destructive ops require opt-in**: `DROP TABLE` / `DROP COLUMN` / `TRUNCATE` / `ALTER TYPE ... DROP VALUE` require a `-- buildos:destructive: <reason>` header anywhere in the file. Forces operator consent and surfaces the reason in PR review.
-5. **CREATE INDEX must use CONCURRENTLY** (or per-line opt-out). Plain `CREATE INDEX` takes ACCESS EXCLUSIVE for the duration of the build. Opt-out: append `-- buildos:lock-ok: <reason>` on the same line for genuinely-small / fresh-table cases (existing migrations 001-008 are all annotated this way since their indexes land on tables freshly created in the same migration).
+5. **CREATE INDEX must use CONCURRENTLY** (or per-line opt-out). Plain `CREATE INDEX` takes ACCESS EXCLUSIVE for the duration of the build. Opt-out: append `-- buildos:lock-ok: <reason>` on the same line for genuinely-small / fresh-table cases (the early migrations are all annotated this way since their indexes land on tables freshly created in the same migration).
 
 Go convention: monetary fields end in `Cents` (e.g. `TotalActualCostCents`) with a sibling `CurrencyCode` field. Don't introduce `float64` for money.
 
 The linter has its own regression suite at `scripts/lint-migrations.test.sh` with four fixtures (pass + three fail-modes). `make lint-migrations-test` runs it; both lint targets are part of `make audit`.
 
-## The Brain dependency
+## Native auth, AI, and credentials
 
-Every BuildOS deployment is a relying party of **The Brain**, a separate proprietary service operated by FutureBuild AI. Customers run their own forked BuildOS repo, but five surfaces stay owned by The Brain:
+BuildOS is self-contained. The three surfaces that were formerly delegated to an external "Brain" service are now native:
 
-1. **OIDC identity provider** — login, MFA, password reset, JWKS. BuildOS only validates the resulting JWTs (RS256) against The Brain's `BRAIN_JWKS_URL` with a 5-minute key cache. Validation lives in [internal/api/middleware/auth.go](internal/api/middleware/auth.go); RBAC roles enforced locally are `owner` > `admin` > `superintendent` > `field_worker`.
-2. **AI gateway (Maestro)** — BuildOS does not call Anthropic directly. AI features route through The Brain, which holds the API key, meters tokens, and applies markup.
-3. **Hub credential vault** — per-tenant 3rd-party API keys (Gable, LocalBlue, …) are encrypted (AES-256-GCM) and stored in The Brain. BuildOS asks The Brain to make upstream calls; raw credentials never enter the fork.
-4. **3rd-party API proxy** — Brain owns the upstream client integrations and resolves credentials per request.
-5. **Billing engine** — AI markup, ecosystem transaction fees, and PO-routing brokerage fees accrue in The Brain.
+1. **Identity** — native email/password. Passwords are argon2id-hashed ([internal/auth/password.go](internal/auth/password.go)). BuildOS mints its own RS256 access tokens via `auth.TokenIssuer` and validates them with `auth.Verifier` against the per-fork RSA keypair (`JWT_PRIVATE_KEY_PEM` / `JWT_PUBLIC_KEY_PEM`). The unauthenticated auth surface mounts under `/api/v1/auth`: `claim`, `login`, `refresh`, `logout`, `password-reset/request`, `password-reset/confirm` (see [internal/api/auth.go](internal/api/auth.go) `MountAuthRoutes`). RBAC roles are `owner` > `admin` > `superintendent` > `field_worker`. Validation middleware: [internal/api/middleware/auth.go](internal/api/middleware/auth.go).
+2. **AI** — BuildOS calls the Anthropic Messages API directly ([internal/ai](internal/ai/)) with the BYOK key from the encrypted vault. Image input (InvoiceExtract) is supported. A missing key soft-fails: the server boots, and AI-dependent endpoints return 503 until an admin configures the key.
+3. **Credentials** — the encrypted vault ([internal/cryptobox](internal/cryptobox/), AES-256-GCM under `VAULT_MASTER_KEY`) stores the Anthropic key, the Resend key, and 3rd-party vendor credentials (Gable, LocalBlue). Credentials are sealed at rest and never leave the deployment. Vendor seams call upstream APIs directly with the unsealed key.
 
-A standalone BuildOS deployment with no Brain connection has no auth, no AI features, no 3rd-party integrations, and no cross-product workflows. The Brain is load-bearing, not optional.
+Password reset emails go out via Resend ([internal/mailer](internal/mailer/)); the Resend API key is set in-app via the vault.
 
-The A2A webhook receiver uses JWS signature verification (not JWT) — different code path, different key. See [internal/api/a2a.go](internal/api/a2a.go).
+JWT wire-protocol contract: `iss="buildos"`, `aud="buildos"` (defaults; overridable via `JWT_ISSUER` / `JWT_AUDIENCE`). Because BuildOS is both the issuer and the verifier, these can be changed freely per deployment — no external coordination required.
 
 ### Alternative auth for non-production
 
-Two mechanisms cover dev, CI, staging, and sales demos:
-
-**`DEV_AUTH_MODE=header`** (dev / CI) — middleware reads claims directly from an `X-Dev-Auth: <sub>,<org_id>,<role>[,<plan_tier>]` request header instead of validating a JWT. Any role/org/persona can be exercised per request without infra. Implementation: [auth.go](internal/api/middleware/auth.go) `claimsFromDevHeader`. Leave the env unset (or `""`) in production.
-
-**`cmd/dev-idp`** (staging / sales demos) — a mock OIDC issuer that mints real RS256 JWTs against an in-process JWKS. BuildOS treats it as a stand-in for The Brain; no middleware change. Endpoints: `GET /jwks`, `POST /token`, `POST /demo/login` (pre-seeded personas: alice/owner, bob/admin, carol/superintendent, dave/field_worker), `GET /personas`. Run with `make dev-idp` (binds `:8083`); point BuildOS at it via `BRAIN_JWKS_URL=http://localhost:8083/jwks` and `BRAIN_ISSUER_URL=http://localhost:8083`. Keypair regenerates on every restart, so JWKS cache (5 min) will lag briefly after a dev-idp restart.
-
-Production-hardening TODO: build-tag gate the header path so `DEV_AUTH_MODE=header` cannot be reactivated by env flip on a prod binary. Until then, [cmd/server/main.go](cmd/server/main.go) logs a loud warning at startup if the env is set.
-
-### Wire-protocol values still on legacy names
-
-JWT `iss` is `"fb-brain"` and `aud` is `"fb-os"` — see [auth.go:226](internal/api/middleware/auth.go:226). The `aud` literal is hardcoded in the `jwt.Expected` struct; `iss` is the runtime value of `BRAIN_ISSUER_URL` (passed at line 225). These are wire-protocol contracts with The Brain and cannot be renamed unilaterally; coordinate with the Brain team before changing.
+**`DEV_AUTH_MODE=header`** (dev / CI) — middleware reads claims directly from an `X-Dev-Auth: <sub>,<org_id>,<role>[,<plan_tier>]` request header instead of validating a JWT. Any role/org/persona can be exercised per request without infra. Implementation: [auth_dev.go](internal/api/middleware/auth_dev.go) `claimsFromDevHeader`. Leave the env unset (or `""`) in production. The header path is **build-tag gated** (D8 hardening): the `prod` build ships an `auth_prod.go` stub that no-ops the header bypass, and `cmd/server` refuses to start if a prod binary sees `DEV_AUTH_MODE` set.
 
 ## Performance gates
 
@@ -125,17 +119,20 @@ Practical implications when working here:
 - If a spec is ambiguous, contradictory, missing, or impractical, **do not improvise**: write to `.agents/handoff/ESCALATION_LOG.md` and pause for the user.
 - Anthropic Claude is the default and only AI provider. Open-source models are permitted only for on-device Flutter inference or domain-specific embeddings.
 
-## Local dependency: futurebuild-brain
+## Onboarding wizard (setup subsystem)
 
-[go.mod](go.mod) ends with `replace github.com/futurebuild/futurebuild-brain => ../futurebuild-brain`. The sibling repo must be checked out at `../futurebuild-brain` for builds to resolve. If you see a missing-module error, that's the cause.
+Every fork ships with an embedded onboarding wizard that must complete before the deployment serves operational traffic. The subsystem spans five files: [internal/models/setup.go](internal/models/setup.go), [internal/store/setup.go](internal/store/setup.go), [internal/service/setup.go](internal/service/setup.go), [internal/api/setup.go](internal/api/setup.go), and [internal/api/middleware/setup_gate.go](internal/api/middleware/setup_gate.go). Schema lands in `migrations/010_setup_infrastructure.*`.
+
+- **`SetupGate` middleware** ([setup_gate.go](internal/api/middleware/setup_gate.go)) 403s (`SETUP_INCOMPLETE`) every authenticated request whose org has `onboarding_complete=false`. It runs **after** auth (needs JWT claims) and exempts `DefaultSetupGateExemptPrefixes`: `/api/v1/setup`, `/health`, `/ready`, `/metrics`. Wired in [router.go](internal/api/router.go) only when `cfg.SetupService` is non-nil; when nil, both the `/setup/*` routes and the gate are skipped.
+- **`SetupService`** ([service/setup.go](internal/service/setup.go)) follows the canonical one-tx-per-mutation + audit pattern. Wizard steps: company info → trades → cost codes → working calendar (+ holidays) → permit jurisdictions → complete. `Complete` enforces minimum prereqs (legal name, ≥1 trade, ≥1 cost code, a default calendar) and is idempotent. Every step writes a `setup.*` audit action so `/audit?action_prefix=setup.` reconstructs the run.
+- **Bootstrap tokens** gate the first-owner claim. 32-byte CSPRNG cleartext (43-char base64url), only the sha256 hash is stored in `setup_bootstrap_tokens`. Shown once by `cmd/buildos-fork-init` / operator scripts. `cmd/server` can seed one at boot from `BUILDOS_BOOTSTRAP_TOKEN` via `SeedBootstrapTokenIfNeeded` (idempotent on the UNIQUE hash). Redemption (`RedeemBootstrapTokenForSubject`) returns a **uniform** `ErrInvalidBootstrapToken` on any failure to avoid leaking probe info, and refuses cross-org redemption without consuming the token. Default TTL 7 days.
 
 ## Build-tag posture (D8 hardening)
 
 Two build modes:
 
-- **Default (`go build ./...`)** — dev/CI. `cmd/dev-idp` mock OIDC issuer compiles; `internal/api/middleware/auth_dev.go` provides a `DEV_AUTH_MODE=header` bypass for local rigs.
+- **Default (`go build ./...`)** — dev/CI. `internal/api/middleware/auth_dev.go` provides a `DEV_AUTH_MODE=header` bypass for local rigs.
 - **Production (`go build -tags=prod ./...`)** — what the Dockerfile builds.
-  - `cmd/dev-idp` does NOT compile (build constraints exclude it entirely).
   - `auth_prod.go` stub replaces `claimsFromDevHeader` — `DEV_AUTH_MODE=header` is a no-op even with the env set.
   - `cmd/server` fails fast at startup if a prod binary sees `DEV_AUTH_MODE` (refusing to start beats serving uniform 401s).
 
@@ -146,8 +143,8 @@ Adding new dev-only auth paths? Tag them `//go:build !prod` and ship a `prod` st
 Three independent layers, all turn-on-when-configured (empty config = no-op, no error):
 
 - **Sentry** — panics + tagged exception capture. `SENTRY_DSN` enables. PII is scrubbed via `BeforeSend` using the `internal/pii` classification catalog (see "PII handling" below).
-- **Prometheus `/metrics`** — HTTP request count + duration (chi route pattern, not raw URL — bounded cardinality), Brain client request count + duration, River job runs by kind + outcome. Mount unauth (Prometheus convention); restrict via network policy.
-- **OpenTelemetry traces** — `OTEL_EXPORTER_OTLP_ENDPOINT` enables. Brain client wraps its HTTP transport with `otelhttp.NewTransport` (every Brain call is a child span propagating W3C `traceparent`). Router stack mounts `otelhttp.NewHandler` (every inbound request is a span). Default sample rate 0.1.
+- **Prometheus `/metrics`** — HTTP request count + duration (chi route pattern, not raw URL — bounded cardinality), native AI request count + duration by task kind + model + outcome, River job runs by kind + outcome. Mount unauth (Prometheus convention); restrict via network policy.
+- **OpenTelemetry traces** — `OTEL_EXPORTER_OTLP_ENDPOINT` enables. Router stack mounts `otelhttp.NewHandler` (every inbound request is a span). Default sample rate 0.1.
 
 `internal/obs.CorrelatingHandler` wraps the JSON slog handler so every log record carries the standard correlation trio: `request_id` (from chi), `trace_id` + `span_id` (from active OTel span). Egress wrappers should always log via `*Context` variants (`InfoContext`, `WarnContext`, etc.) so the trio gets stamped.
 
@@ -172,17 +169,17 @@ Three independent layers, all turn-on-when-configured (empty config = no-op, no 
 
 Vault / AWS Secrets Manager / GCP Secret Manager backends follow the same prefix scheme; additive in follow-up PRs.
 
-Sensitive fields routed through the source: `DATABASE_URL`, `BRAIN_*`, `A2A_*`, `SENTRY_DSN`, `OTEL_EXPORTER_OTLP_ENDPOINT`. Non-sensitive scalars (`PORT`, `DB_POOL_MAX`, etc.) keep direct env reads.
+Sensitive fields routed through the source: `DATABASE_URL`, `JWT_PRIVATE_KEY_PEM`, `JWT_PUBLIC_KEY_PEM`, `VAULT_MASTER_KEY`, `BUILDOS_BOOTSTRAP_TOKEN`, `SENTRY_DSN`, `OTEL_EXPORTER_OTLP_ENDPOINT`. Non-sensitive scalars (`PORT`, `DB_POOL_MAX`, etc.) keep direct env reads.
 
 ## Per-customer fork lifecycle
 
-Each customer fork gets its own RSA-2048 keypair for outbound A2A signing. Generation is one command:
+Each customer fork gets its own RSA-2048 JWT signing keypair, AES-256 vault master key, and first-owner bootstrap token. Generation is one command:
 
 ```
 make fork-init OUT=./forks/acme/secrets KID=acme-2026-q2 ORG_ID=<uuid>
 ```
 
-Outputs four artifacts: `private.pem` (NEVER commit; goes in secret store), `public.pem` (committable), `jwks.json` (paste into Brain's per-fork registration), `fork.yaml` (operator-readable: kid + fingerprint + env-var reference).
+Outputs: `private.pem` (NEVER commit; the JWT signing key → `JWT_PRIVATE_KEY_PEM`), `public.pem` (committable; the JWT verification key → `JWT_PUBLIC_KEY_PEM`), `vault_master_key.txt` (NEVER commit; AES-256 vault key → `VAULT_MASTER_KEY`), `bootstrap_token.txt` (NEVER commit; one-shot first-owner claim → `BUILDOS_BOOTSTRAP_TOKEN`, redeemed at `POST /api/v1/auth/claim`), and `fork.yaml` (operator-readable: kid + fingerprint + env-var reference).
 
 Full provisioning runbook: [docs/fork-onboarding.md](docs/fork-onboarding.md).
 

@@ -7,20 +7,20 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/futurebuildai/buildos/internal/brain"
+	"github.com/futurebuildai/buildos/internal/ai"
 )
 
-// fakeBriefer is the test double for MaestroDailyBriefer. Captures the
+// fakeBriefer is the test double for DailyBriefer. Captures the
 // last request and replays a scripted response. Lets us assert the
 // caller assembled the structured-context envelope correctly without
 // spinning up an HTTP server.
 type fakeBriefer struct {
-	lastReq brain.DailyBriefingRequest
-	resp    *brain.DailyBriefingResponse
+	lastReq ai.DailyBriefingRequest
+	resp    *ai.DailyBriefingResponse
 	err     error
 }
 
-func (f *fakeBriefer) DailyBriefing(_ context.Context, req brain.DailyBriefingRequest) (*brain.DailyBriefingResponse, error) {
+func (f *fakeBriefer) DailyBriefing(_ context.Context, req ai.DailyBriefingRequest) (*ai.DailyBriefingResponse, error) {
 	f.lastReq = req
 	if f.err != nil {
 		return nil, f.err
@@ -28,17 +28,17 @@ func (f *fakeBriefer) DailyBriefing(_ context.Context, req brain.DailyBriefingRe
 	return f.resp, nil
 }
 
-// fakeAdjuster is the test double for MaestroScheduleAdjuster. Mirrors
+// fakeAdjuster is the test double for ScheduleAdjuster. Mirrors
 // fakeBriefer's shape — captures the last request, replays a scripted
 // response. Lets us validate the gating in RecommendScheduleAdjustments
-// without standing up a real Brain.
+// without standing up a real AI client.
 type fakeAdjuster struct {
-	lastReq brain.UpdateScheduleRequest
-	resp    *brain.UpdateScheduleResponse
+	lastReq ai.UpdateScheduleRequest
+	resp    *ai.UpdateScheduleResponse
 	err     error
 }
 
-func (f *fakeAdjuster) UpdateSchedule(_ context.Context, req brain.UpdateScheduleRequest) (*brain.UpdateScheduleResponse, error) {
+func (f *fakeAdjuster) UpdateSchedule(_ context.Context, req ai.UpdateScheduleRequest) (*ai.UpdateScheduleResponse, error) {
 	f.lastReq = req
 	if f.err != nil {
 		return nil, f.err
@@ -56,16 +56,16 @@ func TestAgentsService_GenerateDailyBriefing_RejectsBadInput(t *testing.T) {
 	}
 }
 
-func TestAgentsService_GenerateDailyBriefing_PropagatesMaestroError(t *testing.T) {
-	// We can't reach the Maestro call without a real DB (the tx
+func TestAgentsService_GenerateDailyBriefing_PropagatesAIError(t *testing.T) {
+	// We can't reach the AI call without a real DB (the tx
 	// runs first and would panic on nil pool). This validation-only
-	// test confirms the validation path is the gate. Maestro error
+	// test confirms the validation path is the gate. AI error
 	// propagation is exercised indirectly by the handler tests +
-	// brain client unit tests.
+	// ai client unit tests.
 	svc := NewAgentsService(nil, nil, nil, nil, nil, &fakeBriefer{err: errors.New("boom")}, nil, nil)
 	_, err := svc.GenerateDailyBriefing(context.Background(), uuid.Nil, "sub-1", "owner")
 	if !errors.Is(err, ErrInvalidInput) {
-		t.Errorf("err = %v, want ErrInvalidInput (validation precedes Maestro call)", err)
+		t.Errorf("err = %v, want ErrInvalidInput (validation precedes AI call)", err)
 	}
 }
 
@@ -100,12 +100,12 @@ func TestAgentsService_RecommendScheduleAdjustments_RejectsBadInput(t *testing.T
 func TestAgentsService_RecommendScheduleAdjustments_NilAdjusterReturnsSentinel(t *testing.T) {
 	// The worker binary doesn't expose agent endpoints, so it's
 	// allowed to construct AgentsService without a ScheduleAdjuster.
-	// In that case the flow must return ErrAgentsMaestroUnavailable
+	// In that case the flow must return ErrAgentsAIUnavailable
 	// rather than panicking on a nil method call.
 	svc := NewAgentsService(nil, nil, nil, nil, nil, &fakeBriefer{}, nil, nil)
 	_, err := svc.RecommendScheduleAdjustments(context.Background(), uuid.New(), "sub-1", uuid.New())
-	if !errors.Is(err, ErrAgentsMaestroUnavailable) {
-		t.Errorf("err = %v, want ErrAgentsMaestroUnavailable", err)
+	if !errors.Is(err, ErrAgentsAIUnavailable) {
+		t.Errorf("err = %v, want ErrAgentsAIUnavailable", err)
 	}
 }
 

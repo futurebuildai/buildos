@@ -91,8 +91,7 @@ type feedActionRequest struct {
 }
 
 // Action processes a feed card action — transitions status to
-// 'actioned', enqueues an outbound A2A event, and records the action
-// in audit_log.
+// 'actioned' and records the action in audit_log.
 //
 // POST /api/v1/feed/{cardID}/action
 func (h *FeedHandler) Action(w http.ResponseWriter, r *http.Request) {

@@ -8,14 +8,12 @@ import (
 )
 
 // FeedCard is a single notification rendered in the contractor's feed.
-// Cards land via three paths:
+// Cards land via two paths:
 //
-//  1. Background River jobs (Sprint 5: DailyBriefing, ProcurementCheck).
-//  2. A2A webhooks from The Brain (Sprint 4: review_material_quote,
-//     review_labor_bid, update_schedule, delivery_confirmation,
-//     create_feed_card, localblue.lead_captured).
-//  3. Direct service writes (e.g., Kanban→CPM transition emits a card
-//     "project XYZ moved into construction").
+//  1. Background River jobs (DailyBriefing, ProcurementCheck).
+//  2. Direct service writes (e.g., Kanban→CPM transition emits a card
+//     "project XYZ moved into construction"; vendor-review requests
+//     emit a vendor_review_requested card).
 //
 // Targeting is either user-specific (TargetUserID) or role-broadcast
 // (TargetRole). At least one must be set; service-layer validators

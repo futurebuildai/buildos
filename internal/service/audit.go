@@ -8,7 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/futurebuildai/buildos/internal/brain"
+	"github.com/futurebuildai/buildos/internal/obs"
 	"github.com/futurebuildai/buildos/internal/store"
 )
 
@@ -91,7 +91,7 @@ func (s *AuditService) Record(ctx context.Context, tx pgx.Tx, e AuditEntry) {
 			"resource_type", e.ResourceType, "resource_id", e.ResourceID)
 		return
 	}
-	requestID := brain.RequestIDFromContext(ctx)
+	requestID := obs.RequestIDFromContext(ctx)
 	err := s.store.InsertAudit(ctx, tx, store.InsertAuditParams{
 		OrgID:        e.OrgID,
 		UserSub:      e.UserSub,

@@ -27,14 +27,13 @@ type Metrics struct {
 	// bucket where they should be visible in dashboards.
 	HTTPDuration *prometheus.HistogramVec
 
-	// BrainRequests counts every outbound call to The Brain by
-	// method, path, and status class. Useful to see "Brain is
-	// degraded for AI calls but healthy for billing", etc.
-	BrainRequests *prometheus.CounterVec
+	// AIRequests counts every native Anthropic call by task kind,
+	// model, and outcome ("success" / "error").
+	AIRequests *prometheus.CounterVec
 
-	// BrainDuration tracks Brain request latency. Buckets shifted
-	// upward since Maestro LLM calls are typically 5-30s.
-	BrainDuration *prometheus.HistogramVec
+	// AIDuration tracks native AI call latency. Buckets shifted
+	// upward since LLM calls are typically 5-30s.
+	AIDuration *prometheus.HistogramVec
 
 	// JobRuns counts every River job execution by kind and
 	// outcome ("success" / "error" / "discarded").
@@ -73,25 +72,25 @@ func NewMetrics() *Metrics {
 		},
 		[]string{"route", "method"},
 	)
-	brainReqs := prometheus.NewCounterVec(
+	aiReqs := prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: "buildos",
-			Subsystem: "brain",
+			Subsystem: "ai",
 			Name:      "requests_total",
-			Help:      "Count of outbound Brain HTTP calls by method, path, status class.",
+			Help:      "Count of native Anthropic calls by task kind, model, and outcome.",
 		},
-		[]string{"method", "path", "status"},
+		[]string{"kind", "model", "outcome"},
 	)
-	brainDur := prometheus.NewHistogramVec(
+	aiDur := prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Namespace: "buildos",
-			Subsystem: "brain",
+			Subsystem: "ai",
 			Name:      "request_duration_seconds",
-			Help:      "Brain HTTP call duration in seconds.",
-			// LLM calls dominate; widen the bucket set toward 30s.
+			Help:      "Native Anthropic call duration in seconds, by task kind + model.",
+			// LLM calls dominate; widen the bucket set toward 60s.
 			Buckets: []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 30, 60},
 		},
-		[]string{"method", "path"},
+		[]string{"kind", "model"},
 	)
 	jobRuns := prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -103,15 +102,15 @@ func NewMetrics() *Metrics {
 		[]string{"kind", "outcome"},
 	)
 
-	r.MustRegister(httpReqs, httpDur, brainReqs, brainDur, jobRuns)
+	r.MustRegister(httpReqs, httpDur, aiReqs, aiDur, jobRuns)
 
 	return &Metrics{
-		registry:      r,
-		HTTPRequests:  httpReqs,
-		HTTPDuration:  httpDur,
-		BrainRequests: brainReqs,
-		BrainDuration: brainDur,
-		JobRuns:       jobRuns,
+		registry:     r,
+		HTTPRequests: httpReqs,
+		HTTPDuration: httpDur,
+		AIRequests:   aiReqs,
+		AIDuration:   aiDur,
+		JobRuns:      jobRuns,
 	}
 }
 
@@ -191,13 +190,16 @@ func (w *statusCapturingWriter) WriteHeader(code int) {
 	w.ResponseWriter.WriteHeader(code)
 }
 
-// ObserveBrain records one outbound Brain call. Call from the brain
-// client wrapper (or directly in doRequest) on every completed
-// attempt. status="0xx" indicates a transport error before any
-// response.
-func (m *Metrics) ObserveBrain(method, path string, statusCode int, dur time.Duration) {
-	m.BrainRequests.WithLabelValues(method, path, statusClass(statusCode)).Inc()
-	m.BrainDuration.WithLabelValues(method, path).Observe(dur.Seconds())
+// ObserveAICall records one native Anthropic call. It satisfies
+// ai.MetricsObserver. outcome is derived from err: "success" when nil,
+// "error" otherwise. Wired into the AI client via ai.Config.Metrics.
+func (m *Metrics) ObserveAICall(kind, model string, dur time.Duration, err error) {
+	outcome := "success"
+	if err != nil {
+		outcome = "error"
+	}
+	m.AIRequests.WithLabelValues(kind, model, outcome).Inc()
+	m.AIDuration.WithLabelValues(kind, model).Observe(dur.Seconds())
 }
 
 // ObserveJob records one River job execution. Call from a worker

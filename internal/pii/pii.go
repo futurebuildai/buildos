@@ -230,7 +230,7 @@ func scrubValue(field string, v any, threshold Class) any {
 
 // ScrubJSON unmarshals JSON, scrubs the result via ScrubMap, and
 // re-marshals. Used for raw payload blobs (audit_log.before_state /
-// after_state, A2A envelope payloads) where the structure is
+// after_state) where the structure is
 // dynamic. Returns the input unchanged on parse failure — better
 // to ship a maybe-leaky payload than to drop the audit/event
 // entirely.

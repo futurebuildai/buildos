@@ -28,7 +28,6 @@ type SetupServicer interface {
 	AddHoliday(ctx context.Context, in service.AddHolidayInput) (models.HolidayOverride, error)
 	AddJurisdiction(ctx context.Context, in service.AddJurisdictionInput) (models.PermitJurisdiction, error)
 	Complete(ctx context.Context, in service.CompleteSetupInput) (models.CompanyProfile, error)
-	RedeemBootstrapTokenForSubject(ctx context.Context, cleartext, subject string, callerOrgID uuid.UUID) (service.RedeemedBootstrapToken, error)
 	// IsOnboardingComplete is consumed by the SetupGate middleware
 	// (matches mw.OnboardingChecker). Kept on this interface so a
 	// single concrete service satisfies both the wizard handlers
@@ -427,74 +426,16 @@ func (h *SetupHandler) Complete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, map[string]any{"company_profile": cp})
 }
 
-// ---------- POST /setup/bootstrap ----------
-
-type bootstrapRequest struct {
-	Token string `json:"token"`
-}
-
-type bootstrapResponse struct {
-	Redeemed bool      `json:"redeemed"`
-	OrgID    uuid.UUID `json:"org_id"`
-	TokenID  uuid.UUID `json:"token_id"`
-}
-
-// Bootstrap redeems the one-shot owner-claim token shipped via
-// fork-init. JWT-authenticated but NOT admin-gated — the cleartext
-// token IS the admin-grant proof. Cross-org safety is enforced
-// inside the service.
-//
-// POST /api/v1/setup/bootstrap
-func (h *SetupHandler) Bootstrap(w http.ResponseWriter, r *http.Request) {
-	var body bootstrapRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid JSON body")
-		return
-	}
-	if body.Token == "" {
-		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "token is required")
-		return
-	}
-	claims := mw.MustClaimsFromContext(r.Context())
-	if claims.Sub == "" {
-		writeErrorResponse(w, r, http.StatusUnauthorized, "UNAUTHORIZED", "subject claim required")
-		return
-	}
-	callerOrgID, ok := callerOrgIDFromClaims(w, r)
-	if !ok {
-		return
-	}
-	out, err := h.svc.RedeemBootstrapTokenForSubject(r.Context(), body.Token, claims.Sub, callerOrgID)
-	if err != nil {
-		writeSetupError(w, r, err)
-		return
-	}
-	writeJSON(w, r, http.StatusOK, bootstrapResponse{
-		Redeemed: true,
-		OrgID:    out.OrgID,
-		TokenID:  out.ID,
-	})
-}
-
 // ---------- error mapping ----------
 
 // writeSetupError maps service sentinel errors to HTTP responses.
 //
-//	ErrInvalidBootstrapToken       → 401 INVALID_BOOTSTRAP_TOKEN (intentionally
-//	                                  uniform across all token failure modes —
-//	                                  per security analysis in service/setup.go)
-//	ErrBootstrapUserNotProvisioned → 412 PRECONDITION_FAILED  (Brain JIT user
-//	                                  provisioning hasn't run for this subject)
 //	ErrSetupAlreadyComplete        → 409 SETUP_ALREADY_COMPLETE
 //	ErrNotFound                    → 404 NOT_FOUND
 //	ErrInvalidInput                → 400 VALIDATION_ERROR
 //	default                        → 500 INTERNAL_ERROR (don't leak DB)
 func writeSetupError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
-	case errors.Is(err, service.ErrInvalidBootstrapToken):
-		writeErrorResponse(w, r, http.StatusUnauthorized, "INVALID_BOOTSTRAP_TOKEN", "bootstrap token invalid or expired")
-	case errors.Is(err, service.ErrBootstrapUserNotProvisioned):
-		writeErrorResponse(w, r, http.StatusPreconditionFailed, "BOOTSTRAP_USER_NOT_PROVISIONED", err.Error())
 	case errors.Is(err, service.ErrSetupAlreadyComplete):
 		writeErrorResponse(w, r, http.StatusConflict, "SETUP_ALREADY_COMPLETE", err.Error())
 	case errors.Is(err, service.ErrNotFound):
@@ -514,14 +455,9 @@ func writeSetupError(w http.ResponseWriter, r *http.Request, err error) {
 // /api/v1/setup).
 func MountSetupRoutes(r chi.Router, h *SetupHandler) {
 	r.Route("/api/v1/setup", func(r chi.Router) {
-		// Bootstrap requires Auth (so we know the caller's JWT sub
-		// and org_id) but NOT admin RBAC. The cleartext token is
-		// the privilege grant; gating on RoleAdmin here would
-		// require Brain to pre-assign admin before bootstrap,
-		// defeating the point.
-		r.Post("/bootstrap", h.Bootstrap)
-
-		// Every other wizard step requires admin minimum.
+		// Every wizard step requires admin minimum. First-owner
+		// claim (bootstrap-token redemption) is handled by the
+		// native auth flow at POST /api/v1/auth/claim, not here.
 		r.Group(func(r chi.Router) {
 			r.Use(mw.RequireMinRole(mw.RoleAdmin))
 			r.Get("/state", h.State)

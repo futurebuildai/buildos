@@ -22,7 +22,7 @@ import (
 //
 // All methods take a pgx.Tx so the service layer can compose wizard
 // steps inside one transaction with the audit-log write (matches the
-// pattern in schedule.go, a2a.go).
+// pattern in schedule.go).
 type SetupStore struct{}
 
 // NewSetupStore constructs a SetupStore. Stateless — safe to share.
@@ -425,32 +425,6 @@ func (s *SetupStore) CreatePermitJurisdiction(ctx context.Context, tx pgx.Tx, p 
 		return models.PermitJurisdiction{}, fmt.Errorf("insert permit jurisdiction: %w", err)
 	}
 	return j, nil
-}
-
-// LookupUserIDBySubject resolves an OIDC subject (the `sub` JWT
-// claim — stored as users.oidc_subject) to a users.id UUID scoped
-// to the caller's org. Used by the bootstrap-redeem HTTP path so the
-// setup_bootstrap_tokens.redeemed_by FK can point at a real user
-// row. Returns ErrNotFound when no user matches — the caller (HTTP
-// handler) maps this to 412 PRECONDITION_FAILED so operators
-// understand that Brain JIT user provisioning has not yet run for
-// this subject.
-//
-// Duplicates the same SQL pattern in field.go intentionally; cross-
-// store deps were avoided in W1/W2 so SetupStore stays self-contained.
-func (s *SetupStore) LookupUserIDBySubject(ctx context.Context, tx pgx.Tx, subject string, orgID uuid.UUID) (uuid.UUID, error) {
-	var id uuid.UUID
-	err := tx.QueryRow(ctx, `
-		SELECT id FROM users WHERE oidc_subject = $1 AND org_id = $2`,
-		subject, orgID,
-	).Scan(&id)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return uuid.Nil, ErrNotFound
-		}
-		return uuid.Nil, fmt.Errorf("lookup user_id by subject: %w", err)
-	}
-	return id, nil
 }
 
 // ListPermitJurisdictions returns all permit jurisdictions for an org,

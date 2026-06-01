@@ -6,8 +6,6 @@ import (
 	"os"
 	"strconv"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 // Config holds all application configuration loaded from environment variables.
@@ -21,19 +19,43 @@ type Config struct {
 	// Server
 	Port string
 
-	// Auth (The Brain OIDC)
-	BrainJWKSURL   string
-	BrainIssuerURL string
+	// Native auth (WS1). BuildOS mints + validates its own RS256 JWTs
+	// against a per-fork keypair; there is no external IdP. The PEM
+	// material is secret-sourced; the issuer/audience are wire-protocol
+	// constants defaulting to "buildos". Required unless
+	// DevAuthMode=="header" (dev/CI rigs that inject claims directly).
+	JWTPrivateKeyPEM string // PKCS#1 or PKCS#8 RSA private key PEM (secret)
+	JWTPublicKeyPEM  string // PKIX or PKCS#1 RSA public key PEM (secret)
+	JWTKeyID         string // JWS `kid` header; defaults to "buildos-1"
+	JWTIssuer        string // iss claim; defaults to "buildos"
+	JWTAudience      string // aud claim; defaults to "buildos"
+
+	// AppBaseURL is the public base URL of the deployment, used to
+	// build password-reset links in outbound email. Empty disables the
+	// link (the reset token is still emailed bare for manual use).
+	AppBaseURL string
+
+	// Auth token lifetimes. 0 == use the AuthService defaults
+	// (refresh 30d, reset 1h).
+	AuthRefreshTTL time.Duration
+	AuthResetTTL   time.Duration
+
+	// Vault (WS3) — encrypted BYOK credential store. VaultMasterKey is
+	// a standard-base64 32-byte AES-256 key (secret). Empty disables
+	// the vault entirely: no AI, no mailer, no /integrations routes
+	// (soft-fail — the server still boots and serves the core domain).
+	VaultMasterKey  string
+	VaultKeyVersion int // key-rotation version stamped on sealed rows; defaults to 1
+
+	// Mailer (WS3) — Resend transactional email. The Resend API key is
+	// set in-app by the owner via the vault (provider="resend"), NOT
+	// here; these only configure the static sender identity.
+	MailFrom     string // From: address (e.g. "noreply@acme.example")
+	MailFromName string // From display name; defaults to "BuildOS"
 
 	// DevAuthMode: "" = production (validate JWTs only), "header" = inject claims from X-Dev-Auth.
 	// Never set to a non-empty value in production. Future hardening: build-tag gate the header path.
 	DevAuthMode string
-
-	// DefaultOrgID is the fallback tenant for A2A webhooks that arrive
-	// without an explicit org_id in the envelope. Set in single-tenant
-	// fork deployments. Co-op multi-tenant variants leave this empty
-	// and require Brain to populate org_id on every event.
-	DefaultOrgID *uuid.UUID
 
 	// BootstrapToken is the one-shot owner-claim cleartext that
 	// cmd/server materializes into setup_bootstrap_tokens at boot.
@@ -41,14 +63,6 @@ type Config struct {
 	// cmd/buildos-fork-init instead). Format: 43 chars base64url
 	// (32 random bytes, no padding). See docs/fork-onboarding.md.
 	BootstrapToken string
-
-	// Outbound A2A — JWS-signed POST to Brain's webhook receiver.
-	// Empty A2ASigningKeyPath disables outbound dispatch; the worker
-	// falls back to a no-op (queued events drain but discard with a
-	// warning log). All three fields must be set together.
-	BrainOutboundURL  string // e.g. "https://brain.example/api/v1/a2a/webhook"; "" defaults to BrainIssuerURL+"/api/v1/a2a/webhook"
-	A2ASigningKeyPath string // path to PKCS#1 or PKCS#8 PEM RSA private key
-	A2AKeyID          string // JWS `kid` header value; defaults to "buildos-1"
 
 	// Sentry — error reporting. Empty SentryDSN disables initialization
 	// entirely; ops can ship without a DSN configured and add it
@@ -58,9 +72,8 @@ type Config struct {
 	SentryRelease     string  // build SHA or version tag; empty uses Sentry's auto-release
 	SentryTracesRate  float64 // 0.0 disables performance tracing; defaults to 0.0
 
-	// Rate limiting — per-IP token bucket. Stopgap until the unified
-	// per-tenant credit system (Maestro + Brain coordinated) lands.
-	// Defaults are deliberately permissive: 50 rps steady, 100 burst.
+	// Rate limiting — per-IP token bucket. Defaults are deliberately
+	// permissive: 50 rps steady, 100 burst.
 	RateLimitRPS   int // requests per second per IP; 0 = use default
 	RateLimitBurst int // burst capacity per IP; 0 = use default
 
@@ -68,7 +81,7 @@ type Config struct {
 	// the SDK falls back to a no-op tracer that's safe to call but
 	// emits nothing. The W3C TraceContext propagator is set
 	// regardless so trace_ids still flow over inbound headers and
-	// outbound Brain calls — useful for log correlation even when
+	// outbound HTTP calls — useful for log correlation even when
 	// not exporting spans.
 	OTelEndpoint   string  // OTLP-HTTP collector URL; "" disables
 	OTelInsecure   bool    // allow plaintext HTTP to collector (loopback / sidecar only)
@@ -102,10 +115,10 @@ func (p PhysicsConfig) WithDefaults() PhysicsConfig {
 // keeps the legacy behavior, "file:/path" or "chain:..." routes
 // secrets through the operator's chosen store.
 //
-// Secret-bearing fields (DATABASE_URL, BRAIN_*, A2A_*, SENTRY_DSN)
-// resolve through the source. Non-sensitive scalars (DB_POOL_MAX,
-// PORT, etc.) stay direct env reads; pushing those through a vault
-// would add latency without security benefit.
+// Secret-bearing fields (DATABASE_URL, JWT_*, VAULT_MASTER_KEY,
+// SENTRY_DSN) resolve through the source. Non-sensitive scalars
+// (DB_POOL_MAX, PORT, etc.) stay direct env reads; pushing those
+// through a vault would add latency without security benefit.
 func Load() (*Config, error) {
 	src, err := LoadSecretSource(context.Background(), os.Getenv("CONFIG_SOURCE"))
 	if err != nil {
@@ -145,17 +158,26 @@ func LoadWithSource(ctx context.Context, src SecretSource) (*Config, error) {
 
 		Port: getEnvStr("PORT", "8080"),
 
-		BrainJWKSURL:   secret("BRAIN_JWKS_URL"),
-		BrainIssuerURL: secret("BRAIN_ISSUER_URL"),
+		JWTPrivateKeyPEM: secret("JWT_PRIVATE_KEY_PEM"),
+		JWTPublicKeyPEM:  secret("JWT_PUBLIC_KEY_PEM"),
+		JWTKeyID:         getEnvStr("JWT_KEY_ID", "buildos-1"),
+		JWTIssuer:        getEnvStr("JWT_ISSUER", "buildos"),
+		JWTAudience:      getEnvStr("JWT_AUDIENCE", "buildos"),
 
-		DevAuthMode:  getEnvStr("DEV_AUTH_MODE", ""),
-		DefaultOrgID: parseOptionalUUID(os.Getenv("DEFAULT_ORG_ID")),
+		AppBaseURL: getEnvStr("APP_BASE_URL", ""),
+
+		AuthRefreshTTL: getEnvDuration("AUTH_REFRESH_TTL", 0),
+		AuthResetTTL:   getEnvDuration("AUTH_RESET_TTL", 0),
+
+		VaultMasterKey:  secret("VAULT_MASTER_KEY"),
+		VaultKeyVersion: getEnvInt("VAULT_KEY_VERSION", 1),
+
+		MailFrom:     getEnvStr("MAIL_FROM", ""),
+		MailFromName: getEnvStr("MAIL_FROM_NAME", "BuildOS"),
+
+		DevAuthMode: getEnvStr("DEV_AUTH_MODE", ""),
 
 		BootstrapToken: secret("BUILDOS_BOOTSTRAP_TOKEN"),
-
-		BrainOutboundURL:  secret("BRAIN_OUTBOUND_URL"),
-		A2ASigningKeyPath: secret("A2A_SIGNING_KEY_PATH"),
-		A2AKeyID:          getEnvStr("A2A_KEY_ID", "buildos-1"),
 
 		SentryDSN:         secret("SENTRY_DSN"),
 		SentryEnvironment: getEnvStr("SENTRY_ENVIRONMENT", "dev"),
@@ -217,19 +239,4 @@ func getEnvDuration(key string, fallback time.Duration) time.Duration {
 		}
 	}
 	return fallback
-}
-
-// parseOptionalUUID returns nil for an empty string. Malformed UUIDs
-// also return nil — config loads silently rather than failing startup;
-// the resulting nil triggers an explicit ErrInvalidInput at the first
-// A2A webhook arrival, which is loud enough.
-func parseOptionalUUID(s string) *uuid.UUID {
-	if s == "" {
-		return nil
-	}
-	id, err := uuid.Parse(s)
-	if err != nil {
-		return nil
-	}
-	return &id
 }

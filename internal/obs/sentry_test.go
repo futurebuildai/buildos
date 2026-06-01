@@ -10,7 +10,6 @@ import (
 
 	"github.com/getsentry/sentry-go"
 
-	"github.com/futurebuildai/buildos/internal/brain"
 	"github.com/futurebuildai/buildos/internal/pii"
 )
 
@@ -76,7 +75,7 @@ func TestCaptureError_UninitializedSDKDoesNotPanic(t *testing.T) {
 			t.Errorf("CaptureError panicked with no SDK: %v", r)
 		}
 	}()
-	ctx := brain.ContextWithRequestID(context.Background(), "req-test")
+	ctx := ContextWithRequestID(context.Background(), "req-test")
 	_ = CaptureError(ctx, errors.New("test error"), map[string]string{"area": "smoke"})
 }
 

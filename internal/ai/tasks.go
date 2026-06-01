@@ -1,0 +1,462 @@
+package ai
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+
+	"github.com/google/uuid"
+)
+
+// This file implements the typed task surface for native AI calls.
+// Each method is a single-shot, discriminated AI call dispatched
+// natively to Anthropic. The request/response struct shapes carry
+// only domain data — no cost/token/usage metadata, which was a
+// billing concern and is intentionally absent in the standalone
+// deployment.
+//
+// Model selection per task:
+//   - DailyBriefing, IntentClassify → FastModel (cheap classification /
+//     prose).
+//   - InvoiceExtract, ProcurementRecommend, TribunalReview,
+//     UpdateSchedule → Model (Opus; heavier reasoning).
+//
+// Each method returns ErrUnconfigured when no Anthropic key is available
+// for the org (via the KeyResolver). The org id is read from the context
+// (ContextWithOrgID).
+
+// ---- daily_briefing ----------------------------------------------------
+
+// DailyBriefingRequest is the input payload for the daily briefing — the
+// morning briefing surface the field/web home screen renders.
+//
+// SessionID is preserved for shape-compatibility with the prior service
+// contract; the native client is single-shot (no server-side session),
+// so it is echoed back unchanged on the response.
+type DailyBriefingRequest struct {
+	SessionID *uuid.UUID `json:"session_id,omitempty"`
+	Tasks     []string   `json:"tasks"`
+	Alerts    []string   `json:"alerts"`
+	UserRole  string     `json:"user_role,omitempty"`
+}
+
+// DailyBriefingResponse carries the rendered briefing back to the caller.
+type DailyBriefingResponse struct {
+	SessionID uuid.UUID `json:"session_id"`
+	Reply     string    `json:"reply"`
+}
+
+const dailyBriefingSystem = `You are the BuildOS daily briefing assistant for a residential construction team. ` +
+	`Given today's tasks and active alerts, write a concise, prioritized morning briefing in plain prose. ` +
+	`Lead with the most urgent alerts, then the day's tasks. Keep it under 200 words. Address the reader by their role when provided.`
+
+// DailyBriefing generates the morning briefing prose. Uses FastModel.
+func (c *Client) DailyBriefing(ctx context.Context, req DailyBriefingRequest) (*DailyBriefingResponse, error) {
+	prompt, err := json.Marshal(struct {
+		Tasks    []string `json:"tasks"`
+		Alerts   []string `json:"alerts"`
+		UserRole string   `json:"user_role,omitempty"`
+	}{Tasks: req.Tasks, Alerts: req.Alerts, UserRole: req.UserRole})
+	if err != nil {
+		return nil, fmt.Errorf("ai.DailyBriefing: marshal prompt: %w", err)
+	}
+
+	reply, err := c.callText(ctx, "daily_briefing", c.fastModel, dailyBriefingSystem, []contentBlock{
+		textBlock("Generate the daily briefing for this context:\n" + string(prompt)),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ai.DailyBriefing: %w", err)
+	}
+
+	// Single-shot: echo the caller's session id (or mint one) so the
+	// response shape matches the prior contract.
+	sid := uuid.New()
+	if req.SessionID != nil {
+		sid = *req.SessionID
+	}
+	return &DailyBriefingResponse{SessionID: sid, Reply: reply}, nil
+}
+
+// ---- intent_classify --------------------------------------------------
+
+// IntentClassifyRequest is the input for intent classification — fed
+// inbound free-form text and returns a structured intent + entities.
+type IntentClassifyRequest struct {
+	Utterance string `json:"utterance"`
+	// Channel is "sms", "voice", "chat", "email". Optional; defaults to
+	// "chat".
+	Channel string `json:"channel,omitempty"`
+}
+
+// IntentClassifyResponse is the structured classification. Confidence is
+// 0.0–1.0; treat <0.6 as ambiguous.
+type IntentClassifyResponse struct {
+	Intent     string            `json:"intent"`
+	Confidence float64           `json:"confidence"`
+	Entities   map[string]string `json:"entities,omitempty"`
+}
+
+const intentClassifySystem = `You classify inbound construction-domain messages into a structured intent. ` +
+	`Return the intent label, a 0.0-1.0 confidence, and any extracted entities as string key/value pairs.`
+
+var intentClassifySchema = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "intent": {"type": "string", "description": "the classified intent label"},
+    "confidence": {"type": "number", "description": "0.0 to 1.0 confidence"},
+    "entities": {"type": "object", "additionalProperties": {"type": "string"}, "description": "extracted entities"}
+  },
+  "required": ["intent", "confidence"]
+}`)
+
+// IntentClassify classifies an utterance. Tool call, uses FastModel.
+func (c *Client) IntentClassify(ctx context.Context, req IntentClassifyRequest) (*IntentClassifyResponse, error) {
+	if req.Utterance == "" {
+		return nil, fmt.Errorf("ai.IntentClassify: utterance is required")
+	}
+	channel := req.Channel
+	if channel == "" {
+		channel = "chat"
+	}
+
+	raw, err := c.callTool(ctx, "intent_classify", c.fastModel, intentClassifySystem,
+		[]contentBlock{textBlock(fmt.Sprintf("Channel: %s\nMessage: %s", channel, req.Utterance))},
+		"classify_intent", intentClassifySchema)
+	if err != nil {
+		return nil, fmt.Errorf("ai.IntentClassify: %w", err)
+	}
+
+	var out IntentClassifyResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("ai.IntentClassify: decode tool output: %w", err)
+	}
+	return &out, nil
+}
+
+// ---- invoice_extract --------------------------------------------------
+
+// InvoiceExtractRequest is the input for invoice extraction. Either
+// DocumentURL (a signed URL to a PDF/image) or raw Text must be set.
+type InvoiceExtractRequest struct {
+	DocumentURL string `json:"document_url,omitempty"`
+	Text        string `json:"text,omitempty"`
+}
+
+// InvoiceExtractLineItem is one row from the parsed invoice. AmountCents
+// + the response-level CurrencyCode are paired per the Composite
+// Currency Pattern.
+type InvoiceExtractLineItem struct {
+	Description string `json:"description"`
+	Quantity    int    `json:"quantity"`
+	UnitCents   int64  `json:"unit_cents"`
+	AmountCents int64  `json:"amount_cents"`
+}
+
+// InvoiceExtractResponse is the parsed invoice.
+type InvoiceExtractResponse struct {
+	VendorName   string                   `json:"vendor_name"`
+	InvoiceNo    string                   `json:"invoice_no"`
+	IssuedDate   string                   `json:"issued_date,omitempty"` // YYYY-MM-DD
+	TotalCents   int64                    `json:"total_cents"`
+	CurrencyCode string                   `json:"invoice_currency_code"`
+	LineItems    []InvoiceExtractLineItem `json:"line_items"`
+}
+
+const invoiceExtractSystem = `You extract structured invoice data from a vendor invoice (image or text). ` +
+	`All monetary values must be returned as integer cents (no floats). ` +
+	`currency_code must be a 3-letter ISO code (USD or CAD). ` +
+	`issued_date must be YYYY-MM-DD. Return one line item per row.`
+
+var invoiceExtractSchema = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "vendor_name": {"type": "string"},
+    "invoice_no": {"type": "string"},
+    "issued_date": {"type": "string", "description": "YYYY-MM-DD"},
+    "total_cents": {"type": "integer", "description": "total in integer cents"},
+    "invoice_currency_code": {"type": "string", "description": "USD or CAD"},
+    "line_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "description": {"type": "string"},
+          "quantity": {"type": "integer"},
+          "unit_cents": {"type": "integer"},
+          "amount_cents": {"type": "integer"}
+        },
+        "required": ["description", "amount_cents"]
+      }
+    }
+  },
+  "required": ["vendor_name", "invoice_no", "total_cents", "invoice_currency_code", "line_items"]
+}`)
+
+// InvoiceExtract extracts structured invoice data. Tool call, uses Model
+// (Opus). When DocumentURL is set, the document is fetched and included
+// as an image content block; otherwise the Text falls back to a text
+// block.
+func (c *Client) InvoiceExtract(ctx context.Context, req InvoiceExtractRequest) (*InvoiceExtractResponse, error) {
+	if req.DocumentURL == "" && req.Text == "" {
+		return nil, fmt.Errorf("ai.InvoiceExtract: document_url or text is required")
+	}
+
+	var userContent []contentBlock
+	if req.DocumentURL != "" {
+		mediaType, b64, err := c.fetchDocumentImage(ctx, req.DocumentURL)
+		if err != nil {
+			return nil, fmt.Errorf("ai.InvoiceExtract: %w", err)
+		}
+		userContent = []contentBlock{
+			textBlock("Extract the invoice data from the attached document image."),
+			{Type: "image", Source: &imageSource{Type: "base64", MediaType: mediaType, Data: b64}},
+		}
+	} else {
+		userContent = []contentBlock{
+			textBlock("Extract the invoice data from the following text:\n" + req.Text),
+		}
+	}
+
+	raw, err := c.callTool(ctx, "invoice_extract", c.model, invoiceExtractSystem,
+		userContent, "extract_invoice", invoiceExtractSchema)
+	if err != nil {
+		return nil, fmt.Errorf("ai.InvoiceExtract: %w", err)
+	}
+
+	var out InvoiceExtractResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("ai.InvoiceExtract: decode tool output: %w", err)
+	}
+	return &out, nil
+}
+
+// ---- procurement_recommend --------------------------------------------
+
+// ProcurementRecommendRequest is the input for procurement
+// recommendations.
+type ProcurementRecommendRequest struct {
+	MaterialRequestID uuid.UUID `json:"material_request_id"`
+	BudgetCents       int64     `json:"budget_cents,omitempty"`
+	CurrencyCode      string    `json:"currency_code,omitempty"` // USD | CAD
+}
+
+// ProcurementVendorRec is one ranked vendor recommendation.
+type ProcurementVendorRec struct {
+	VendorID            uuid.UUID `json:"vendor_id"`
+	VendorName          string    `json:"vendor_name"`
+	PredictedSpendCents int64     `json:"predicted_spend_cents"`
+	CurrencyCode        string    `json:"currency_code"`
+	Confidence          float64   `json:"confidence"`
+	Reasoning           string    `json:"reasoning,omitempty"`
+}
+
+// ProcurementRecommendResponse carries the ranked recommendations.
+type ProcurementRecommendResponse struct {
+	Recommendations []ProcurementVendorRec `json:"recommendations"`
+}
+
+const procurementRecommendSystem = `You recommend vendors for a construction material request. ` +
+	`Return ranked recommendations with predicted spend in integer cents, a 3-letter currency code, ` +
+	`a 0.0-1.0 confidence, and brief reasoning. Bias toward staying within the provided budget.`
+
+var procurementRecommendSchema = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "recommendations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "vendor_id": {"type": "string", "description": "vendor UUID"},
+          "vendor_name": {"type": "string"},
+          "predicted_spend_cents": {"type": "integer"},
+          "currency_code": {"type": "string", "description": "USD or CAD"},
+          "confidence": {"type": "number"},
+          "reasoning": {"type": "string"}
+        },
+        "required": ["vendor_id", "vendor_name", "predicted_spend_cents", "currency_code", "confidence"]
+      }
+    }
+  },
+  "required": ["recommendations"]
+}`)
+
+// ProcurementRecommend ranks vendor recommendations. Tool call, uses
+// Model (Opus).
+func (c *Client) ProcurementRecommend(ctx context.Context, req ProcurementRecommendRequest) (*ProcurementRecommendResponse, error) {
+	if req.MaterialRequestID == uuid.Nil {
+		return nil, fmt.Errorf("ai.ProcurementRecommend: material_request_id is required")
+	}
+
+	prompt, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("ai.ProcurementRecommend: marshal prompt: %w", err)
+	}
+
+	raw, err := c.callTool(ctx, "procurement_recommend", c.model, procurementRecommendSystem,
+		[]contentBlock{textBlock("Recommend vendors for this material request:\n" + string(prompt))},
+		"recommend_vendors", procurementRecommendSchema)
+	if err != nil {
+		return nil, fmt.Errorf("ai.ProcurementRecommend: %w", err)
+	}
+
+	var out ProcurementRecommendResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("ai.ProcurementRecommend: decode tool output: %w", err)
+	}
+	return &out, nil
+}
+
+// ---- tribunal_review --------------------------------------------------
+
+// TribunalReviewRequest is the input for tribunal review of change
+// orders, disputes, and warranty claims.
+type TribunalReviewRequest struct {
+	DisputeID uuid.UUID       `json:"dispute_id"`
+	Facts     json.RawMessage `json:"facts"`
+}
+
+// TribunalReviewResponse is the structured recommendation.
+// Recommendation is one of "approve", "deny", "escalate".
+type TribunalReviewResponse struct {
+	Recommendation string  `json:"recommendation"`
+	Confidence     float64 `json:"confidence"`
+	Rationale      string  `json:"rationale"`
+}
+
+const tribunalReviewSystem = `You review a construction dispute / change order / warranty claim and recommend a disposition. ` +
+	`recommendation must be exactly one of "approve", "deny", or "escalate". ` +
+	`Provide a 0.0-1.0 confidence and a concise rationale. The human PM/owner makes the final call.`
+
+var tribunalReviewSchema = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "recommendation": {"type": "string", "enum": ["approve", "deny", "escalate"]},
+    "confidence": {"type": "number"},
+    "rationale": {"type": "string"}
+  },
+  "required": ["recommendation", "confidence", "rationale"]
+}`)
+
+// TribunalReview produces a structured review recommendation. Tool call,
+// uses Model (Opus).
+func (c *Client) TribunalReview(ctx context.Context, req TribunalReviewRequest) (*TribunalReviewResponse, error) {
+	if req.DisputeID == uuid.Nil {
+		return nil, fmt.Errorf("ai.TribunalReview: dispute_id is required")
+	}
+	if len(req.Facts) == 0 {
+		return nil, fmt.Errorf("ai.TribunalReview: facts is required")
+	}
+
+	raw, err := c.callTool(ctx, "tribunal_review", c.model, tribunalReviewSystem,
+		[]contentBlock{textBlock("Review this dispute fact pattern:\n" + string(req.Facts))},
+		"review_dispute", tribunalReviewSchema)
+	if err != nil {
+		return nil, fmt.Errorf("ai.TribunalReview: %w", err)
+	}
+
+	var out TribunalReviewResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("ai.TribunalReview: decode tool output: %w", err)
+	}
+	return &out, nil
+}
+
+// ---- update_schedule --------------------------------------------------
+
+// ScheduleTaskSnapshot is the per-task projection sent to the model.
+type ScheduleTaskSnapshot struct {
+	TaskID          uuid.UUID `json:"task_id"`
+	WBSCode         string    `json:"wbs_code"`
+	Name            string    `json:"name"`
+	DurationDays    int       `json:"duration_days"`
+	Status          string    `json:"status"`
+	PercentComplete int       `json:"percent_complete"`
+	IsCritical      bool      `json:"is_critical"`
+}
+
+// ScheduleDepSnapshot is the per-dependency projection. DependencyType
+// is the wire form ("FS", "SS", "FF", "SF").
+type ScheduleDepSnapshot struct {
+	PredecessorID  uuid.UUID `json:"predecessor_id"`
+	SuccessorID    uuid.UUID `json:"successor_id"`
+	DependencyType string    `json:"dependency_type"`
+	LagDays        int       `json:"lag_days"`
+}
+
+// UpdateScheduleRequest is the input for schedule update recommendations.
+// The model recommends duration adjustments; BuildOS owns the CPM engine
+// and re-validates every recommendation.
+type UpdateScheduleRequest struct {
+	ProjectID        uuid.UUID              `json:"project_id"`
+	ProjectStartDate string                 `json:"project_start_date,omitempty"` // RFC3339
+	Tasks            []ScheduleTaskSnapshot `json:"tasks"`
+	Dependencies     []ScheduleDepSnapshot  `json:"dependencies"`
+}
+
+// ScheduleAdjustment is one recommended duration change. NewDurationDays
+// is a pointer so the model can omit it for a "no change / monitor only"
+// row while still attaching a rationale.
+type ScheduleAdjustment struct {
+	TaskID          uuid.UUID `json:"task_id"`
+	NewDurationDays *int      `json:"new_duration_days,omitempty"`
+	Rationale       string    `json:"rationale,omitempty"`
+}
+
+// UpdateScheduleResponse carries the recommended adjustments.
+type UpdateScheduleResponse struct {
+	Adjustments []ScheduleAdjustment `json:"adjustments"`
+}
+
+const updateScheduleSystem = `You recommend duration adjustments for construction project tasks based on the schedule snapshot. ` +
+	`Return a list of adjustments. For each, include the task_id, an optional new_duration_days (omit for monitor-only rows), ` +
+	`and a concise rationale. Do not recommend extending tasks already 100% complete. ` +
+	`You only recommend — the CPM engine re-validates every change.`
+
+var updateScheduleSchema = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "adjustments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "task_id": {"type": "string", "description": "task UUID"},
+          "new_duration_days": {"type": "integer", "description": "omit for monitor-only"},
+          "rationale": {"type": "string"}
+        },
+        "required": ["task_id"]
+      }
+    }
+  },
+  "required": ["adjustments"]
+}`)
+
+// UpdateSchedule recommends schedule duration adjustments. Tool call,
+// uses Model (Opus).
+func (c *Client) UpdateSchedule(ctx context.Context, req UpdateScheduleRequest) (*UpdateScheduleResponse, error) {
+	if req.ProjectID == uuid.Nil {
+		return nil, fmt.Errorf("ai.UpdateSchedule: project_id is required")
+	}
+	if len(req.Tasks) == 0 {
+		return nil, fmt.Errorf("ai.UpdateSchedule: at least one task is required")
+	}
+
+	prompt, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("ai.UpdateSchedule: marshal prompt: %w", err)
+	}
+
+	raw, err := c.callTool(ctx, "update_schedule", c.model, updateScheduleSystem,
+		[]contentBlock{textBlock("Recommend schedule adjustments for this project:\n" + string(prompt))},
+		"recommend_adjustments", updateScheduleSchema)
+	if err != nil {
+		return nil, fmt.Errorf("ai.UpdateSchedule: %w", err)
+	}
+
+	var out UpdateScheduleResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("ai.UpdateSchedule: decode tool output: %w", err)
+	}
+	return &out, nil
+}

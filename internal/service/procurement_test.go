@@ -7,22 +7,22 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/futurebuildai/buildos/internal/brain"
+	"github.com/futurebuildai/buildos/internal/ai"
 	"github.com/futurebuildai/buildos/internal/models"
 )
 
 // fakeProcurementRecommender is the test double for
-// MaestroProcurementRecommender. Captures the last request and
+// ProcurementRecommender. Captures the last request and
 // replays a scripted response — same pattern as fakeBriefer in
 // agents_test.go. Lets the validation tests assert the gate without
 // spinning up an HTTP server.
 type fakeProcurementRecommender struct {
-	lastReq brain.ProcurementRecommendRequest
-	resp    *brain.ProcurementRecommendResponse
+	lastReq ai.ProcurementRecommendRequest
+	resp    *ai.ProcurementRecommendResponse
 	err     error
 }
 
-func (f *fakeProcurementRecommender) ProcurementRecommend(_ context.Context, req brain.ProcurementRecommendRequest) (*brain.ProcurementRecommendResponse, error) {
+func (f *fakeProcurementRecommender) ProcurementRecommend(_ context.Context, req ai.ProcurementRecommendRequest) (*ai.ProcurementRecommendResponse, error) {
 	f.lastReq = req
 	if f.err != nil {
 		return nil, f.err
@@ -39,7 +39,7 @@ func newProcurementSvcForValidationTests() *ProcurementService {
 	// nil audit falls back to a no-op recorder; nil pool/store
 	// causes any post-validation path to panic, which proves the
 	// validation gates short-circuit before touching either.
-	// nil maestro / nil emitter are intentional — RecommendVendors
+	// nil recommender / nil feed store are intentional — RecommendVendors
 	// and RequestVendorReview short-circuit with their respective
 	// "unavailable" sentinels rather than panicking.
 	return NewProcurementService(nil, nil, nil, nil, nil)
@@ -129,16 +129,16 @@ func TestProcurementService_RecommendVendors_RejectsBadInput(t *testing.T) {
 	}
 }
 
-func TestProcurementService_RecommendVendors_NoMaestroReturnsUnavailable(t *testing.T) {
-	// Constructed with nil Maestro: a worker-style binary that only
+func TestProcurementService_RecommendVendors_NoAIReturnsUnavailable(t *testing.T) {
+	// Constructed with nil recommender: a worker-style binary that only
 	// recomputes statuses. RecommendVendors must surface a sentinel
 	// rather than panicking on the nil call. Validation has already
 	// passed here (non-nil ids), so we know the path reached the
-	// nil-Maestro gate.
+	// nil-recommender gate.
 	svc := NewProcurementService(nil, nil, nil, nil, nil)
 	_, err := svc.RecommendVendors(context.Background(), uuid.New(), "sub-1", uuid.New())
-	if !errors.Is(err, ErrMaestroUnavailable) {
-		t.Errorf("err = %v, want ErrMaestroUnavailable", err)
+	if !errors.Is(err, ErrAIUnavailable) {
+		t.Errorf("err = %v, want ErrAIUnavailable", err)
 	}
 }
 
@@ -170,12 +170,12 @@ func TestProcurementService_RequestVendorReview_RejectsBadInput(t *testing.T) {
 	}
 }
 
-func TestProcurementService_RequestVendorReview_NoEmitterReturnsUnavailable(t *testing.T) {
-	// Constructed with nil emitter: worker binary or any path that
-	// never wires the a2a emitter. RequestVendorReview must surface
+func TestProcurementService_RequestVendorReview_NoFeedStoreReturnsUnavailable(t *testing.T) {
+	// Constructed with nil feed-card store: worker binary or any path
+	// that never wires the feed store. RequestVendorReview must surface
 	// a sentinel rather than panicking on the nil call. Validation
 	// has passed (non-nil ids), so we know the path reached the
-	// nil-emitter gate.
+	// nil-feed-store gate.
 	svc := NewProcurementService(nil, nil, nil, nil, nil)
 	_, err := svc.RequestVendorReview(context.Background(), uuid.New(), "sub-1", RequestVendorReviewInput{
 		ProcurementItemID: uuid.New(),
@@ -183,8 +183,8 @@ func TestProcurementService_RequestVendorReview_NoEmitterReturnsUnavailable(t *t
 		TotalCents:        1,
 		CurrencyCode:      "USD",
 	})
-	if !errors.Is(err, ErrA2AEmitterUnavailable) {
-		t.Errorf("err = %v, want ErrA2AEmitterUnavailable", err)
+	if !errors.Is(err, ErrVendorReviewUnavailable) {
+		t.Errorf("err = %v, want ErrVendorReviewUnavailable", err)
 	}
 }
 

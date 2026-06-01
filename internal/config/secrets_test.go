@@ -211,8 +211,7 @@ func TestLoadWithSource_RoutesSecretsThroughSource(t *testing.T) {
 		}
 	}
 	must("DATABASE_URL", "postgres://from-file/db")
-	must("BRAIN_JWKS_URL", "https://brain.test/jwks")
-	must("BRAIN_ISSUER_URL", "https://brain.test")
+	must("VAULT_MASTER_KEY", "bWFzdGVyLWtleS1mcm9tLWZpbGUtMzJieXRlcyEh")
 	must("SENTRY_DSN", "https://sentry-from-file/proj")
 
 	// Non-sensitive scalars stay direct env reads — verify they
@@ -236,8 +235,8 @@ func TestLoadWithSource_RoutesSecretsThroughSource(t *testing.T) {
 	if cfg.DatabaseURL != "postgres://from-file/db" {
 		t.Errorf("DATABASE_URL = %q, want from-file (file source must win over env)", cfg.DatabaseURL)
 	}
-	if cfg.BrainJWKSURL != "https://brain.test/jwks" {
-		t.Errorf("BrainJWKSURL = %q", cfg.BrainJWKSURL)
+	if cfg.VaultMasterKey != "bWFzdGVyLWtleS1mcm9tLWZpbGUtMzJieXRlcyEh" {
+		t.Errorf("VaultMasterKey = %q", cfg.VaultMasterKey)
 	}
 	if cfg.SentryDSN != "https://sentry-from-file/proj" {
 		t.Errorf("SentryDSN = %q", cfg.SentryDSN)
