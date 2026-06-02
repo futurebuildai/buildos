@@ -11,7 +11,14 @@
 #   4. test-integration   — Testcontainers-backed Postgres tests
 #   5. bench-physics      — CPM benchmark gates (80-task ≤200ms,
 #                            200-task ≤500ms; CI hard-fail on regression)
-#   6. docker-build       — confirms the production image still builds;
+#   6. web / mobile       — frontend lint/typecheck/test/build (backend-free)
+#   7. e2e                — live cmd/server (native auth) + Postgres service,
+#                            driving the first-run → wizard → portfolio web
+#                            journey via scripts/e2e-backend.sh
+#   8. e2e-mobile         — same live server (--seed-field) driving the Flutter
+#                            offline-outbox lane: claim → queue → reconnect →
+#                            drain → server-side idempotency replay (409)
+#   9. docker-build       — confirms the production image still builds;
 #                            uploads SBOM + image-as-artifact (signing
 #                            happens in release.yml on tagged builds)
 #
@@ -171,6 +178,108 @@ jobs:
         # accepted / 4xx-park / 5xx-backoff / offline) against an in-memory
         # Drift DB — no live backend needed.
         run: flutter test
+
+  e2e:
+    name: E2E (live backend ← native auth → web journeys)
+    runs-on: ubuntu-latest
+    # Boots a REAL cmd/server (native auth, vault on) against a migrated+seeded
+    # Postgres via scripts/e2e-backend.sh, then drives the first-run claim →
+    # 6-step wizard → complete → portfolio journey through the Vite-proxied web
+    # client. This is the only lane that exercises the native auth/claim/wizard
+    # path end to end — the unit/e2e lanes above run backend-free.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: fb_user
+          POSTGRES_PASSWORD: fb_pass
+          POSTGRES_DB: futurebuild_os
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U fb_user -d futurebuild_os"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Point the harness + Makefile migrate at the service container. The port
+      # mapping (5433:5432) matches the harness's local-dev default DSN, so no
+      # other override is needed.
+      DATABASE_URL: postgres://fb_user:fb_pass@localhost:5433/futurebuild_os?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install psql client (harness uses it to seed + wait on Postgres)
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Install web deps (clean, lockfile-pinned)
+        run: npm ci
+        working-directory: web
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+        working-directory: web
+      - name: Live journey (harness boots server; Playwright drives the web client)
+        # The harness does NOT pass --db-up (Postgres is a service container);
+        # it migrates, seeds fork-zero, boots cmd/server, exports the E2E_*
+        # contract, then runs the live Playwright config (which itself starts
+        # the Vite dev server that proxies /api → :8080).
+        run: bash scripts/e2e-backend.sh -- npm --prefix web run test:e2e:live
+
+  e2e-mobile:
+    name: E2E (live backend ← native auth → field offline outbox)
+    runs-on: ubuntu-latest
+    # Boots the same REAL cmd/server (native auth, vault on) as the `e2e` job,
+    # but with --seed-field: an onboarding-COMPLETE org plus a project + task to
+    # report progress against. The Flutter live test then exercises the only
+    # mobile lane that hits the real claim → /field/progress → /field/sync
+    # contract: queue offline, reconnect, drain, and replay the same
+    # idempotency_key to assert the server's 409 dedup the outbox relies on.
+    # The backend-free `mobile` job above can't catch wire-shape or
+    # idempotency drift; this lane can.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: fb_user
+          POSTGRES_PASSWORD: fb_pass
+          POSTGRES_DB: futurebuild_os
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U fb_user -d futurebuild_os"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://fb_user:fb_pass@localhost:5433/futurebuild_os?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Install psql client (harness uses it to seed + wait on Postgres)
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Fetch Flutter packages
+        run: flutter pub get
+        working-directory: mobile
+      - name: Live field outbox journey (harness boots server; Flutter drives it)
+        # No --db-up (Postgres is a service container). --seed-field marks the
+        # org onboarding-complete and seeds the project + task, exporting the
+        # E2E_* contract the test reads. The test self-skips when that env is
+        # absent, so this is the only place it actually runs.
+        run: bash scripts/e2e-backend.sh --seed-field -- bash -c 'cd mobile && flutter --no-version-check test test/live/sync_live_test.dart'
 
   docker-build:
     name: Production image build
