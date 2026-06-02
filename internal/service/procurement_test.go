@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -187,6 +188,44 @@ func TestConfidenceToPct(t *testing.T) {
 		got := confidenceToPct(c.in)
 		if got != c.want {
 			t.Errorf("confidenceToPct(%v) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+// TestFormatCents covers the integer-cents → fixed-2-decimal renderer used in
+// vendor-review feed bodies. Per the Composite Currency Pattern it must never
+// touch a float: sub-dollar amounts zero-pad, the cents remainder is always two
+// digits, and negatives carry the sign on the whole value (not the cents).
+func TestFormatCents(t *testing.T) {
+	cases := []struct {
+		in   int64
+		want string
+	}{
+		{0, "0.00"},
+		{5, "0.05"},
+		{50, "0.50"},
+		{100, "1.00"},
+		{50000, "500.00"},
+		{123456, "1234.56"},
+		{-2500, "-25.00"},
+		{-7, "-0.07"},
+	}
+	for _, c := range cases {
+		if got := formatCents(c.in); got != c.want {
+			t.Errorf("formatCents(%d) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestVendorReviewBody covers the human-readable feed-card body. It must embed
+// the vendor, the formatCents-rendered amount, the currency code, and the
+// quoted item name verbatim — this is the operator-facing summary, so a
+// regression in any field is user-visible.
+func TestVendorReviewBody(t *testing.T) {
+	got := vendorReviewBody("Framing lumber", "Acme Supply", 50000, "USD")
+	for _, want := range []string{"Acme Supply", "500.00", "USD", `"Framing lumber"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("vendorReviewBody() = %q, missing %q", got, want)
 		}
 	}
 }

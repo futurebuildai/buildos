@@ -1,8 +1,12 @@
 package service
 
 import (
+	"errors"
+	"fmt"
 	"testing"
 	"time"
+
+	"github.com/futurebuildai/buildos/internal/store"
 )
 
 func TestCurrentFiscalQuarter(t *testing.T) {
@@ -39,5 +43,47 @@ func TestCurrentFiscalQuarter(t *testing.T) {
 			t.Errorf("currentFiscalQuarter(%s) = (%d,Q%d), want (%d,Q%d)",
 				c.date, gotYear, gotQuarter, c.wantYear, c.wantQuarter)
 		}
+	}
+}
+
+// TestValidateOptionalCurrency covers the BYO-currency gate that runs before
+// any financials write. Empty is allowed (the column defaults to USD); a
+// supported code passes; an unsupported/garbage code is wrapped as
+// ErrInvalidInput so the handler returns 400 rather than persisting bad data.
+func TestValidateOptionalCurrency(t *testing.T) {
+	t.Run("empty is allowed", func(t *testing.T) {
+		if err := validateOptionalCurrency(""); err != nil {
+			t.Fatalf("validateOptionalCurrency(\"\") = %v, want nil", err)
+		}
+	})
+	t.Run("supported codes pass", func(t *testing.T) {
+		for _, code := range []string{"USD", "CAD"} {
+			if err := validateOptionalCurrency(code); err != nil {
+				t.Errorf("validateOptionalCurrency(%q) = %v, want nil", code, err)
+			}
+		}
+	})
+	t.Run("unsupported code is ErrInvalidInput", func(t *testing.T) {
+		err := validateOptionalCurrency("EUR")
+		if !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("validateOptionalCurrency(\"EUR\") = %v, want ErrInvalidInput", err)
+		}
+	})
+}
+
+// TestMapStoreError covers the package-shared store→service error translation:
+// nil stays nil, store.ErrNotFound becomes the service ErrNotFound sentinel the
+// handler matches with errors.Is, and any other error passes through unchanged
+// (so unexpected failures surface as 500, not a misleading 404).
+func TestMapStoreError(t *testing.T) {
+	if got := mapStoreError(nil); got != nil {
+		t.Errorf("mapStoreError(nil) = %v, want nil", got)
+	}
+	if got := mapStoreError(store.ErrNotFound); !errors.Is(got, ErrNotFound) {
+		t.Errorf("mapStoreError(store.ErrNotFound) = %v, want ErrNotFound", got)
+	}
+	other := fmt.Errorf("connection reset")
+	if got := mapStoreError(other); !errors.Is(got, other) {
+		t.Errorf("mapStoreError(other) = %v, want passthrough", got)
 	}
 }
