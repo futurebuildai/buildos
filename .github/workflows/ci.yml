@@ -118,6 +118,60 @@ jobs:
           cache: true
       - run: make bench-physics
 
+  web:
+    name: Web console (lint + typecheck + test + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install (clean, lockfile-pinned)
+        run: npm ci
+      - name: Lint (eslint + composite-currency rule + prettier)
+        run: npm run lint
+      - name: Typecheck (tsc --noEmit, strict)
+        run: npm run typecheck
+      - name: Unit tests (vitest)
+        run: npm test
+      - name: Build
+        run: npm run build
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+      - name: E2E + axe a11y (Playwright)
+        run: npm run test:e2e
+
+  mobile:
+    name: Field app (format + analyze + test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Fetch packages
+        run: flutter pub get
+      - name: Format check (dart format)
+        # --set-exit-if-changed CI-fails if anything isn't canonically
+        # formatted, mirroring the Go gofmt gate above.
+        run: dart format --output=none --set-exit-if-changed lib test
+      - name: Analyze (flutter analyze)
+        run: flutter analyze
+      - name: Unit + widget tests
+        # Includes the offline-outbox drain matrix (success / 409-already-
+        # accepted / 4xx-park / 5xx-backoff / offline) against an in-memory
+        # Drift DB — no live backend needed.
+        run: flutter test
+
   docker-build:
     name: Production image build
     runs-on: ubuntu-latest

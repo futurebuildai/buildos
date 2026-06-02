@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **BuildOS** — a Go backend (the "system of execution") for residential construction project management. **Single-tenant per customer fork** (see ADR-002), REST API + River job queue. It is a **self-contained standalone deployment**: auth, AI, and 3rd-party credentials are all native and admin-configurable inside BuildOS (no external "Brain" service, no A2A webhooks, no billing engine). The core domain object is a project schedule computed by a deterministic **Critical Path Method (CPM) physics engine**.
 
-Companion frontends (Lit web, Flutter mobile for field surfaces) live in other repos. This repo is backend-only.
+Companion frontends now live in this monorepo: the operator web console in [web/](web/) (Vite + Lit + TypeScript, Vanilla CSS, dark-only) and the Flutter field app in `mobile/`. Their binding design specs are in [.agents/handoff/frontend/](.agents/handoff/frontend/) (FRONTEND_ARCHITECTURE, DESIGN_SYSTEM_COMPONENTS, UX_AUTH_ONBOARDING, UX_CORE_SCREENS). The web console is built separately and served same-origin behind the Go server in production; see [web/README.md](web/README.md).
 
 **Deployment model (per [ADR-002](.agents/handoff/ADR-002-single-tenant-fork-model.md)):** every customer gets their own forked BuildOS repo and their own deployment instance — they own the core code and data. **Tenant isolation = deployment isolation.** No Postgres RLS, no per-tenant rate limiting, no multi-region routing logic in the application. A possible future co-op variant runs multi-tenant within one deployment; ships only if/when the product roadmap calls for it.
 

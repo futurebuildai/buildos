@@ -107,12 +107,23 @@ session Brain.
 
 ## Tier 3 — bigger initiatives (multi-session, owner direction needed)
 
-### 8. Phase C — frontends
-- Lit web admin/contractor dashboard (separate repo)
-- Flutter mobile field surface (separate repo)
-**Why deferred:** other repos; needs frontend dev capacity.
-**What to ship from this side:** OpenAPI spec generation so
-frontends have a machine-readable contract.
+### 8. Frontends — ✅ built in-monorepo (2026-06-01)
+The companion frontends now live in this repo (decision reversed from
+"separate repos"): the operator web console in `web/` (Vite + Lit +
+TS-strict, Vanilla CSS, dark-only) and the Flutter field app in
+`mobile/`. Built against the native backend + the binding specs in
+`.agents/handoff/frontend/`.
+- **web/** Phases A–F done: scaffold/tokens/typed API client
+  (single-flight 401→refresh), `fb-*` component library, auth/onboarding
+  wizard/BYOK, portfolio + command-center workspaces, a11y hardening.
+- **mobile/** Phase G done: go_router + Riverpod, Drift offline outbox
+  (FIFO exponential-backoff drain, server-wins), dio 401-refresh, field
+  screens, FCM wake-hint, EN/ES i18n.
+
+**Remaining (carryover):** backend-dependent E2E harness — web journeys
+(login→setup→portfolio, recalc→cascade, BYOK→AI-on) + Flutter
+`integration_test` (airplane-mode → queue → reconnect → drain) + golden
+tests. Deferred from the backend-free CI sweeps.
 
 ### 9. OpenAPI spec generation + drift detection
 **Why:** Contract today lives in `.agents/handoff/API_CONTRACT.md`

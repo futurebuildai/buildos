@@ -1,0 +1,238 @@
+/*
+ * BuildOS — GableLBM Industrial Dark design tokens.
+ *
+ * Source of truth: DESIGN_SYSTEM.md (AG-05-DS) §2–§6 (carried forward verbatim)
+ * + DESIGN_SYSTEM_COMPONENTS.md (AG-05-DSC) §2 gap-fills (CPM/status/variance/key,
+ * density, z-index).
+ *
+ * Canonical naming is `--fb-*` (DSC §2.4). `--md-sys-*` aliases are kept only where
+ * the FBElement base class / Material-3 interop reference them. Do NOT add a third
+ * naming scheme.
+ *
+ * Dark-only (DESIGN_SYSTEM §14): no light mode, no prefers-color-scheme, no toggle.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* ============================ Core palette (§2.1) ============================ */
+  --fb-gable-green: #00ffa3;
+  --fb-gable-green-dim: #005234;
+  --fb-gable-green-bright: #66ffc8;
+  --fb-deep-space: #0a0b10;
+  --fb-deep-space-soft: #0e0f15;
+  --fb-slate-steel: #161821;
+  --fb-slate-steel-raised: #1e2029;
+  --fb-slate-steel-elevated: #252836;
+  --fb-blueprint-blue: #38bdf8;
+  --fb-safety-red: #f43f5e;
+  --fb-amber-warning: #f59e0b;
+
+  /* ====================== Surface elevation scale (§2.2) ====================== */
+  --fb-surface-0: #0a0b10;
+  --fb-surface-1: #161821;
+  --fb-surface-2: #1e2029;
+  --fb-surface-3: #252836;
+  /* Material-3 aliases used by FBElement (.skeleton) + embedded Material Web. */
+  --md-sys-color-surface: #0a0b10;
+  --md-sys-color-surface-container: #161821;
+  --md-sys-color-surface-container-high: #1e2029;
+  --md-sys-color-surface-container-highest: #252836;
+
+  /* ============================ Text colors (§2.4) ============================ */
+  --fb-text-primary: #f0f0f5;
+  --fb-text-secondary: #8b8d98;
+  --fb-text-muted: #5a5b66;
+  --md-sys-color-on-surface: #f0f0f5;
+  --md-sys-color-on-surface-variant: #8b8d98;
+
+  /* =========================== Borders & outlines ============================ */
+  --fb-border: rgba(255, 255, 255, 0.05);
+  --fb-border-light: rgba(255, 255, 255, 0.03);
+  --md-sys-color-outline: #5a5b66;
+  --md-sys-color-outline-variant: rgba(255, 255, 255, 0.05);
+
+  /* ============================ Primary system ============================== */
+  --md-sys-color-primary: #00ffa3;
+  --md-sys-color-on-primary: #003822;
+  --md-sys-color-primary-container: #005234;
+  --md-sys-color-on-primary-container: #66ffc8;
+
+  /* ============================ Semantic states ============================= */
+  --fb-success: #00ffa3;
+  --fb-error: #f43f5e;
+  --fb-warning: #f59e0b;
+  --fb-info: #38bdf8;
+
+  /* ============================== Glass effects ============================== */
+  --fb-glass-bg: rgba(22, 24, 33, 0.6);
+  --fb-glass-border: rgba(255, 255, 255, 0.05);
+  --fb-glass-panel: rgba(10, 11, 16, 0.8);
+
+  /* ================================ Typography =============================== */
+  --fb-font-sans: 'Outfit', system-ui, -apple-system, sans-serif;
+  --fb-font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+
+  /* Type scale (§3.3) — the subset the app uses; mono variants flagged at usage. */
+  --fb-text-display-lg: 57px;
+  --fb-text-headline-lg: 32px;
+  --fb-text-headline-sm: 24px;
+  --fb-text-title-lg: 22px;
+  --fb-text-title-md: 16px;
+  --fb-text-body-lg: 16px;
+  --fb-text-body-md: 14px;
+  --fb-text-body-sm: 12px;
+  --fb-text-label-lg: 14px;
+  --fb-text-label-sm: 11px;
+  --fb-text-sm: 14px;
+  --fb-text-xs: 12px;
+
+  /* ============================ Spacing (4px base, §4) ======================= */
+  --fb-spacing-xs: 4px;
+  --fb-spacing-sm: 8px;
+  --fb-spacing-md: 16px;
+  --fb-spacing-lg: 24px;
+  --fb-spacing-xl: 32px;
+  --fb-spacing-2xl: 48px;
+
+  /* =============================== Shape (§5) =============================== */
+  --fb-radius-xs: 6px;
+  --fb-radius-sm: 8px;
+  --fb-radius-md: 12px;
+  --fb-radius-lg: 16px;
+  --fb-radius-xl: 24px;
+  --fb-radius-full: 9999px;
+  --md-sys-shape-corner-extra-small: 6px;
+  --md-sys-shape-corner-small: 8px;
+  --md-sys-shape-corner-medium: 12px;
+  --md-sys-shape-corner-large: 16px;
+  --md-sys-shape-corner-extra-large: 24px;
+  --md-sys-shape-corner-full: 9999px;
+
+  /* ============================ Elevation (§6) ============================== */
+  --md-sys-elevation-1: 0px 1px 3px 1px rgba(0, 0, 0, 0.25), 0px 1px 2px 0px rgba(0, 0, 0, 0.4);
+  --md-sys-elevation-2: 0px 2px 6px 2px rgba(0, 0, 0, 0.25), 0px 1px 2px 0px rgba(0, 0, 0, 0.4);
+  --md-sys-elevation-3: 0px 4px 8px 3px rgba(0, 0, 0, 0.25), 0px 1px 3px 0px rgba(0, 0, 0, 0.4);
+  --fb-glow: 0 0 20px rgba(0, 255, 163, 0.15);
+  --fb-glow-strong: 0 0 30px rgba(0, 255, 163, 0.3), 0 0 60px rgba(0, 255, 163, 0.1);
+
+  /* ============================== Motion (§10.2) ============================ */
+  --fb-motion-instant: 0ms;
+  --fb-motion-fast: 150ms;
+  --fb-motion-standard: 200ms;
+  --fb-motion-emphasized: 300ms;
+  --fb-motion-deliberate: 500ms;
+  --fb-ease-out: ease-out;
+  --fb-ease-emphasized: cubic-bezier(0.2, 0, 0, 1);
+
+  /* ===================== Critical Path Method tokens (DSC §2.1) ============= */
+  --fb-cpm-critical: #f43f5e;
+  --fb-cpm-critical-bar: rgba(244, 63, 94, 0.85);
+  --fb-cpm-near-critical: #f59e0b;
+  --fb-cpm-slack: #38bdf8;
+  --fb-cpm-complete: #00ffa3;
+  --fb-cpm-baseline: rgba(139, 141, 152, 0.4);
+  --fb-cpm-dependency-line: #5a5b66;
+
+  /* ====================== Domain status tokens (DSC §2.1) =================== */
+  --fb-status-active: #00ffa3;
+  --fb-status-warning: #f59e0b;
+  --fb-status-critical: #f43f5e;
+  --fb-status-complete: #005234;
+  --fb-status-pending: #38bdf8;
+  --fb-status-offline: #5a5b66;
+
+  /* ========================= Money variance (DSC §2.1) ===================== */
+  --fb-variance-positive: #00ffa3;
+  --fb-variance-negative: #f43f5e;
+
+  /* ====================== BYOK integration key states (DSC §2.1) =========== */
+  --fb-key-connected: #00ffa3;
+  --fb-key-untested: #38bdf8;
+  --fb-key-error: #f43f5e;
+  --fb-key-missing: #5a5b66;
+
+  /* =========================== Density tokens (DSC §2.2) =================== */
+  --fb-density-row: 44px;
+  --fb-density-control: 40px;
+
+  /* ============================ Z-index scale (DSC §2.3) =================== */
+  --fb-z-base: 0;
+  --fb-z-sticky: 100;
+  --fb-z-nav: 200;
+  --fb-z-context-panel: 250;
+  --fb-z-dropdown: 300;
+  --fb-z-modal-backdrop: 400;
+  --fb-z-modal: 410;
+  --fb-z-toast: 500;
+  --fb-z-tooltip: 600;
+  --fb-z-command-palette: 700;
+}
+
+/* Compact density overrides for power-user tables (DSC §2.2 / §8). */
+[data-density='compact'] {
+  --fb-density-row: 32px;
+  --fb-density-control: 32px;
+}
+
+/* ================================= Global reset ============================ */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+}
+
+body {
+  background: var(--fb-surface-0);
+  color: var(--fb-text-primary);
+  font-family: var(--fb-font-sans);
+  font-size: var(--fb-text-body-md);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Mono everywhere numerics live (DESIGN_SYSTEM §3.2). */
+.fb-mono,
+[data-mono] {
+  font-family: var(--fb-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Keyboard focus ring (DESIGN_SYSTEM §11 / DSC §9). Never outline:none alone. */
+:focus-visible {
+  outline: 2px solid var(--fb-gable-green);
+  outline-offset: 2px;
+}
+
+/* Reduced motion (DESIGN_SYSTEM §10.2 / DSC §9): keep opacity, drop transforms. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Visually-hidden helper for SR-only content + accessible chart fallbacks. */
+.fb-visually-hidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

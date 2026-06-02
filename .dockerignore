@@ -39,3 +39,8 @@ docs
 
 # Worktree scaffolding (Claude Code work dir)
 tools/.claude
+
+# Frontend surfaces — not part of the Go backend image build context.
+# (The web console is built/served separately; see web/README.md.)
+web
+mobile

@@ -1,0 +1,76 @@
+{
+  "@@locale": "en",
+  "appTitle": "BuildOS Field",
+  "navTasks": "Tasks",
+  "navLog": "Log",
+  "navPhotos": "Photos",
+  "navMore": "More",
+  "navSync": "Sync",
+  "navProfile": "Profile",
+  "navSchedule": "Schedule",
+  "online": "Online",
+  "offlineQueued": "Offline · {count} queued",
+  "@offlineQueued": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "syncing": "Syncing…",
+  "loginTitle": "Sign in to BuildOS",
+  "loginSubtitle": "Your construction system of execution.",
+  "emailLabel": "Email",
+  "passwordLabel": "Password",
+  "signIn": "Sign in",
+  "signOut": "Sign out",
+  "offlineSignInDisabled": "You're offline — sign in needs a connection.",
+  "invalidCredentials": "Email or password is incorrect.",
+  "sessionExpired": "Your session expired. Sign in again.",
+  "genericError": "Something went wrong. Try again.",
+  "tasksTitle": "Tasks",
+  "tasksEmpty": "No tasks assigned to you yet.",
+  "criticalPath": "Critical path",
+  "floatDays": "{days}d float",
+  "@floatDays": {
+    "placeholders": {
+      "days": { "type": "int" }
+    }
+  },
+  "percentComplete": "{pct}% complete",
+  "@percentComplete": {
+    "placeholders": {
+      "pct": { "type": "int" }
+    }
+  },
+  "slideToComplete": "Slide to complete",
+  "markDone": "Mark done",
+  "queuedForSync": "Queued — will sync when online.",
+  "dailyLogTitle": "Daily Log",
+  "workSummary": "Work summary",
+  "weatherConditions": "Weather",
+  "safetyIncidents": "Safety incidents",
+  "crewCheckIn": "Crew check-in",
+  "capturePhoto": "Capture photo",
+  "locationCaptured": "Location captured",
+  "locationUnavailable": "Location unavailable",
+  "submit": "Submit",
+  "photosTitle": "Photos",
+  "photosEmpty": "No photos captured yet.",
+  "syncStatusTitle": "Sync Status",
+  "lastSynced": "Last synced {time}",
+  "@lastSynced": {
+    "placeholders": {
+      "time": { "type": "String" }
+    }
+  },
+  "neverSynced": "Never synced",
+  "queuedActions": "Queued actions",
+  "retryNow": "Retry now",
+  "nothingQueued": "Everything is up to date.",
+  "profileTitle": "Profile",
+  "roleLabel": "Role",
+  "languageLabel": "Language",
+  "scheduleTitle": "Schedule",
+  "scheduleReadOnly": "Read-only on the field app.",
+  "loading": "Loading…",
+  "retry": "Retry"
+}

@@ -26,5 +26,17 @@ bin/
 # Docker volumes
 pgdata/
 
+# Web console (web/) build + dependency artifacts
+web/node_modules/
+web/dist/
+web/coverage/
+web/playwright-report/
+web/test-results/
+web/.env.local
+
+# Flutter field app (mobile/) build artifacts
+mobile/build/
+mobile/.dart_tool/
+
 # Claude Code local state
 .claude/
