@@ -24,19 +24,25 @@
 #      (tearing the server down afterwards) or stays foreground until Ctrl-C.
 #
 # Usage:
-#   scripts/e2e-backend.sh [--db-up] [--reset|--no-reset] [--seed-field] -- <command...>
+#   scripts/e2e-backend.sh [--db-up] [--reset|--no-reset] [--seed-field] [--seed-schedule] -- <command...>
 #   scripts/e2e-backend.sh [--db-up]                 # foreground, no command
 #
 # Modes:
-#   (default)     Seeds a single onboarding-INCOMPLETE org and lets the server
-#                 materialize the bootstrap token against it. This is the shape
-#                 the WEB first-run → wizard journey needs (the wizard must run).
-#   --seed-field  Seeds an onboarding-COMPLETE org WITH a project + one task, and
-#                 inserts the bootstrap-token hash directly (the server's boot
-#                 seeder no-ops when there's no incomplete org). This is the shape
-#                 the MOBILE outbox→/field journey needs: claim the owner, then
-#                 POST progress against a real task. Exports E2E_PROJECT_ID +
-#                 E2E_TASK_ID on top of the usual contract.
+#   (default)        Seeds a single onboarding-INCOMPLETE org and lets the server
+#                    materialize the bootstrap token against it. This is the shape
+#                    the WEB first-run → wizard journey needs (the wizard must run).
+#   --seed-field     Seeds an onboarding-COMPLETE org WITH a project + one task, and
+#                    inserts the bootstrap-token hash directly (the server's boot
+#                    seeder no-ops when there's no incomplete org). This is the shape
+#                    the MOBILE outbox→/field journey needs: claim the owner, then
+#                    POST progress against a real task. Exports E2E_PROJECT_ID +
+#                    E2E_TASK_ID on top of the usual contract.
+#   --seed-schedule  Leaves onboarding INCOMPLETE (the wizard still runs) but plants
+#                    a project with a linear FS task chain into the fork-zero org.
+#                    The WEB recalc-cascade journey logs in as the owner created by
+#                    the first-run/wizard journey, then recalculates that project to
+#                    exercise the CPM engine + cascade-diff path. Exports
+#                    E2E_SCHEDULE_PROJECT_NAME. Composable with the default web run.
 #
 # Examples:
 #   # Local: bring up the compose DB, run the web live journeys, tear down.
@@ -80,6 +86,7 @@ ORG_NAME="E2E Fork"
 DO_DB_UP=0
 DO_RESET=1
 DO_SEED_FIELD=0
+DO_SEED_SCHEDULE=0
 CMD=()
 
 while [[ $# -gt 0 ]]; do
@@ -88,6 +95,7 @@ while [[ $# -gt 0 ]]; do
     --reset) DO_RESET=1; shift ;;
     --no-reset) DO_RESET=0; shift ;;
     --seed-field) DO_SEED_FIELD=1; shift ;;
+    --seed-schedule) DO_SEED_SCHEDULE=1; shift ;;
     --) shift; CMD=("$@"); break ;;
     *) echo "e2e-backend: unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -213,6 +221,48 @@ if [[ "${DO_SEED_FIELD}" -eq 1 ]]; then
       RETURNING id;")"
   export E2E_PROJECT_ID E2E_TASK_ID
   log "seed-field: project=${E2E_PROJECT_ID} task=${E2E_TASK_ID}"
+fi
+
+if [[ "${DO_SEED_SCHEDULE}" -eq 1 ]]; then
+  # The web recalc-cascade journey needs a project with a real task graph so the
+  # CPM engine has something to compute and a critical path to surface. Unlike
+  # --seed-field, we DO NOT pre-complete onboarding or seed the token hash: the
+  # web lane drives the first-run claim → 6-step wizard itself (the onboarding
+  # live spec), and the wizard must run against an INCOMPLETE org. We only plant
+  # the project + a linear FS task chain (Site Prep → Foundation → Framing) into
+  # the same fork-zero org the owner claims into; the tasks carry no CPM results
+  # yet (early_*/late_*/is_critical NULL), so the schedule page opens on the
+  # "not computed" empty state and the first Recalculate computes + cascades it.
+  log "seed-schedule: seeding project + linear FS task chain (no onboarding change)"
+  SCHED_ORG_ID="$(psql_scalar "SELECT id FROM organizations WHERE slug = '${ORG_SLUG}';")"
+
+  E2E_SCHEDULE_PROJECT_NAME="E2E Tower"
+  SCHED_PROJECT_ID="$(psql_scalar "INSERT INTO projects (org_id, name, status, gsf)
+      VALUES ('${SCHED_ORG_ID}', '${E2E_SCHEDULE_PROJECT_NAME}', 'active', 3000)
+      RETURNING id;")"
+
+  SCHED_A_ID="$(psql_scalar "INSERT INTO project_tasks
+        (project_id, wbs_code, name, duration_days, status, percent_complete)
+      VALUES ('${SCHED_PROJECT_ID}', '01-00', 'Site Prep', 3, 'pending', 0)
+      RETURNING id;")"
+  SCHED_B_ID="$(psql_scalar "INSERT INTO project_tasks
+        (project_id, wbs_code, name, duration_days, status, percent_complete)
+      VALUES ('${SCHED_PROJECT_ID}', '03-30', 'Foundation', 5, 'pending', 0)
+      RETURNING id;")"
+  SCHED_C_ID="$(psql_scalar "INSERT INTO project_tasks
+        (project_id, wbs_code, name, duration_days, status, percent_complete)
+      VALUES ('${SCHED_PROJECT_ID}', '06-10', 'Framing', 8, 'pending', 0)
+      RETURNING id;")"
+
+  # Linear finish-to-start chain → every task is on the critical path, so the
+  # first recalc reports critical_path_changed=true (cascade notice renders).
+  psql "${DATABASE_URL}" -v ON_ERROR_STOP=1 -q \
+    -c "INSERT INTO task_dependencies (project_id, predecessor_id, successor_id, dependency_type)
+        VALUES ('${SCHED_PROJECT_ID}', '${SCHED_A_ID}', '${SCHED_B_ID}', 'FS'),
+               ('${SCHED_PROJECT_ID}', '${SCHED_B_ID}', '${SCHED_C_ID}', 'FS');"
+
+  export E2E_SCHEDULE_PROJECT_NAME
+  log "seed-schedule: project=${SCHED_PROJECT_ID} (${E2E_SCHEDULE_PROJECT_NAME}) tasks=3 deps=2"
 fi
 
 # ----------------------------------------------------------------------------

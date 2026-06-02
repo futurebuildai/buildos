@@ -14,7 +14,8 @@
 #   6. web / mobile       — frontend lint/typecheck/test/build (backend-free)
 #   7. e2e                — live cmd/server (native auth) + Postgres service,
 #                            driving the first-run → wizard → portfolio web
-#                            journey via scripts/e2e-backend.sh
+#                            journey AND the CPM recalc → cascade journey
+#                            (--seed-schedule) via scripts/e2e-backend.sh
 #   8. e2e-mobile         — same live server (--seed-field) driving the Flutter
 #                            offline-outbox lane: claim → queue → reconnect →
 #                            drain → server-side idempotency replay (409)
@@ -230,7 +231,12 @@ jobs:
         # it migrates, seeds fork-zero, boots cmd/server, exports the E2E_*
         # contract, then runs the live Playwright config (which itself starts
         # the Vite dev server that proxies /api → :8080).
-        run: bash scripts/e2e-backend.sh -- npm --prefix web run test:e2e:live
+        #
+        # --seed-schedule plants a project + linear FS task chain (onboarding
+        # stays incomplete, so the wizard still runs in the onboarding spec).
+        # That feeds the recalc-cascade spec, which logs in as the owner the
+        # onboarding journey creates and runs the CPM recalc end to end.
+        run: bash scripts/e2e-backend.sh --seed-schedule -- npm --prefix web run test:e2e:live
 
   e2e-mobile:
     name: E2E (live backend ← native auth → field offline outbox)

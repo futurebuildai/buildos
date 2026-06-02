@@ -87,6 +87,7 @@ export class FbApp extends SignalWatcher(FBElement) {
         current=${route.path}
         workspace=${workspace}
         density=${this.density}
+        @navigate=${this.onNavigate}
         @workspace-change=${this.onWorkspaceChange}
         @density-change=${this.onDensityChange}
         @profile=${() => navigate('/profile')}
@@ -94,6 +95,19 @@ export class FbApp extends SignalWatcher(FBElement) {
         ${page}
       </fb-org-shell>
     `;
+  }
+
+  /**
+   * Catches the composed `navigate` event bubbling out of the nav rail (and any
+   * in-shell link molecule, e.g. breadcrumbs) and drives the SPA router. The
+   * router's document-level click interceptor can't see these anchors — they
+   * live inside `fb-nav-item`'s shadow root, so the click event is retargeted to
+   * the host and `closest('a[href]')` misses it. `fb-nav-item` calls
+   * `preventDefault` and emits this event instead; the shell is where it lands.
+   */
+  private onNavigate(e: Event): void {
+    const href = (e as CustomEvent<{ href: string }>).detail?.href;
+    if (href) navigate(href);
   }
 
   private onWorkspaceChange(e: Event): void {
