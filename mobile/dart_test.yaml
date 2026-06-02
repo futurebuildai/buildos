@@ -6,3 +6,10 @@
 tags:
   live:
     description: Requires a live BuildOS backend (native auth + seeded field data).
+  golden:
+    description: >-
+      Pixel/golden tests (see test/fb_sync_chip_golden_test.dart). Renderer-version
+      sensitive, and CI runs `flutter test` against an unpinned `channel: stable`,
+      so they self-skip unless RUN_GOLDEN_TESTS=1 is set — keeping the default run
+      deterministic. Run them: RUN_GOLDEN_TESTS=1 flutter test --tags golden.
+      Refresh baselines: append --update-goldens.
