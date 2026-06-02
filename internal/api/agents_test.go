@@ -14,10 +14,10 @@ import (
 	"github.com/futurebuildai/buildos/internal/service"
 )
 
-// mockAgentsService implements AgentsServicer for handler tests. The
-// daily-briefing surface stays out of test scope here (covered by the
-// service's own validation tests + the existing ai client tests);
-// only the new RecommendScheduleAdjustments path is exercised below.
+// mockAgentsService implements AgentsServicer for handler tests. Both
+// the daily-briefing and recommend-adjustments surfaces are exercised
+// below (error-mapping is shared via writeServiceError, but each
+// endpoint needs its own coverage of the soft-fail / upstream paths).
 type mockAgentsService struct {
 	briefingResult service.DailyBriefing
 	briefingErr    error
@@ -46,6 +46,94 @@ func (m *mockAgentsService) RecommendScheduleAdjustments(_ context.Context, call
 	m.lastRecUserSub = callerUserSub
 	m.lastRecProjectID = projectID
 	return m.recResult, m.recErr
+}
+
+// ---- DailyBriefing ----------------------------------------------------
+
+func TestDailyBriefing_HappyPath(t *testing.T) {
+	svc := &mockAgentsService{
+		briefingResult: service.DailyBriefing{
+			Reply:      "Lead with the framing inspection, then pour footings.",
+			SessionID:  uuid.MustParse(testProjID),
+			TaskCount:  4,
+			AlertCount: 1,
+		},
+	}
+	h := NewAgentsHandler(svc)
+	r := buildRequest(t, "POST", "/api/v1/agents/daily-briefing", testOrgID, nil, nil)
+	w := httptest.NewRecorder()
+	h.DailyBriefing(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, body=%s", w.Code, w.Body.String())
+	}
+	// Claims threaded through to the service: org (from X-Dev-Auth),
+	// sub, and role.
+	if svc.lastBriefOrg.String() != testOrgID {
+		t.Errorf("service got org=%s, want %s", svc.lastBriefOrg, testOrgID)
+	}
+	if svc.lastBriefSub != "test-sub" {
+		t.Errorf("service got sub=%q, want test-sub", svc.lastBriefSub)
+	}
+	if svc.lastBriefRole != "owner" {
+		t.Errorf("service got role=%q, want owner", svc.lastBriefRole)
+	}
+	body := w.Body.String()
+	for _, want := range []string{`"briefing"`, `"reply":"Lead with the framing`, `"task_count":4`, `"alert_count":1`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("response missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestDailyBriefing_Unconfigured503(t *testing.T) {
+	// No Anthropic key configured for the org — the native AI client
+	// returns ai.ErrUnconfigured; the handler must map it to 503 (a
+	// configuration gap, not a caller error) so the operator knows to
+	// set a key in the vault.
+	h := NewAgentsHandler(&mockAgentsService{briefingErr: ai.ErrUnconfigured})
+	r := buildRequest(t, "POST", "/api/v1/agents/daily-briefing", testOrgID, nil, nil)
+	w := httptest.NewRecorder()
+	h.DailyBriefing(w, r)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d, want 503, body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"SERVICE_UNAVAILABLE"`) {
+		t.Errorf("body missing SERVICE_UNAVAILABLE code: %s", w.Body.String())
+	}
+}
+
+func TestDailyBriefing_Transient502(t *testing.T) {
+	h := NewAgentsHandler(&mockAgentsService{briefingErr: ai.ErrTransient})
+	r := buildRequest(t, "POST", "/api/v1/agents/daily-briefing", testOrgID, nil, nil)
+	w := httptest.NewRecorder()
+	h.DailyBriefing(w, r)
+	if w.Code != http.StatusBadGateway {
+		t.Errorf("status=%d, want 502", w.Code)
+	}
+}
+
+func TestDailyBriefing_RateLimited429(t *testing.T) {
+	h := NewAgentsHandler(&mockAgentsService{briefingErr: ai.ErrRateLimited})
+	r := buildRequest(t, "POST", "/api/v1/agents/daily-briefing", testOrgID, nil, nil)
+	w := httptest.NewRecorder()
+	h.DailyBriefing(w, r)
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("status=%d, want 429", w.Code)
+	}
+}
+
+func TestDailyBriefing_BadStoredKey503(t *testing.T) {
+	// A 401 from Anthropic means the STORED key is bad — operator-fixable,
+	// not the caller's token being rejected. The handler maps it to 503
+	// so the client doesn't treat it as its own auth failure.
+	h := NewAgentsHandler(&mockAgentsService{briefingErr: &ai.HTTPError{StatusCode: http.StatusUnauthorized, Type: "authentication_error"}})
+	r := buildRequest(t, "POST", "/api/v1/agents/daily-briefing", testOrgID, nil, nil)
+	w := httptest.NewRecorder()
+	h.DailyBriefing(w, r)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d, want 503, body=%s", w.Code, w.Body.String())
+	}
 }
 
 func TestRecommendScheduleAdjustments_HappyPath(t *testing.T) {
