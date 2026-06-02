@@ -287,6 +287,107 @@ func TestCreateInvoice_BadJSONReturns400(t *testing.T) {
 	}
 }
 
+func TestCreateInvoice_BadDueDateReturns400(t *testing.T) {
+	h := NewFinancialsHandler(&mockBudgetService{})
+	body := strings.NewReader(`{"vendor_name":"X","amount_cents":1,"currency_code":"USD","due_date":"not-a-date"}`)
+	r := buildRequest(t, "POST", "/api/v1/projects/"+testProjID+"/invoices",
+		testOrgID, map[string]string{"projectID": testProjID}, body)
+	w := httptest.NewRecorder()
+	h.CreateInvoice(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "due_date") {
+		t.Errorf("body should explain due_date: %s", w.Body.String())
+	}
+}
+
+func TestCreateInvoice_InvalidProjectIDReturns400(t *testing.T) {
+	h := NewFinancialsHandler(&mockBudgetService{})
+	body := strings.NewReader(`{"vendor_name":"X","amount_cents":1,"currency_code":"USD"}`)
+	r := buildRequest(t, "POST", "/api/v1/projects/not-a-uuid/invoices",
+		testOrgID, map[string]string{"projectID": "not-a-uuid"}, body)
+	w := httptest.NewRecorder()
+	h.CreateInvoice(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400; body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpdateInvoice_HappyPath(t *testing.T) {
+	invoiceID := uuid.MustParse(testInvID)
+	svc := &mockBudgetService{
+		updateInvoiceResult: models.Invoice{
+			ID:           invoiceID,
+			ProjectID:    uuid.MustParse(testProjID),
+			VendorName:   "Acme Lumber",
+			AmountCents:  150000,
+			CurrencyCode: "USD",
+			Status:       models.InvoiceStatusPaid,
+		},
+	}
+	h := NewFinancialsHandler(svc)
+	body := strings.NewReader(`{"status":"paid","paid_date":"2026-06-01T00:00:00Z"}`)
+	r := buildRequest(t, "PUT", "/api/v1/projects/"+testProjID+"/invoices/"+testInvID,
+		testOrgID, map[string]string{"projectID": testProjID, "invoiceID": testInvID}, body)
+	w := httptest.NewRecorder()
+	h.UpdateInvoice(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, body=%s", w.Code, w.Body.String())
+	}
+	if svc.lastCallerOrgID.String() != testOrgID {
+		t.Errorf("service got caller_org=%s, want %s", svc.lastCallerOrgID, testOrgID)
+	}
+	if !strings.Contains(w.Body.String(), `"invoice"`) {
+		t.Errorf("body should wrap invoice: %s", w.Body.String())
+	}
+}
+
+func TestUpdateInvoice_BadJSONReturns400(t *testing.T) {
+	h := NewFinancialsHandler(&mockBudgetService{})
+	r := buildRequest(t, "PUT", "/api/v1/projects/"+testProjID+"/invoices/"+testInvID,
+		testOrgID, map[string]string{"projectID": testProjID, "invoiceID": testInvID},
+		strings.NewReader("not-json"))
+	w := httptest.NewRecorder()
+	h.UpdateInvoice(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400", w.Code)
+	}
+}
+
+func TestUpdateInvoice_BadPaidDateReturns400(t *testing.T) {
+	h := NewFinancialsHandler(&mockBudgetService{})
+	body := strings.NewReader(`{"status":"paid","paid_date":"yesterday"}`)
+	r := buildRequest(t, "PUT", "/api/v1/projects/"+testProjID+"/invoices/"+testInvID,
+		testOrgID, map[string]string{"projectID": testProjID, "invoiceID": testInvID}, body)
+	w := httptest.NewRecorder()
+	h.UpdateInvoice(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "paid_date") {
+		t.Errorf("body should explain paid_date: %s", w.Body.String())
+	}
+}
+
+func TestUpdateInvoice_InvalidInvoiceIDReturns400(t *testing.T) {
+	h := NewFinancialsHandler(&mockBudgetService{})
+	body := strings.NewReader(`{"status":"paid"}`)
+	r := buildRequest(t, "PUT", "/api/v1/projects/"+testProjID+"/invoices/not-a-uuid",
+		testOrgID, map[string]string{"projectID": testProjID, "invoiceID": "not-a-uuid"}, body)
+	w := httptest.NewRecorder()
+	h.UpdateInvoice(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400; body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestUpdateInvoice_NotFoundReturns404(t *testing.T) {
 	h := NewFinancialsHandler(&mockBudgetService{
 		updateInvoiceErr: service.ErrNotFound,

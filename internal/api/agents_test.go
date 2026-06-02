@@ -136,6 +136,65 @@ func TestDailyBriefing_BadStoredKey503(t *testing.T) {
 	}
 }
 
+func TestDailyBriefing_InvalidOrgClaim401(t *testing.T) {
+	// A malformed org_id in the JWT claim can't be parsed to a UUID; the
+	// handler returns 401 before touching the service rather than passing
+	// a zero UUID downstream.
+	svc := &mockAgentsService{}
+	h := NewAgentsHandler(svc)
+	r := buildRequest(t, "POST", "/api/v1/agents/daily-briefing", "not-a-uuid", nil, nil)
+	w := httptest.NewRecorder()
+	h.DailyBriefing(w, r)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d, want 401, body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "UNAUTHORIZED") {
+		t.Errorf("body missing UNAUTHORIZED code: %s", w.Body.String())
+	}
+	if svc.lastBriefSub != "" {
+		t.Error("service should not be invoked when the org claim is unparseable")
+	}
+}
+
+func TestDailyBriefing_UpstreamServerError502(t *testing.T) {
+	// A 5xx from Anthropic is an upstream outage (not the stored key being
+	// bad, which is the 401 → 503 case); the handler maps it to 502.
+	h := NewAgentsHandler(&mockAgentsService{
+		briefingErr: &ai.HTTPError{StatusCode: http.StatusInternalServerError, Type: "api_error"},
+	})
+	r := buildRequest(t, "POST", "/api/v1/agents/daily-briefing", testOrgID, nil, nil)
+	w := httptest.NewRecorder()
+	h.DailyBriefing(w, r)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d, want 502, body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "UPSTREAM_ERROR") {
+		t.Errorf("body missing UPSTREAM_ERROR code: %s", w.Body.String())
+	}
+}
+
+func TestDailyBriefing_GenericErrorMaps500(t *testing.T) {
+	// An error matching none of the AI/service sentinels falls through to
+	// the default leg: an opaque 500 (no internal detail leaked to the
+	// caller).
+	h := NewAgentsHandler(&mockAgentsService{briefingErr: errors.New("unexpected boom")})
+	r := buildRequest(t, "POST", "/api/v1/agents/daily-briefing", testOrgID, nil, nil)
+	w := httptest.NewRecorder()
+	h.DailyBriefing(w, r)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d, want 500, body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "INTERNAL_ERROR") {
+		t.Errorf("body missing INTERNAL_ERROR code: %s", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "boom") {
+		t.Errorf("internal error detail leaked to caller: %s", w.Body.String())
+	}
+}
+
 func TestRecommendScheduleAdjustments_HappyPath(t *testing.T) {
 	five := 5
 	svc := &mockAgentsService{
