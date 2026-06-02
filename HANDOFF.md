@@ -205,7 +205,25 @@ Known follow-up surfaced by PR #9 (not blocking, queued):
 
 ## Next up (prioritized — pick from the top)
 
-Post-pivot backlog:
+**▶ NEXT: backend-dependent E2E harness.** The web (A–F) and Flutter (G)
+builds are done and green on backend-free CI, but the cross-stack journeys
+that need a live backend are still unwritten — this is the top live
+priority. Stand up a harness that runs both frontends against a migrated,
+seeded backend (`make db-up && make migrate && go run ./cmd/server` with
+`DEV_AUTH_MODE` unset + a seeded `BUILDOS_BOOTSTRAP_TOKEN`).
+- **Web (Playwright, live backend):** first-run claim → 6-step wizard →
+  complete → land in portfolio; recalc → CPM cascade diff + `recalculation_ms`;
+  BYOK set → capability flips AI on. These were deliberately deferred from the
+  backend-free Phase F axe/unit sweep.
+- **Flutter (`integration_test`):** airplane-mode → queue writes → reconnect →
+  outbox drain, with idempotency verified server-side (replayed write → 409 →
+  marked synced, no dupes); plus golden tests for the offline/sync states.
+- **Wiring:** add a live-backend CI lane (compose Postgres + server) gated
+  separately from the fast backend-free jobs so PRs stay quick; document the
+  seed fixtures. Entry points: `web/tests/e2e/`, `web/playwright.config.ts`,
+  `mobile/integration_test/` (new), `.github/workflows/ci.yml`.
+
+Post-pivot backlog (the items below are complete; kept as a record):
 
 1. ~~**Finish the docs sweep**~~ ✅ DONE (2026-06-01) — `API_CONTRACT.md`,
    `TECH_STACK.md`, `HANDOFF.md`, `docs/fork-onboarding.md` (new artifacts:
@@ -237,9 +255,11 @@ Post-pivot backlog:
    200ms/500ms gates), `go vet`, and `test-integration` (Testcontainers
    Postgres) all PASS. Only `make lint` (golangci-lint) was skipped —
    not installed locally; CI covers it.
-4. **Frontend hand-off** — the companion Lit/Flutter repos consume
-   `.agents/handoff/API_CONTRACT.md` (now reflecting native auth + BYOK
-   integrations + AI 503 surfaces) and `DESIGN_SYSTEM.md`.
+4. ~~**Frontend build**~~ ✅ DONE (2026-06-01, commit `9dc8d7e`) — the
+   companion frontends now live in this monorepo (`web/` Lit console
+   Phases A–F, `mobile/` Flutter field app Phase G), built against the
+   native backend + the binding specs in `.agents/handoff/frontend/`.
+   Remaining cross-stack verification tracked as the ▶ NEXT item above.
 
 ## Working agreement (L8 self-audit gate)
 
