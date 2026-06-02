@@ -102,11 +102,15 @@ export class FbPasswordInput extends FBElement {
   private readonly capsHintId = `caps-${Math.random().toString(36).slice(2, 8)}`;
 
   private onInput(e: Event): void {
+    // Stop the inner native `input` at the boundary so only our curated
+    // `{ value }` event escapes (see fb-input for the double-event rationale).
+    e.stopPropagation();
     this.value = (e.target as HTMLInputElement).value;
     this.emit('input', { value: this.value });
   }
 
-  private onChange(): void {
+  private onChange(e: Event): void {
+    e.stopPropagation();
     this.emit('change', { value: this.value });
   }
 

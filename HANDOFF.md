@@ -30,6 +30,7 @@ Companion docs:
 
 ## Last shipped (most recent → older)
 
+- **2026-06-02** [uncommitted at time of writing] Backend-dependent E2E harness — the ▶ NEXT live-backend lane, now closing. Stood up `scripts/e2e-backend.sh` (boots a REAL `cmd/server` under native auth + vault against a migrated, seeded Postgres; `--db-up` for local Docker, bare for a CI service container; `--seed-field` seeds an onboarding-COMPLETE org + project + task and exports the `E2E_*` contract). Two live lanes wired into `.github/workflows/ci.yml`: **`e2e`** (web Playwright — first-run claim → 6-step wizard → portfolio) and new **`e2e-mobile`** (Flutter `test/live/sync_live_test.dart` — claim → offline queue → reconnect → drain → server-side idempotency replay 409 → `pull()` cursor advance). The mobile lane self-skips offline (`@Tags(['live'])` + env guard) so the backend-free `mobile` job stays green. **Two genuine native-auth bugs the live lane surfaced (both ship-blocking, now fixed):** (1) `internal/store/field.go LookupUserIDBySubject` keyed on the legacy `oidc_subject` column (NULL for every native user) while the native JWT `sub` IS `users.id` — the entire mobile field write path (progress/checkin/daily-log) 404'd. Fixed to resolve by `id`. (2) `internal/store/feed_cards.go ListFeedCards` resolved user-targeted cards through the same `oidc_subject` subquery — user-targeted feed cards never matched native callers. Fixed to compare `target_user_id` against the parsed subject UUID directly. Also fixed the mobile `ApiClient._unwrap` which never unwrapped the `{data,meta}` envelope (broke every typed data call). `testdb.SeedUser` now seeds NULL `oidc_subject` to model real native users and stop masking this bug class. Verify green: `go build ./...` + `-tags=prod`, `go vet`, `make test`, `make test-prod`, full `make test-integration`, gofmt + `dart format` + `flutter analyze` clean; live mobile lane passes end-to-end through the harness; offline `flutter test` → 12 pass / 1 skip.
 - **2026-06-01** [`dc78aa7` → `origin/main`, direct push, no PR] Projects CRUD — replaced the four `writeNotImplemented` stubs in `internal/api/projects.go` with real handlers wired through the canonical trio (handler → `ProjectServicer` interface → `service.ProjectService` → stateless `store.ProjectStore`). **Store** (`internal/store/projects.go`): added `ProjectStore` CRUD next to the existing `VerifyProjectInOrg` helper — `ListByOrg` (optional status filter, `created_at DESC, id DESC`, LIMIT/OFFSET), `GetByID` (cross-org → `ErrNotFound`, no existence leak), `Create` (INSERT, DB applies `status='active'` default + timestamps), `Update` (COALESCE partial patch on name/address/status/gsf, `updated_at=now()`, scoped by id+org). Nullable `address` scanned through a `*string` local so SQL NULL → `""`. **Service** (`internal/service/projects.go`, new): one-tx-per-mutation + audit (`project.created` / `project.updated`), read-only tx for List/Get; validates closed status enum {active, completed, archived}, GSF range [1500,6000] when present, name non-blank; `paginate` clamps per_page to [1,200] and page≥1; create defaults status (not settable), update requires ≥1 field; dates not editable on update (create-only per API contract). **Handler** (`internal/api/projects.go`): `List` (?status/page/per_page, malformed paging → 0 → service defaults, stable `[]`), `Create` (parses `permit_issued_date`/`project_start_date` via shared `parseOptionalDate`, 400 on bad date, 201), `Get`/`Update` (parse `projectID` from URL, 404 on miss). `writeProjectError` maps `ErrNotFound`→404, `ErrInvalidInput`→400, default→500 (no DB leak). Wired `ProjectService` into `RouterConfig` + `cmd/server/main.go`; routes/RBAC were already in `router.go` (List/Get any authed; Create/Update owner/admin). Tests: 17 handler units (`internal/api/projects_test.go`, fake `ProjectServicer` — success/validation/not-found/bad-JSON/bad-date/401/500-no-leak/stable-`[]`) + 7 store integration tests (`internal/store/projects_integration_test.go`, `//go:build integration` — create round-trip, null address, cross-org get/update → NotFound, status filter + org isolation, pagination, COALESCE partial patch). Verify green: `go build ./...`, `go vet ./...`, unit tests, store integration suite (8.1s), `make build-prod`. Reused existing `parseOptionalDate` (financials.go) and `strPtr` (setup_integration_test.go) to avoid redeclaration.
 - **2026-06-01** [`dc78aa7` → `origin/main`, direct push, no PR — committed together with Projects CRUD above] Standalone pivot (native-stack cutover, two waves). Abandoned the Brain hub-and-spoke. **Native auth** (`internal/auth` + `internal/service/auth.go`): email/password with argon2id, BuildOS-issued RS256 JWTs (`iss=buildos`, `aud=buildos`), server-revocable opaque refresh tokens, bootstrap-token first-owner claim at `POST /api/v1/auth/claim`, password reset via Resend. **Native AI** (`internal/ai`): direct Anthropic Messages API client (BYOK), default model claude-opus-4-6 / fast claude-sonnet-4-5, circuit breaker, image input, soft-fail `503` when no key. **Encrypted vault** (`internal/cryptobox` + `internal/service/VaultService`): AES-256-GCM BYOK store keyed by `VAULT_MASTER_KEY`, admin-gated `/api/v1/integrations` surface (metadata only, never secret bytes). **Mailer** (`internal/mailer`): Resend transactional email. Procurement vendor review now creates a local `vendor_review_requested` feed card (`201 {feed_card_id}`) instead of emitting A2A. **Wave 2 deletion**: removed `internal/brain`, `internal/a2a`, `internal/a2asigner`, billing, `cmd/dev-idp`; `migration 013` drops `a2a_inbound_log` + `a2a_outbound_dlq`; `cmd/buildos-fork-init` now emits JWT keypair + vault master key + bootstrap token (no JWKS/Brain registration). `go.mod` `replace ... futurebuild-brain` removed. Docs refreshed (CLAUDE.md, API_CONTRACT.md, TECH_STACK.md, this file). Build/vet/test green in both default and `-tags=prod`; migration linter + regression suite pass.
 - **2026-05-06** PR #26 [`4573379`] S4 9.1 follow-up — `RecommendScheduleAdjustments` HTTP handler + RBAC. Closes the loop on PR #25's service method by exposing it over HTTP. New route `POST /api/v1/projects/{projectID}/schedule/recommend-adjustments` mounts under the existing `/schedule` sub-route, double-gated: `RequireMinRole(RoleSuperintendent)` (CPM-affecting; matches `/recalculate`'s gate) + `RequirePlanTier(PlanTierPro)` (consumes metered AI tokens). Conditional on `cfg.AgentsService != nil`, matching the pattern already in place under `/api/v1/agents/*` so the worker binary doesn't fail to start. `AgentsServicer` interface extended with `RecommendScheduleAdjustments`. Handler reads `project_id` from URL + caller org/sub from JWT claims; returns the full `ScheduleAdjustmentSet` (`run_id`, `tokens_used`, `cost_cents`, `currency_code`, `adjustments[]`, `applied_deltas`, `skipped_rationale_only`) on 200. Error map: `400 VALIDATION_ERROR` (invalid project_id / `ErrInvalidInput`); `404 NOT_FOUND` (`ErrNotFound`); `503 SERVICE_UNAVAILABLE` (`ErrAgentsMaestroUnavailable` / `ErrAgentsScheduleServiceUnavailable` — worker-binary path; tells callers to retry against server binary rather than treating as permanent input error); `502 UPSTREAM_ERROR` (`brain.ErrTransient` / Brain 5xx); `401 UNAUTHORIZED` (Brain rejected token). Subtle: the service's `"apply succeeded; recalc deferred"` path returns `(result, err)` where deltas were persisted but post-tx CPM re-run failed — handler detects via non-zero `RunID` on the result and returns `200` with the body (reporting 5xx would mislead the caller into thinking deltas weren't applied; next `/schedule/recalculate` re-runs CPM). New `internal/api/agents_test.go` with 7 tests: happy-path (asserts service args + envelope shape: run_id, applied_deltas, cost_cents, currency_code), bad project_id → 400, `ErrNotFound` → 404, `ErrInvalidInput` → 400, both 503 sentinels, `brain.ErrTransient` → 502, and the recalc-deferred regression guard (asserts 200 with applied_deltas in body). `make audit` ALL PASSED. CPM80=144µs, CPM200=374µs.
@@ -116,11 +117,18 @@ field contracts (caller-scoped writes: `POST /field/{progress,checkin,daily-log}
   job in `.github/workflows/ci.yml` (pub get + format check + analyze + test);
   generated `app_database.g.dart` committed so CI needs no build_runner.
 
-**Next:** backend-dependent E2E journeys under a live-backend harness — web
-(login→setup→portfolio, recalc→cascade, BYOK→AI-on) and Flutter
-integration_test (airplane-mode → queue → reconnect → outbox drain, idempotency
-verified server-side) + golden tests for offline/sync states. Both deferred from
-the backend-free sweeps.
+**Backend-dependent E2E harness — DONE (2026-06-02).** `scripts/e2e-backend.sh`
+boots a live native-auth `cmd/server` against a seeded Postgres; the `e2e` (web
+Playwright: claim → wizard → portfolio) and `e2e-mobile` (Flutter offline-outbox:
+queue → reconnect → drain → 409 idempotency replay) CI lanes both run against it.
+Surfaced + fixed two ship-blocking native-auth bugs (subject→user resolution keyed
+on the legacy `oidc_subject` column in both `field.go` and `feed_cards.go`) plus the
+mobile `{data,meta}` envelope-unwrap bug. See the top "Last shipped" entry.
+
+**Next:** recalc → CPM cascade-diff and BYOK → AI-on Playwright assertions (the web
+`e2e` lane currently covers the claim→wizard→portfolio journey; the recalc-cascade
+and capability-flip journeys are still stubbed), plus Flutter golden tests for the
+offline/sync visual states.
 
 ---
 
@@ -205,23 +213,19 @@ Known follow-up surfaced by PR #9 (not blocking, queued):
 
 ## Next up (prioritized — pick from the top)
 
-**▶ NEXT: backend-dependent E2E harness.** The web (A–F) and Flutter (G)
-builds are done and green on backend-free CI, but the cross-stack journeys
-that need a live backend are still unwritten — this is the top live
-priority. Stand up a harness that runs both frontends against a migrated,
-seeded backend (`make db-up && make migrate && go run ./cmd/server` with
-`DEV_AUTH_MODE` unset + a seeded `BUILDOS_BOOTSTRAP_TOKEN`).
-- **Web (Playwright, live backend):** first-run claim → 6-step wizard →
-  complete → land in portfolio; recalc → CPM cascade diff + `recalculation_ms`;
-  BYOK set → capability flips AI on. These were deliberately deferred from the
-  backend-free Phase F axe/unit sweep.
-- **Flutter (`integration_test`):** airplane-mode → queue writes → reconnect →
-  outbox drain, with idempotency verified server-side (replayed write → 409 →
-  marked synced, no dupes); plus golden tests for the offline/sync states.
-- **Wiring:** add a live-backend CI lane (compose Postgres + server) gated
-  separately from the fast backend-free jobs so PRs stay quick; document the
-  seed fixtures. Entry points: `web/tests/e2e/`, `web/playwright.config.ts`,
-  `mobile/integration_test/` (new), `.github/workflows/ci.yml`.
+**▶ NEXT: deepen the live E2E journeys.** The backend-dependent harness itself
+is DONE (`scripts/e2e-backend.sh` + the `e2e` and `e2e-mobile` CI lanes; see the
+top "Last shipped" entry). What remains is widening the journeys it drives:
+- **Web (Playwright, live backend):** the `e2e` lane covers first-run claim →
+  6-step wizard → portfolio. Still to add: recalc → CPM cascade diff +
+  `recalculation_ms`; BYOK set → capability flips AI on (needs the `--seed-field`
+  org or a parallel seed that leaves a project schedulable).
+- **Flutter:** the `e2e-mobile` lane covers airplane-mode → queue → reconnect →
+  outbox drain + server-side 409 idempotency replay. Still to add: golden tests
+  for the offline/sync visual states (`mobile/test/` golden harness).
+- Entry points: `web/tests/e2e/`, `web/playwright.config.ts`,
+  `mobile/test/live/sync_live_test.dart`, `scripts/e2e-backend.sh`,
+  `.github/workflows/ci.yml`.
 
 Post-pivot backlog (the items below are complete; kept as a record):
 

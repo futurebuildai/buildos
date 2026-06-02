@@ -111,12 +111,16 @@ export class FbSecretInput extends FBElement {
   }
 
   private onInput(e: Event): void {
+    // Stop the inner native `input` at the boundary so only our curated
+    // `{ value, valid }` event escapes (see fb-input for the double-event rationale).
+    e.stopPropagation();
     // Trim whitespace from pasted keys (trailing newlines are a common footgun).
     this.value = (e.target as HTMLInputElement).value.trim();
     this.emit('input', { value: this.value, valid: this.valid });
   }
 
-  private onChange(): void {
+  private onChange(e: Event): void {
+    e.stopPropagation();
     this.emit('change', { value: this.value, valid: this.valid });
   }
 

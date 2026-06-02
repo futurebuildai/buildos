@@ -71,10 +71,13 @@ func (s *FeedCardsStore) CreateFeedCard(ctx context.Context, tx pgx.Tx, p Create
 // ListFeedCardsParams controls a feed listing query.
 //
 // Targeting model: a card is visible to the caller if EITHER its
-// target_user_id matches the caller's user row (resolved via
-// CallerOIDCSubject) OR its target_role matches CallerRole. Cross-org
-// isolation is enforced by OrgID — never null. Status defaults to
-// {"active"}; pass a non-empty list to override.
+// target_user_id equals the caller's user id OR its target_role matches
+// CallerRole. After the standalone pivot the JWT `sub` (CallerOIDCSubject)
+// IS the users.id (auth mints sub = u.ID.String()), so target_user_id is
+// compared directly against the parsed subject — the legacy oidc_subject
+// column is NULL for native users and must not be used. Cross-org isolation
+// is enforced by OrgID — never null. Status defaults to {"active"}; pass a
+// non-empty list to override.
 type ListFeedCardsParams struct {
 	OrgID             uuid.UUID
 	CallerOIDCSubject string
@@ -111,13 +114,21 @@ func (s *FeedCardsStore) ListFeedCards(ctx context.Context, tx pgx.Tx, p ListFee
 		statuses = []string{"active"}
 	}
 
+	// The native JWT `sub` is the users.id; a malformed/empty subject
+	// (never produced by a valid native token) resolves to uuid.Nil so it
+	// matches no real target_user_id while role-targeted cards still show.
+	callerID, perr := uuid.Parse(p.CallerOIDCSubject)
+	if perr != nil {
+		callerID = uuid.Nil
+	}
+
 	// Build the WHERE clause incrementally — one args slice shared by
 	// the count query and the page query so we don't risk arg drift.
-	args := []any{p.OrgID, p.CallerOIDCSubject, p.CallerRole, statuses}
+	args := []any{p.OrgID, callerID, p.CallerRole, statuses}
 	where := `
 		WHERE org_id = $1
 		  AND (
-		    target_user_id = (SELECT id FROM users WHERE oidc_subject = $2 AND org_id = $1)
+		    target_user_id = $2
 		    OR target_role = $3
 		  )
 		  AND status = ANY($4)`

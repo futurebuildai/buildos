@@ -167,26 +167,32 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	r.Group(func(r chi.Router) {
 		r.Use(authMiddleware)
 
-		// --------------------------------------------------------
-		// 0. Onboarding wizard — gated by Auth (so we know the
-		//    caller's org_id) but NOT by SetupGate (this is the
-		//    surface the gate exempts so operators can finish setup
-		//    from a fresh fork). Mounts only when SetupService is
-		//    wired so tests / dev rigs without it stay green.
-		// --------------------------------------------------------
-		if setup != nil {
-			MountSetupRoutes(r, setup)
-		}
-
-		// SetupGate applies to every authenticated route mounted
-		// AFTER this point. It exempts /api/v1/setup, /health,
-		// /ready, /metrics (per
+		// SetupGate guards every authenticated route. It exempts
+		// /api/v1/setup, /health, /ready, /metrics (per
 		// DefaultSetupGateExemptPrefixes) and 403s every other path
 		// until onboarding_complete=true. When SetupService is nil
 		// (tests, dev rigs without the wizard) the gate is skipped
 		// entirely — operational routes remain reachable.
+		//
+		// It must be installed via r.Use BEFORE any route is mounted
+		// on this group: chi panics if Use() is called after a route
+		// is registered on a mux. The wizard routes mounted just below
+		// are still reachable while onboarding is incomplete because
+		// the gate exempts the /api/v1/setup prefix by PATH, not by
+		// mount order.
 		if cfg.SetupService != nil {
 			r.Use(mw.SetupGate(mw.SetupGateConfig{Checker: cfg.SetupService}))
+		}
+
+		// --------------------------------------------------------
+		// 0. Onboarding wizard — gated by Auth (so we know the
+		//    caller's org_id) but exempt from SetupGate by prefix
+		//    (this is the surface operators use to finish setup from
+		//    a fresh fork). Mounts only when SetupService is wired so
+		//    tests / dev rigs without it stay green.
+		// --------------------------------------------------------
+		if setup != nil {
+			MountSetupRoutes(r, setup)
 		}
 
 		// --------------------------------------------------------

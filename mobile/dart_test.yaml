@@ -1,0 +1,8 @@
+# Test tag registry. The `live` tag marks tests that require a real
+# backend booted by scripts/e2e-backend.sh --seed-field (see
+# test/live/sync_live_test.dart). They self-skip when the E2E_* env isn't
+# present, so the default `flutter test` run stays backend-free; the e2e
+# CI lane runs the tagged file directly against the live server.
+tags:
+  live:
+    description: Requires a live BuildOS backend (native auth + seeded field data).

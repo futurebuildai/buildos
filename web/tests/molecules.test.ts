@@ -59,6 +59,12 @@ describe('fb-form', () => {
     const summary = el.shadowRoot!.querySelector('.summary[role="alert"]')!;
     expect(summary.textContent).toContain('Email');
   });
+
+  // NOTE: the real submit path — a slotted submit button click / Enter in a
+  // field, where the control and button live in SEPARATE shadow roots from
+  // fb-form's `<form>` — depends on composed-event retargeting that happy-dom
+  // does not faithfully model. That cross-shadow bridge is guarded in a real
+  // browser by tests/e2e/form-submit.spec.ts.
 });
 
 describe('fb-toaster', () => {

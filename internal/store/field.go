@@ -209,16 +209,25 @@ func (s *FieldStore) DailyLog(ctx context.Context, tx pgx.Tx, p DailyLogParams) 
 	return d, nil
 }
 
-// LookupUserIDBySubject resolves an OIDC subject (the `sub` JWT claim
-// — stored as users.oidc_subject) to a users.id UUID, scoped to the
-// caller's org. Returns ErrNotFound when no row matches; the service
-// layer maps this to a 401 (the JWT is valid but doesn't correspond
-// to a known user — usually a stale token after a user is removed).
+// LookupUserIDBySubject resolves the `sub` JWT claim to a users.id UUID,
+// scoped to the caller's org. After the standalone pivot, BuildOS mints its
+// own tokens with sub = users.id (auth.go: issuer.Mint(u.ID.String(), ...)),
+// so the subject IS the user id — the legacy oidc_subject column is NULL for
+// every native (password-backed) user (migration 011). We therefore resolve
+// by id directly; matching on oidc_subject would never hit for native auth and
+// silently 404 the entire field write path. A non-UUID subject (impossible for
+// a valid native token) and a missing row both map to ErrNotFound, which the
+// service layer surfaces as a 401/404 (valid JWT but no matching user — e.g. a
+// stale token after the user was removed).
 func (s *FieldStore) LookupUserIDBySubject(ctx context.Context, tx pgx.Tx, subject string, orgID uuid.UUID) (uuid.UUID, error) {
+	subjectID, err := uuid.Parse(subject)
+	if err != nil {
+		return uuid.Nil, ErrNotFound
+	}
 	var id uuid.UUID
-	err := tx.QueryRow(ctx, `
-		SELECT id FROM users WHERE oidc_subject = $1 AND org_id = $2`,
-		subject, orgID,
+	err = tx.QueryRow(ctx, `
+		SELECT id FROM users WHERE id = $1 AND org_id = $2`,
+		subjectID, orgID,
 	).Scan(&id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

@@ -52,8 +52,59 @@ export class FbForm extends FBElement {
     this.errors = errors;
   }
 
-  private onSubmit(e: Event): void {
+  /** Reentrancy guard so a single user action submits exactly once. */
+  private submitting = false;
+
+  // The submittable controls (fb-input, fb-password-input, fb-secret-input, …)
+  // and the submit fb-button each render their native element inside their OWN
+  // shadow root, so none of them are form-owned by the `<form>` in THIS
+  // component's shadow root. That means the browser fires neither a native
+  // `submit` on button click nor implicit submission on Enter — the form is
+  // dead to native mechanics across the shadow boundary. We bridge it: `click`
+  // and `keydown` are composed events that bubble through the flattened tree to
+  // our `<form>`, so we detect a submit-button click or an Enter keypress in a
+  // text field and run submission ourselves. (The native `@submit` stays wired
+  // for any same-tree `<button type=submit>` a caller slots in directly.)
+  private onFormClick(e: MouseEvent): void {
+    if (this.pathHasSubmitButton(e.composedPath())) {
+      e.preventDefault();
+      this.doSubmit();
+    }
+  }
+
+  private onFormKeydown(e: KeyboardEvent): void {
+    if (e.key !== 'Enter' || e.isComposing) return;
+    const target = e.composedPath()[0] as HTMLElement | undefined;
+    // Implicit submission: Enter in a single-line text input. Enter on a button
+    // is delivered as a click (handled above); textareas keep their newline.
+    if (target?.tagName === 'INPUT') {
+      e.preventDefault();
+      this.doSubmit();
+    }
+  }
+
+  /** True if the composed path (up to this host) crosses a submit button. */
+  private pathHasSubmitButton(path: EventTarget[]): boolean {
+    for (const node of path) {
+      if (node === this) break;
+      const el = node as HTMLElement;
+      if (el?.tagName !== 'BUTTON') continue;
+      if ((el.getAttribute('type') ?? '').toLowerCase() === 'submit') return true;
+    }
+    return false;
+  }
+
+  private onNativeSubmit(e: Event): void {
     e.preventDefault();
+    this.doSubmit();
+  }
+
+  private doSubmit(): void {
+    // Collapse the click+any native submit from one action into a single emit.
+    if (this.submitting) return;
+    this.submitting = true;
+    queueMicrotask(() => (this.submitting = false));
+
     // Controls are slotted in the light DOM, so a shadow `<form>.elements` can't
     // see them. Collect any named element exposing a `value` (native inputs and
     // custom `fb-*` controls alike) from the host's light-DOM subtree.
@@ -69,7 +120,12 @@ export class FbForm extends FBElement {
   override render(): TemplateResult {
     const entries = Object.entries(this.errors);
     return html`
-      <form novalidate @submit=${this.onSubmit}>
+      <form
+        novalidate
+        @submit=${this.onNativeSubmit}
+        @click=${this.onFormClick}
+        @keydown=${this.onFormKeydown}
+      >
         ${entries.length
           ? html`<div class="summary" role="alert" tabindex="-1">
               <fb-icon name="alert-triangle" size="18"></fb-icon>

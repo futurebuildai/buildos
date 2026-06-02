@@ -144,8 +144,16 @@ class ApiClient {
   ) async {
     try {
       final res = await call();
-      final data = res.data;
-      if (data is Map<String, dynamic>) return data;
+      // Every backend response is the standard envelope
+      // `{ data, error, meta }` (internal/api/response.go) — the payload lives
+      // under `data`, mirroring the web client (src/api/client.ts). Return the
+      // inner object so callers (TokenPair.fromJson, FieldSyncResponse.fromJson)
+      // see the payload directly, not the envelope.
+      final body = res.data;
+      if (body is Map<String, dynamic>) {
+        final inner = body['data'];
+        if (inner is Map<String, dynamic>) return inner;
+      }
       return const {};
     } on DioException catch (e) {
       throw _toApiError(e);

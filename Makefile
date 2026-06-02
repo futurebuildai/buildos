@@ -1,4 +1,4 @@
-.PHONY: build build-server build-worker build-migrate build-prod build-fork-init fork-init test test-integration test-prod lint lint-migrations lint-migrations-test migrate migrate-down db-up db-down audit bench-physics docker-build docker-run clean
+.PHONY: build build-server build-worker build-migrate build-prod build-fork-init fork-init test test-integration test-prod lint lint-migrations lint-migrations-test migrate migrate-down db-up db-down audit bench-physics e2e-backend docker-build docker-run clean
 
 # Default DATABASE_URL for local dev (docker-compose db on port 5433)
 DATABASE_URL ?= postgres://fb_user:fb_pass@localhost:5433/futurebuild_os?sslmode=disable
@@ -93,6 +93,18 @@ bench-physics:
 ## Audit (lint + migration lint + test + prod-mode test + physics benchmarks)
 audit: lint-migrations lint-migrations-test test test-prod bench-physics
 	@echo "Audit: ALL PASSED"
+
+## End-to-end backend harness — boots a live cmd/server against a
+## migrated+seeded Postgres using NATIVE auth (claim → wizard → operate),
+## then runs CMD against it and tears the server down. See
+## scripts/e2e-backend.sh for the full contract (exports E2E_API_URL,
+## E2E_BOOTSTRAP_TOKEN, E2E_OWNER_EMAIL, E2E_OWNER_PASSWORD).
+##
+## Local:  make e2e-backend CMD="npm --prefix web run test:e2e:live"
+## With DB: make e2e-backend DB_UP=1 CMD="..."  (brings up the compose DB)
+## No CMD:  make e2e-backend                    (boots + idles foreground)
+e2e-backend:
+	bash scripts/e2e-backend.sh $(if $(DB_UP),--db-up,) $(if $(CMD),-- $(CMD),)
 
 ## Docker — single multi-arch image, server/worker/migrate selectable
 ## via BUILDOS_ROLE env. Local builds default to the host arch only

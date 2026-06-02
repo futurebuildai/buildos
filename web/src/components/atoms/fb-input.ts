@@ -77,11 +77,17 @@ export class FbInput extends FBElement {
   @property({ type: Number }) maxlength?: number;
 
   private onInput(e: Event): void {
+    // The inner native input fires a composed `input` that would otherwise
+    // escape this shadow root alongside our curated `{ value }` event, hitting
+    // host `@input` listeners twice (the native one carries detail=0, clobbering
+    // any value a consumer reads off detail). Stop it at the boundary; re-emit ours.
+    e.stopPropagation();
     this.value = (e.target as HTMLInputElement).value;
     this.emit('input', { value: this.value });
   }
 
-  private onChange(): void {
+  private onChange(e: Event): void {
+    e.stopPropagation();
     this.emit('change', { value: this.value });
   }
 

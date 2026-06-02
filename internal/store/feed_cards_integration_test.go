@@ -87,7 +87,7 @@ func TestFeedCardsStore_ListFeedCards_TargetingAndOrdering(t *testing.T) {
 		err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 			res, err := s.ListFeedCards(ctx, tx, ListFeedCardsParams{
 				OrgID:             orgID,
-				CallerOIDCSubject: userA.String(), // SeedUser sets oidc_subject = id.String()
+				CallerOIDCSubject: userA.String(), // native JWT sub IS the user id
 				CallerRole:        "admin",
 			})
 			if err != nil {

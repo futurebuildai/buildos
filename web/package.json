@@ -16,7 +16,8 @@
     "lint:fix": "eslint . --fix && prettier --write .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:live": "playwright test --config=playwright.live.config.ts"
   },
   "dependencies": {
     "@lit-labs/signals": "^0.1.2",
