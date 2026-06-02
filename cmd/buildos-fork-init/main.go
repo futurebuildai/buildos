@@ -139,7 +139,7 @@ func run(outDir, kid, orgID string, bits int, seed int64, emitBootstrapToken boo
 		return fmt.Errorf("create out dir: %w", err)
 	}
 
-	var randSrc io.Reader = rand.Reader
+	randSrc := io.Reader(rand.Reader)
 	if seed != 0 {
 		// Deterministic generation for tests. NEVER use this in
 		// production — math/rand is not cryptographically secure.
@@ -226,8 +226,13 @@ func writePrivatePEM(path string, key *rsa.PrivateKey) error {
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
 	}
-	defer f.Close()
-	return pem.Encode(f, &pem.Block{Type: "PRIVATE KEY", Bytes: der})
+	if err := pem.Encode(f, &pem.Block{Type: "PRIVATE KEY", Bytes: der}); err != nil {
+		_ = f.Close() // already returning the encode error
+		return err
+	}
+	// Surface flush/close errors — a swallowed close on a key file can
+	// silently truncate the PEM.
+	return f.Close()
 }
 
 // writePublicPEM emits SPKI PEM with file mode 0644 — public, safe
@@ -241,8 +246,11 @@ func writePublicPEM(path string, key *rsa.PublicKey) error {
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
 	}
-	defer f.Close()
-	return pem.Encode(f, &pem.Block{Type: "PUBLIC KEY", Bytes: der})
+	if err := pem.Encode(f, &pem.Block{Type: "PUBLIC KEY", Bytes: der}); err != nil {
+		_ = f.Close() // already returning the encode error
+		return err
+	}
+	return f.Close()
 }
 
 // writeForkYAML emits an operator-readable artifact. YAML by hand

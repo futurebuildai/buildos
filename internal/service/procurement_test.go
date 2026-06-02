@@ -7,28 +7,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/futurebuildai/buildos/internal/ai"
 	"github.com/futurebuildai/buildos/internal/models"
 )
-
-// fakeProcurementRecommender is the test double for
-// ProcurementRecommender. Captures the last request and
-// replays a scripted response — same pattern as fakeBriefer in
-// agents_test.go. Lets the validation tests assert the gate without
-// spinning up an HTTP server.
-type fakeProcurementRecommender struct {
-	lastReq ai.ProcurementRecommendRequest
-	resp    *ai.ProcurementRecommendResponse
-	err     error
-}
-
-func (f *fakeProcurementRecommender) ProcurementRecommend(_ context.Context, req ai.ProcurementRecommendRequest) (*ai.ProcurementRecommendResponse, error) {
-	f.lastReq = req
-	if f.err != nil {
-		return nil, f.err
-	}
-	return f.resp, nil
-}
 
 // These tests cover the input-validation gates that run BEFORE
 // ProcurementService touches the database pool. Passing nil pool/store

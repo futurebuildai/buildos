@@ -344,38 +344,6 @@ func TestGetTaskDuration_Precedence(t *testing.T) {
 
 // --- Benchmarks for CI gate (make audit) ---
 
-// generateLinearGraph creates a linear task chain of N tasks for benchmarking.
-func generateLinearGraph(n int) (*DependencyGraph, time.Time) {
-	projectID := uuid.New()
-	tasks := make([]models.ProjectTask, n)
-	deps := make([]models.TaskDependency, 0, n-1)
-
-	for i := 0; i < n; i++ {
-		tasks[i] = models.ProjectTask{
-			ID:           uuid.New(),
-			ProjectID:    projectID,
-			WBSCode:      fmt.Sprintf("%d.1", i+1),
-			Name:         fmt.Sprintf("Task %d", i+1),
-			DurationDays: 2 + (i % 5), // 2-6 day durations
-		}
-	}
-
-	for i := 0; i < n-1; i++ {
-		deps = append(deps, models.TaskDependency{
-			ID:             uuid.New(),
-			ProjectID:      projectID,
-			PredecessorID:  tasks[i].ID,
-			SuccessorID:    tasks[i+1].ID,
-			DependencyType: types.DependencyTypeFS,
-			LagDays:        0,
-		})
-	}
-
-	g := BuildDependencyGraph(tasks, deps)
-	start := time.Date(2026, 1, 5, 8, 0, 0, 0, time.UTC)
-	return g, start
-}
-
 // generateDiamondGraph creates a more realistic graph with parallel paths.
 func generateDiamondGraph(n int) (*DependencyGraph, time.Time) {
 	projectID := uuid.New()

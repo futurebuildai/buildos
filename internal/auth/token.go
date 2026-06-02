@@ -156,7 +156,7 @@ func (v *Verifier) Verify(raw string, now time.Time) (*TokenClaims, error) {
 		AnyAudience: jwt.Audience{v.audience},
 		Time:        now,
 	}
-	if err := claims.Claims.Validate(expected); err != nil {
+	if err := claims.Validate(expected); err != nil {
 		return nil, err
 	}
 	return &claims, nil

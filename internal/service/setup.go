@@ -953,7 +953,8 @@ func looksLikeRegion(s string) bool {
 		return false
 	}
 	for _, r := range s {
-		if !(r == '-' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) {
+		allowed := r == '-' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if !allowed {
 			return false
 		}
 	}
@@ -967,7 +968,8 @@ func isShortCode(s string, min, max int) bool {
 		return false
 	}
 	for _, r := range s {
-		if !(r == '_' || r == '-' || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+		allowed := r == '_' || r == '-' || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+		if !allowed {
 			return false
 		}
 	}

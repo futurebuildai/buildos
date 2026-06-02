@@ -49,10 +49,6 @@ func writeErrorResponse(w http.ResponseWriter, r *http.Request, status int, code
 	})
 }
 
-func writeNotImplemented(w http.ResponseWriter, r *http.Request) {
-	writeErrorResponse(w, r, http.StatusNotImplemented, "NOT_IMPLEMENTED", "this endpoint is not yet implemented")
-}
-
 func buildMeta(r *http.Request) meta {
 	reqID := chimw.GetReqID(r.Context())
 	return meta{

@@ -1,0 +1,16 @@
+# golangci-lint configuration.
+#
+# Keeps the default ("standard") linter set — errcheck, govet,
+# ineffassign, staticcheck, unused — which is what `make lint` and the
+# local pre-merge sweep exercise. The only customization is excluding
+# web/node_modules: some JS dependencies (e.g. flatted) ship a vendored
+# .go file that golangci-lint's `./...` walk would otherwise lint. That
+# directory is gitignored and never present in CI's lint-go checkout, so
+# this only affects local runs after `npm install` — but it keeps
+# `make lint` noise-free on a dev box that has the web deps installed.
+version: "2"
+
+linters:
+  exclusions:
+    paths:
+      - web/node_modules
