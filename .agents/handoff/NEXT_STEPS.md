@@ -11,45 +11,42 @@ of 2026-05-01.
 
 ---
 
-## Tier 1 — high-leverage, low-friction (next 1–3 sessions)
+## Tier 1 — ✅ ALL SHIPPED (verified 2026-06-02)
 
-### 1. Audit-log JSONB scrub
-**Why:** PII can land in `audit_log.before_state` / `after_state` JSONB
-columns today (e.g. crew_members on a checkin audit row). Without
-scrubbing, the audit log becomes a PII honeypot.
-**Files:**
-- `internal/store/audit.go` — wrap `Insert` with `pii.ScrubJSON(blob, pii.Restricted)` before the SQL bind
-- `internal/store/audit_integration_test.go` — confirm a checkin
-  audit row's after_state has GPS coords + names redacted
-**Scope:** ~80 LOC + 3-5 tests. ½ session.
+All three original Tier-1 items are already implemented in the tree. Entries
+kept (collapsed) for provenance; verify before re-opening.
 
-### 2. Structured-log PII scrubbing
-**Why:** slog records may include attribute values that are PII
-(`user_email=...`, `gps_lat=45.5`, etc). The CorrelatingHandler
-already wraps the JSON handler — add scrubbing in the same layer.
-**Files:**
-- `internal/obs/logger.go` — extend `CorrelatingHandler.Handle` to
-  iterate record attrs and apply `pii.MaskString` to values whose
-  key matches the catalog
-- `internal/obs/logger_test.go` — add cases for masked attrs
-**Scope:** ~60 LOC + 3 tests. ¼ session.
+### 1. Audit-log JSONB scrub — ✅ SHIPPED
+`internal/store/audit.go` `scrubAuditPayloads` wraps Before/After/Metadata
+with `pii.ScrubJSON(..., pii.Restricted)` inside `InsertAudit`; idempotent,
+parse-failure passes through unchanged. (Covered by the store integration
+suite.)
 
-### 3. D7 wave 3 — Schedule + Pipeline audit recording
-**Why:** Phase D's audit-log work covered Feed, Procurement, Fleet,
-Budget, Field. Schedule + Pipeline still don't record audit events
-on their mutations. Pattern is established (see `internal/service/fleet.go`
-`s.audit.Record(...)` calls inside the tx); just clone it.
-**Files:**
-- `internal/service/schedule.go` — record on `RecalculateSchedule`,
-  `UpdateTask`. Action strings: `schedule.recalculated`, `task.updated`.
-  Resource: `AuditResourceProjectTask`.
-- `internal/service/pipeline.go` — record on every stage transition
-  (`AdvanceProspect`, `LoseProspect`, `CreateEstimate`,
-  `CreatePermit`, etc.).
-- Update both services' constructors to accept `audit AuditRecorder`
-  with nil-safe fallback (mirror Fleet/Procurement pattern).
-- Update unit tests + handler call sites to pass `claims.Sub`.
-**Scope:** ~250 LOC + tests. ½–1 session.
+### 2. Structured-log PII scrubbing — ✅ SHIPPED
+`internal/obs/logger.go` `scrubAttr` masks Restricted-class attr values
+(string → `pii.MaskString`; non-string → `[REDACTED]` sentinel; group attrs
+recurse) in both `CorrelatingHandler.Handle` (per-call attrs) and `WithAttrs`
+(logger-baked attrs). Confidential and below pass through for triage.
+
+### 3. D7 wave 3 — Schedule + Pipeline audit recording — ✅ SHIPPED
+Both services take an `AuditRecorder` (nil-safe → no-op) and call
+`s.audit.Record(ctx, tx, AuditEntry{...})` inside the mutation tx:
+`internal/service/schedule.go` (RecalculateSchedule) and
+`internal/service/pipeline.go` (prospect create/advance/lose, estimate +
+permit transitions).
+
+---
+
+## Tier 1b — current coverage frontier (active)
+
+Test-coverage hardening toward production readiness. Recent (2026-06-02):
+`internal/api` handler + router-RBAC suites (→ 84.6%, no 0%-funcs left),
+`internal/service` pure-helper units (→ 16.5%), and `internal/store`
+native-auth + vault integration tests (→ 62.8%). **Next:** DB-backed service
+mutations (behind the `integration` tag — clone the store-test `testdb.NewPool`
+pattern up into `service/*_integration_test.go`) and the partial `internal/api`
+branches (`readinessHandler` DB-down leg, `CreateInvoice`/`DailyBriefing`
+error paths).
 
 ---
 
