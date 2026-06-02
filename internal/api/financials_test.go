@@ -318,3 +318,78 @@ func TestUpdateInvoice_BadStatusMaps400(t *testing.T) {
 		t.Errorf("status=%d, want 400; body=%s", w.Code, w.Body.String())
 	}
 }
+
+// ---------- /org/{orgID}/financials/ar-aging ----------
+
+func TestARAging_OK(t *testing.T) {
+	svc := &mockBudgetService{getARAgingResult: []models.ARAgingSnapshot{{CurrencyCode: "USD"}}}
+	h := NewFinancialsHandler(svc)
+	r := buildRequest(t, "GET", "/api/v1/org/"+testOrgID+"/financials/ar-aging?currency=USD",
+		testOrgID, map[string]string{"orgID": testOrgID}, nil)
+	w := httptest.NewRecorder()
+	h.ARAging(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, body=%s", w.Code, w.Body.String())
+	}
+	if svc.lastCallerOrgID.String() != testOrgID || svc.lastCurrencyCode != "USD" {
+		t.Errorf("service got org=%s currency=%q", svc.lastCallerOrgID, svc.lastCurrencyCode)
+	}
+	if !strings.Contains(w.Body.String(), `"snapshots"`) {
+		t.Errorf("body should wrap snapshots: %s", w.Body.String())
+	}
+}
+
+func TestARAging_OrgMismatch403(t *testing.T) {
+	h := NewFinancialsHandler(&mockBudgetService{})
+	r := buildRequest(t, "GET", "/api/v1/org/"+otherOrgID+"/financials/ar-aging",
+		testOrgID, map[string]string{"orgID": otherOrgID}, nil)
+	w := httptest.NewRecorder()
+	h.ARAging(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status=%d, want 403", w.Code)
+	}
+}
+
+func TestARAging_ServiceErr500(t *testing.T) {
+	h := NewFinancialsHandler(&mockBudgetService{getARAgingErr: errInternal()})
+	r := buildRequest(t, "GET", "/api/v1/org/"+testOrgID+"/financials/ar-aging",
+		testOrgID, map[string]string{"orgID": testOrgID}, nil)
+	w := httptest.NewRecorder()
+	h.ARAging(w, r)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d, want 500", w.Code)
+	}
+}
+
+// ---------- /org/{orgID}/financials/projects ----------
+
+func TestProjectFinancials_OK(t *testing.T) {
+	svc := &mockBudgetService{getProjectFinancialsResult: []models.ProjectFinancial{{CurrencyCode: "CAD"}}}
+	h := NewFinancialsHandler(svc)
+	r := buildRequest(t, "GET", "/api/v1/org/"+testOrgID+"/financials/projects?currency=CAD",
+		testOrgID, map[string]string{"orgID": testOrgID}, nil)
+	w := httptest.NewRecorder()
+	h.ProjectFinancials(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, body=%s", w.Code, w.Body.String())
+	}
+	if svc.lastCallerOrgID.String() != testOrgID || svc.lastCurrencyCode != "CAD" {
+		t.Errorf("service got org=%s currency=%q", svc.lastCallerOrgID, svc.lastCurrencyCode)
+	}
+	if !strings.Contains(w.Body.String(), `"projects"`) {
+		t.Errorf("body should wrap projects: %s", w.Body.String())
+	}
+}
+
+func TestProjectFinancials_ServiceInvalidInput400(t *testing.T) {
+	h := NewFinancialsHandler(&mockBudgetService{getProjectFinancialsErr: service.ErrInvalidInput})
+	r := buildRequest(t, "GET", "/api/v1/org/"+testOrgID+"/financials/projects?currency=EUR",
+		testOrgID, map[string]string{"orgID": testOrgID}, nil)
+	w := httptest.NewRecorder()
+	h.ProjectFinancials(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400", w.Code)
+	}
+}
