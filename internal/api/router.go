@@ -203,6 +203,12 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		// --------------------------------------------------------
 		if integrations != nil {
 			MountIntegrationRoutes(r, integrations)
+			// Capabilities (GET /api/v1/capabilities) — auth-only, NOT
+			// admin-gated: every role's UI gates AI/email affordances on
+			// these flags. Derived from active-credential presence in the
+			// same vault. When the vault is nil the frontend keeps its
+			// assume-on fallback (unchanged behavior).
+			MountCapabilitiesRoutes(r, integrations)
 		}
 
 		// --------------------------------------------------------

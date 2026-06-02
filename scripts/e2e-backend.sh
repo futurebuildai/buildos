@@ -116,7 +116,12 @@ cleanup() {
   local rc=$?
   if [[ -n "${SERVER_PID}" ]] && kill -0 "${SERVER_PID}" 2>/dev/null; then
     log "stopping server (pid ${SERVER_PID})"
-    kill "${SERVER_PID}" 2>/dev/null || true
+    # `go run` spawns a *compiled child* that holds :8080; killing only the
+    # go-run parent leaks that child (stale binary → next run can't bind, and
+    # readiness probes hit the old code). We launch the server via `setsid` in
+    # its own process group, so kill the whole group (negative PID) to reap
+    # both. Fall back to a plain kill if the group signal misses.
+    kill -- "-${SERVER_PID}" 2>/dev/null || kill "${SERVER_PID}" 2>/dev/null || true
     wait "${SERVER_PID}" 2>/dev/null || true
   fi
   rm -rf "${TMPDIR_E2E}"
@@ -269,7 +274,10 @@ fi
 # Boot the server in the background; wait for readiness.
 # ----------------------------------------------------------------------------
 log "booting cmd/server on ${API_URL} (native auth, vault on)"
-go run ./cmd/server >"${TMPDIR_E2E}/server.log" 2>&1 &
+# setsid → new process group so cleanup() can reap the whole tree (the go-run
+# parent AND its compiled child that actually binds :8080). SERVER_PID is the
+# group leader's PID, also the PGID.
+setsid go run ./cmd/server >"${TMPDIR_E2E}/server.log" 2>&1 &
 SERVER_PID=$!
 
 wait_for_ready() {

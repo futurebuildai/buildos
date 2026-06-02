@@ -2,19 +2,20 @@
  * capabilityStore — feature availability (AI / email configured?) per
  * FRONTEND_ARCHITECTURE §4.3 / §6.2.
  *
- * GET /api/v1/capabilities is a backend gap. Fallback contract: ASSUME-ON. When
- * the endpoint is absent (or errors), AI/email render as available and degrade
+ * Source of truth: GET /api/v1/capabilities (active-credential presence in the
+ * BYOK vault). Fallback contract: ASSUME-ON. If the endpoint errors or is
+ * unmounted (vault not wired), AI/email render as available and degrade
  * REACTIVELY on a 503 AI_UNCONFIGURED soft-fail. This guarantees a capabilities
  * outage never hard-bricks the UI.
  *
- * Refresh triggers: at login, after any Integrations mutation, after any
+ * Refresh triggers: at boot, after any Integrations mutation, after any
  * AI_UNCONFIGURED soft-fail.
  */
 import { signal, computed } from '@lit-labs/signals';
 import { getCapabilities } from '../api/endpoints/capabilities.js';
 import type { Capabilities } from '../types/models.js';
 
-/** null = not yet loaded / endpoint absent → assume-on. */
+/** null = not yet loaded / endpoint unmounted → assume-on. */
 const capsSignal = signal<Capabilities | null>(null);
 
 export const capabilities = computed(() => capsSignal.get());

@@ -636,6 +636,31 @@ Admin-gated encrypted credential store. Per-org 3rd-party API keys (Anthropic, R
 }
 ```
 
+### GET /api/v1/capabilities
+- **Auth:** JWT (any authenticated role — NOT admin-gated, unlike the vault surface above). Every role's UI gates its AI/email affordances on these flags, so all roles must be able to read it.
+- **Purpose:** Report which vault-backed features are live for the caller's org, derived from active-credential **presence** (no upstream validation): `ai_configured` = an active `anthropic` credential exists; `email_configured` = an active `resend` credential exists. Never decrypts — `fingerprint` is the plaintext `last4` metadata.
+- **Response:** `200 { data: Capabilities }`
+- **Mounting:** Only mounted when the vault is wired (`VAULT_MASTER_KEY` configured), alongside the integrations routes. When unmounted, clients fall back to assume-on (capabilities outage must never brick the UI).
+
+#### Capabilities Object
+```json
+{
+  "ai_configured": true,
+  "email_configured": false,
+  "providers": [
+    {
+      "provider": "anthropic",
+      "configured": true,
+      "fingerprint": "x9f2",
+      "created_at": "timestamp",
+      "created_by": "user-sub"
+    },
+    { "provider": "resend", "configured": false }
+  ]
+}
+```
+`fingerprint`, `created_at`, and `created_by` are omitted for unconfigured providers.
+
 ---
 
 ## 14. Setup Wizard

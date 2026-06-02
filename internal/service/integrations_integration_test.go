@@ -171,6 +171,102 @@ func TestVaultService_ResendKey_RoundTrips(t *testing.T) {
 	}
 }
 
+func TestVaultService_Capabilities_FlipsWithCredentials(t *testing.T) {
+	svc, orgID := newVaultService(t)
+	ctx := context.Background()
+
+	// Fresh org: nothing configured → both flags off, both known providers
+	// present and unconfigured.
+	caps, err := svc.Capabilities(ctx, orgID)
+	if err != nil {
+		t.Fatalf("Capabilities (empty): %v", err)
+	}
+	if caps.AIConfigured || caps.EmailConfigured {
+		t.Errorf("empty org should have both off, got %+v", caps)
+	}
+	if len(caps.Providers) != 2 {
+		t.Fatalf("expected 2 providers, got %d", len(caps.Providers))
+	}
+
+	// Set an Anthropic key → ai flips on, email stays off.
+	if _, err := svc.SetCredential(ctx, SetCredentialInput{
+		OrgID: orgID, Provider: ProviderAnthropic, Key: "sk-ant-test-1234", UserSub: "owner-1",
+	}); err != nil {
+		t.Fatalf("SetCredential anthropic: %v", err)
+	}
+	caps, err = svc.Capabilities(ctx, orgID)
+	if err != nil {
+		t.Fatalf("Capabilities (anthropic set): %v", err)
+	}
+	if !caps.AIConfigured {
+		t.Errorf("ai should flip on after anthropic set, got %+v", caps)
+	}
+	if caps.EmailConfigured {
+		t.Errorf("email should stay off, got %+v", caps)
+	}
+	// The configured provider surfaces non-secret metadata (fingerprint=last4).
+	var anthropic *ProviderCapability
+	for i := range caps.Providers {
+		if caps.Providers[i].Provider == ProviderAnthropic {
+			anthropic = &caps.Providers[i]
+		}
+	}
+	if anthropic == nil || !anthropic.Configured {
+		t.Fatalf("anthropic should be configured: %+v", caps.Providers)
+	}
+	if anthropic.Fingerprint != "1234" {
+		t.Errorf("fingerprint = %q, want 1234 (last4)", anthropic.Fingerprint)
+	}
+	if anthropic.CreatedBy != "owner-1" || anthropic.CreatedAt.IsZero() {
+		t.Errorf("configured provider missing created_*: %+v", anthropic)
+	}
+
+	// Delete the Anthropic key → ai flips back off.
+	if err := svc.DeleteCredential(ctx, orgID, ProviderAnthropic, "owner-1"); err != nil {
+		t.Fatalf("DeleteCredential: %v", err)
+	}
+	caps, err = svc.Capabilities(ctx, orgID)
+	if err != nil {
+		t.Fatalf("Capabilities (anthropic deleted): %v", err)
+	}
+	if caps.AIConfigured {
+		t.Errorf("ai should flip off after delete, got %+v", caps)
+	}
+}
+
+func TestVaultService_Capabilities_OrgIsolation(t *testing.T) {
+	svc, orgID := newVaultService(t)
+	ctx := context.Background()
+
+	// A second org in the same pool with its own Anthropic key. The pool is
+	// shared (same VaultService), so this proves Capabilities filters by org.
+	otherOrg := uuid.New()
+	testdb.SeedOrg(t, svc.pool, otherOrg, "Other Co")
+	if _, err := svc.SetCredential(ctx, SetCredentialInput{
+		OrgID: otherOrg, Provider: ProviderAnthropic, Key: "sk-ant-other-5678", UserSub: "owner-2",
+	}); err != nil {
+		t.Fatalf("SetCredential other org: %v", err)
+	}
+
+	// The first org sees nothing — the other org's key must not bleed through.
+	caps, err := svc.Capabilities(ctx, orgID)
+	if err != nil {
+		t.Fatalf("Capabilities: %v", err)
+	}
+	if caps.AIConfigured {
+		t.Errorf("org isolation breached: org sees another org's key: %+v", caps)
+	}
+
+	// The other org sees its own key.
+	otherCaps, err := svc.Capabilities(ctx, otherOrg)
+	if err != nil {
+		t.Fatalf("Capabilities other org: %v", err)
+	}
+	if !otherCaps.AIConfigured {
+		t.Errorf("other org should see its own key: %+v", otherCaps)
+	}
+}
+
 func TestVaultService_ListCredentials_MetadataOnly(t *testing.T) {
 	svc, orgID := newVaultService(t)
 	ctx := context.Background()

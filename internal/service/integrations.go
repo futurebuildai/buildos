@@ -210,6 +210,75 @@ func (s *VaultService) ListCredentials(ctx context.Context, orgID uuid.UUID) ([]
 	return out, nil
 }
 
+// ---------- Capabilities ----------
+
+// ProviderCapability is the per-provider configured state surfaced by
+// Capabilities. Fingerprint is the non-secret last4 of the active key
+// (empty when unconfigured); CreatedAt/CreatedBy come from the active
+// row. No secret material is ever read or decrypted to build this.
+type ProviderCapability struct {
+	Provider    string
+	Configured  bool
+	Fingerprint string
+	CreatedAt   time.Time
+	CreatedBy   string
+}
+
+// CapabilitiesResult reports which vault-backed features are live for an
+// org. AIConfigured / EmailConfigured are presence checks (an active
+// anthropic / resend credential exists) — they do NOT validate the key
+// upstream, matching the soft-fail resolver contract. Drives the
+// frontend's proactive AI/email gating (GET /api/v1/capabilities).
+type CapabilitiesResult struct {
+	AIConfigured    bool
+	EmailConfigured bool
+	Providers       []ProviderCapability
+}
+
+// Capabilities reports per-org feature availability derived purely from
+// active credential PRESENCE (no decrypt, no upstream call). It lists
+// the two first-class providers (anthropic → AI, resend → email) so the
+// console can gate affordances before attempting a call that would 503.
+func (s *VaultService) Capabilities(ctx context.Context, orgID uuid.UUID) (CapabilitiesResult, error) {
+	creds, err := s.ListCredentials(ctx, orgID)
+	if err != nil {
+		return CapabilitiesResult{}, err
+	}
+
+	// Index the active credential per provider (newest-first ordering
+	// from ListByOrg means the first active row is the current one).
+	active := make(map[string]models.IntegrationCredential)
+	for _, c := range creds {
+		if c.IsActive {
+			if _, seen := active[c.Provider]; !seen {
+				active[c.Provider] = c
+			}
+		}
+	}
+
+	providerFor := func(provider string) ProviderCapability {
+		c, ok := active[provider]
+		if !ok {
+			return ProviderCapability{Provider: provider, Configured: false}
+		}
+		return ProviderCapability{
+			Provider:    provider,
+			Configured:  true,
+			Fingerprint: c.Last4,
+			CreatedAt:   c.CreatedAt,
+			CreatedBy:   c.CreatedBy,
+		}
+	}
+
+	anthropic := providerFor(ProviderAnthropic)
+	resend := providerFor(ProviderResend)
+	return CapabilitiesResult{
+		AIConfigured:    anthropic.Configured,
+		EmailConfigured: resend.Configured,
+		Providers:       []ProviderCapability{anthropic, resend},
+	}, nil
+}
+
 // ---------- KeyResolver implementations ----------
 
 // AnthropicKey implements ai.KeyResolver. Returns the cleartext

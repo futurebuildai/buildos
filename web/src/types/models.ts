@@ -33,7 +33,7 @@ export interface TokenPair {
   user: User;
 }
 
-/** GET /api/v1/capabilities (backend gap — see FRONTEND_ARCHITECTURE §3.5). */
+/** GET /api/v1/capabilities — AI/email availability from BYOK-vault credential presence. */
 export interface Capabilities {
   ai_configured: boolean;
   email_configured: boolean;

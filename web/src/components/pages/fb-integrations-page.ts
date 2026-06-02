@@ -11,6 +11,7 @@ import {
 } from '../../api/endpoints/integrations.js';
 import type { IntegrationCredential } from '../../types/models.js';
 import { ApiError, userMessageForCode } from '../../api/errors.js';
+import { refreshCapabilities } from '../../state/capabilityStore.js';
 import type { KeyState } from '../molecules/fb-integration-card.js';
 
 /** A BYOK provider the console can configure (UX_AUTH_ONBOARDING §7). */
@@ -151,6 +152,8 @@ export class FbIntegrationsPage extends FBElement {
       await setCredential(provider.id, { label: `${provider.name} API key`, key: value });
       this.notice = { kind: 'ok', text: `${provider.name} key saved.` };
       await this.load();
+      // Re-prime global AI/email gating so other screens reflect the flip.
+      void refreshCapabilities();
     } catch (err) {
       this.notice = {
         kind: 'err',
@@ -184,6 +187,8 @@ export class FbIntegrationsPage extends FBElement {
       };
     } finally {
       await this.load();
+      // Re-prime global AI/email gating so other screens reflect the flip.
+      void refreshCapabilities();
     }
   }
 

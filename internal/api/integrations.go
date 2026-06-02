@@ -23,6 +23,7 @@ type IntegrationsServicer interface {
 	SetCredential(ctx context.Context, in service.SetCredentialInput) (models.IntegrationCredential, error)
 	DeleteCredential(ctx context.Context, orgID uuid.UUID, provider, userSub string) error
 	ListCredentials(ctx context.Context, orgID uuid.UUID) ([]models.IntegrationCredential, error)
+	Capabilities(ctx context.Context, orgID uuid.UUID) (service.CapabilitiesResult, error)
 }
 
 // IntegrationsHandler exposes the /api/v1/integrations surface — the
@@ -152,6 +153,61 @@ func (h *IntegrationsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// ---------- GET /capabilities ----------
+
+// capabilityProviderDTO is the per-provider wire shape. Optional fields
+// are omitted when the provider is unconfigured. Matches the frontend
+// ProviderStatus type (web/src/types/models.ts).
+type capabilityProviderDTO struct {
+	Provider    string     `json:"provider"`
+	Configured  bool       `json:"configured"`
+	Fingerprint string     `json:"fingerprint,omitempty"`
+	CreatedAt   *time.Time `json:"created_at,omitempty"`
+	CreatedBy   string     `json:"created_by,omitempty"`
+}
+
+// capabilitiesDTO is the GET /capabilities wire shape. Matches the
+// frontend Capabilities type.
+type capabilitiesDTO struct {
+	AIConfigured    bool                    `json:"ai_configured"`
+	EmailConfigured bool                    `json:"email_configured"`
+	Providers       []capabilityProviderDTO `json:"providers"`
+}
+
+// Capabilities reports which vault-backed features (AI, email) are live
+// for the caller's org, derived from active-credential presence.
+// GET /api/v1/capabilities — any authenticated role (every role's UI
+// gates AI/email affordances on this).
+func (h *IntegrationsHandler) Capabilities(w http.ResponseWriter, r *http.Request) {
+	orgID, ok := callerOrgIDFromClaims(w, r)
+	if !ok {
+		return
+	}
+	caps, err := h.svc.Capabilities(r.Context(), orgID)
+	if err != nil {
+		writeIntegrationError(w, r, err)
+		return
+	}
+	providers := make([]capabilityProviderDTO, 0, len(caps.Providers))
+	for _, p := range caps.Providers {
+		dto := capabilityProviderDTO{Provider: p.Provider, Configured: p.Configured}
+		if p.Configured {
+			dto.Fingerprint = p.Fingerprint
+			dto.CreatedBy = p.CreatedBy
+			if !p.CreatedAt.IsZero() {
+				ts := p.CreatedAt
+				dto.CreatedAt = &ts
+			}
+		}
+		providers = append(providers, dto)
+	}
+	writeJSON(w, r, http.StatusOK, capabilitiesDTO{
+		AIConfigured:    caps.AIConfigured,
+		EmailConfigured: caps.EmailConfigured,
+		Providers:       providers,
+	})
+}
+
 // ---------- error mapping ----------
 
 // writeIntegrationError maps service sentinel errors to HTTP responses.
@@ -182,4 +238,13 @@ func MountIntegrationRoutes(r chi.Router, h *IntegrationsHandler) {
 		r.Put("/{provider}", h.Set)
 		r.Delete("/{provider}", h.Delete)
 	})
+}
+
+// MountCapabilitiesRoutes wires GET /api/v1/capabilities. Unlike the vault
+// surface (admin-gated), this is auth-only — every role's UI gates its AI/email
+// affordances on the capability flags, so all authenticated callers may read it.
+// It never exposes secret bytes (only presence + non-secret last4 fingerprint).
+// Caller is responsible for placing this INSIDE the auth middleware group.
+func MountCapabilitiesRoutes(r chi.Router, h *IntegrationsHandler) {
+	r.Get("/api/v1/capabilities", h.Capabilities)
 }
