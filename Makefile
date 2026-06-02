@@ -1,4 +1,4 @@
-.PHONY: build build-server build-worker build-migrate build-prod build-fork-init fork-init test test-integration test-prod lint lint-migrations lint-migrations-test migrate migrate-down db-up db-down audit bench-physics e2e-backend docker-build docker-run clean
+.PHONY: build build-server build-worker build-migrate build-prod build-fork-init fork-init test test-integration test-prod lint lint-migrations lint-migrations-test migrate migrate-down db-up db-down audit bench-physics e2e-backend backup-db restore-db backup-db-test docker-build docker-run clean
 
 # Default DATABASE_URL for local dev (docker-compose db on port 5433)
 DATABASE_URL ?= postgres://fb_user:fb_pass@localhost:5433/futurebuild_os?sslmode=disable
@@ -90,9 +90,27 @@ bench-physics:
 	go test -bench=BenchmarkCPM -benchtime=10x ./internal/physics/... -run='^$$' | \
 		go run ./tools/bench-gate/main.go --cpm80=200ms --cpm200=500ms
 
-## Audit (lint + migration lint + test + prod-mode test + physics benchmarks)
-audit: lint-migrations lint-migrations-test test test-prod bench-physics
+## Audit (lint + migration lint + test + prod-mode test + physics benchmarks
+## + backup/restore retention+guard regression)
+audit: lint-migrations lint-migrations-test test test-prod bench-physics backup-db-test
 	@echo "Audit: ALL PASSED"
+
+## Backup / DR — per-fork Postgres backup with retention + restore guard.
+## See docs/dr-runbook.md for the policy, scheduling, and restore drill.
+##
+##   make backup-db                          # dump + sidecar + upload + prune
+##   make backup-db PRUNE_ONLY=1             # retention sweep only, no dump
+##   make restore-db DUMP=path/to.dump CONFIRM=1
+backup-db:
+	bash scripts/backup-db.sh $(if $(PRUNE_ONLY),--prune-only,)
+
+restore-db:
+	@if [ -z "$(DUMP)" ]; then echo "make restore-db: DUMP=<dump-file> is required"; exit 64; fi
+	bash scripts/restore-db.sh "$(DUMP)" $(if $(CONFIRM),--confirm,)
+
+# DB-free regression suite for the backup retention math + restore guards.
+backup-db-test:
+	bash scripts/backup-db.test.sh
 
 ## End-to-end backend harness — boots a live cmd/server against a
 ## migrated+seeded Postgres using NATIVE auth (claim → wizard → operate),

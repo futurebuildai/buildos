@@ -26,6 +26,11 @@ bin/
 # Docker volumes
 pgdata/
 
+# Local DB backups (scripts/backup-db.sh default BACKUP_DIR) — never commit dumps
+backups/
+*.dump
+*.dump.sha256
+
 # Web console (web/) build + dependency artifacts
 web/node_modules/
 web/dist/

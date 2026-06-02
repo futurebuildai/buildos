@@ -70,7 +70,18 @@ Vault need a first-class integration. Today they can use the
 **Scope:** ~300 LOC + tests. 1 session.
 **Trigger:** open this when the first customer fork commits to Vault.
 
-### 5. Backup automation + DR runbook
+### 5. Backup automation + DR runbook — ✅ SHIPPED (2026-06-02)
+Shipped `scripts/backup-db.sh` (pg_dump -Fc + sha256 sidecar +
+storage-agnostic `BACKUP_UPLOAD_CMD` hook + filename-timestamp retention
+with a most-recent floor), `scripts/restore-db.sh` (integrity verify +
+`--confirm` destructive guard + `pg_restore --clean`), a DB-free
+`scripts/backup-db.test.sh` regression suite (wired into `make audit`),
+`docs/dr-runbook.md` (RPO/RTO, scheduling, restore drill, failure
+playbook), and `make backup-db`/`restore-db`/`backup-db-test` targets.
+GFS tiering deferred to object-store lifecycle rules by design.
+
+<details><summary>original entry</summary>
+
 **Why:** Per-fork model means each customer's database is
 independently backed up. We have no automation script today.
 **Files:**
@@ -83,6 +94,7 @@ independently backed up. We have no automation script today.
 - Optional: River cron job that exercises a restore drill against
   a fresh empty instance weekly + alerts on failure.
 **Scope:** ~200 LOC scripts + 4-5KB docs. 1 session.
+</details>
 
 ### 6. AWS-SM / GCP-SM backends for SecretSource
 **Why:** Same as Vault but for cloud-managed alternatives.
