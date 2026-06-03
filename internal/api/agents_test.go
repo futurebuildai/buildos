@@ -243,6 +243,25 @@ func TestRecommendScheduleAdjustments_BadProjectIDReturns400(t *testing.T) {
 	}
 }
 
+// TestRecommendScheduleAdjustments_InvalidOrgClaim401 covers the
+// callerOrgIDFromClaims !ok leg: parseUUIDFromURL runs FIRST (so the
+// projectID must be a valid UUID to reach it), then an unparseable claim
+// org_id short-circuits to 401 before the service is invoked.
+func TestRecommendScheduleAdjustments_InvalidOrgClaim401(t *testing.T) {
+	svc := &mockAgentsService{}
+	h := NewAgentsHandler(svc)
+	r := buildRequest(t, "POST", "/api/v1/projects/"+testProjID+"/schedule/recommend-adjustments",
+		"not-a-uuid", map[string]string{"projectID": testProjID}, nil)
+	w := httptest.NewRecorder()
+	h.RecommendScheduleAdjustments(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d, want 401, body=%s", w.Code, w.Body.String())
+	}
+	if svc.lastRecUserSub != "" {
+		t.Error("service should not be invoked when the org claim is unparseable")
+	}
+}
+
 func TestRecommendScheduleAdjustments_NotFoundReturns404(t *testing.T) {
 	h := NewAgentsHandler(&mockAgentsService{recErr: service.ErrNotFound})
 	r := buildRequest(t, "POST", "/api/v1/projects/"+testProjID+"/schedule/recommend-adjustments",
