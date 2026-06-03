@@ -48,6 +48,39 @@ pattern up into `service/*_integration_test.go`) and the partial `internal/api`
 branches (`readinessHandler` DB-down leg, `CreateInvoice`/`DailyBriefing`
 error paths).
 
+#### Store-layer status (2026-06-03): list/reader frontier at deterministic ceiling
+
+The `internal/store` query-round-trip sweep (Tier-1b clusters 29–33) closed
+every deterministic leg on the readers and list functions: not-found
+short-circuits, `RowsAffected()==0` mutators, input-guard clamps, empty-vs-
+populated scan bodies, and guard/default early-returns. The package sits at
+**86.0%**. Every remaining uncovered leg on the list/reader functions is a
+**non-deterministic `fmt.Errorf("query …"/"scan …": %w)` error wrap** — verified
+across all `List*` functions (financials, hr, setup, pipeline, procurement,
+field, fleet, integration_credentials). There is **no deterministic test-only
+gain left** on this frontier; it is at its ceiling.
+
+#### POST-BETA: fault-injection pass to lift the deterministic ceiling
+
+**Deferred until after beta production go-live** (owner directive 2026-06-03).
+Once the product is live and the integration-suite runtime budget can absorb it,
+add a fault-injection pass to drive the query/scan/exec error-wrap legs that the
+deterministic sweep deliberately left at the ceiling:
+- **Technique:** call each store reader/list with a **pre-cancelled `context`**
+  (`ctx, cancel := context.WithCancel(parent); cancel()`) so `tx.Query` /
+  `tx.Exec` return `context.Canceled` → the `fmt.Errorf("query …: %w")` wrap
+  fires deterministically. Lifts each `List*` ~81.8%→~90.9% (the inner
+  per-row `scan …` wrap still needs a typed-mismatch or partial-read harness —
+  a `pgxmock`/fake `pgx.Rows`, evaluate if worth the dep).
+- **Scope:** one consolidated `*_faultinjection_integration_test.go` per store
+  file (or a shared table-driven helper) exercising the query-error leg of every
+  reader/list; the scan-error leg only where a fake-rows harness is justified.
+- **Why deferred:** these wraps are trivial passthroughs with no business logic;
+  covering them pre-beta is lower-value than feature/flow coverage. Capturing the
+  plan now so the ceiling is a deliberate, documented decision — not an oversight.
+- **Entry points:** `internal/store/*.go` `List*`/`Get*` readers; mirror the
+  `testdb.NewPool` harness; gate behind `//go:build integration`.
+
 ---
 
 ## Tier 2 — meaningful enterprise items (when a specific need shows up)

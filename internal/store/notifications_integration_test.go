@@ -103,6 +103,62 @@ func TestNotificationsStore_InsertDLQEntry_NilLastError(t *testing.T) {
 	}
 }
 
+func TestNotificationsStore_GuardLegs(t *testing.T) {
+	// Two deterministic guard branches the round-trip tests skip:
+	//   1. InsertDLQEntry's empty-Payload normalization (nil -> `{}`) — the
+	//      existing tests always pass an explicit non-empty JSON object.
+	//   2. ListDLQ's Limit>1000 clamp — the existing tests use the default
+	//      (Limit<=0 -> 100), so the upper clamp is never exercised.
+	pool := testdb.NewPool(t)
+	s := NewNotificationsStore()
+	ctx := context.Background()
+
+	orgID := uuid.New()
+	userID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Guardrail Notifications")
+	testdb.SeedUser(t, pool, userID, orgID)
+
+	err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		// (1) nil Payload must normalize to a JSONB empty object.
+		got, err := s.InsertDLQEntry(ctx, tx, InsertDLQEntryParams{
+			UserID:           userID,
+			NotificationType: "push",
+			Payload:          nil, // exercises the len()==0 normalization
+			RetryCount:       0,
+		})
+		if err != nil {
+			return err
+		}
+		var m map[string]any
+		if err := json.Unmarshal(got.Payload, &m); err != nil {
+			t.Errorf("normalized payload unmarshal: %v", err)
+		}
+		if len(m) != 0 {
+			t.Errorf("nil Payload should normalize to {}, got %s", string(got.Payload))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("insert nil-payload: %v", err)
+	}
+
+	// (2) Limit>1000 clamps to 1000 — the call must still succeed and return
+	// the rows we have (the clamp is the covered branch; row count is small).
+	err = pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		rows, err := s.ListDLQ(ctx, tx, ListDLQParams{Limit: 5000})
+		if err != nil {
+			return err
+		}
+		if len(rows) != 1 {
+			t.Errorf("clamped list: got %d rows, want 1", len(rows))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("list clamp: %v", err)
+	}
+}
+
 func TestNotificationsStore_ListDLQ_FiltersAndOrdering(t *testing.T) {
 	pool := testdb.NewPool(t)
 	s := NewNotificationsStore()
