@@ -102,3 +102,19 @@ func TestMaxNotificationAttemptsConstantStable(t *testing.T) {
 		t.Errorf("MaxNotificationAttempts = %d; SPRINT_PLAN target is 6", MaxNotificationAttempts)
 	}
 }
+
+// TestLoggingSender_Send proves the dev/staging default sender logs and
+// always succeeds — the deterministic happy path the worker leans on
+// before real transports are wired. nil error means River marks the job
+// done; the DLQ path is never reached.
+func TestLoggingSender_Send(t *testing.T) {
+	sender := NewLoggingSender(quietLogger())
+	err := sender.Send(context.Background(), NotificationDelivery{
+		UserID:           uuid.New(),
+		NotificationType: "push",
+		Payload:          json.RawMessage(`{"title":"hi"}`),
+	})
+	if err != nil {
+		t.Fatalf("loggingSender.Send = %v, want nil", err)
+	}
+}
