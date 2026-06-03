@@ -236,3 +236,33 @@ func TestBudgetService_Reads_CurrencyValidation(t *testing.T) {
 		t.Errorf("GetProjectFinancials(GBP) = %v, want ErrInvalidInput", err)
 	}
 }
+
+// TestBudgetService_Reads_OrgScopingAndGuards covers the two read-path legs
+// the currency-validation test doesn't reach: GetProjectBudgets' org-scoping
+// guard (VerifyProjectInOrg failure → mapStoreError → ErrNotFound, for both a
+// cross-org project and an unknown id) and GetOrgFinancialsSummary's own
+// optional-currency reject leg (the shared gate exercised through the summary
+// read rather than the aging/financials reads).
+func TestBudgetService_Reads_OrgScopingAndGuards(t *testing.T) {
+	svc, fx := newBudgetService(t)
+	ctx := context.Background()
+
+	t.Run("project budgets for another org's project are hidden", func(t *testing.T) {
+		otherOrg := uuid.New() // fx.projectID belongs to fx.orgID, not otherOrg
+		if _, err := svc.GetProjectBudgets(ctx, fx.projectID, otherOrg); !errors.Is(err, ErrNotFound) {
+			t.Errorf("cross-org GetProjectBudgets = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("project budgets for an unknown project surface ErrNotFound", func(t *testing.T) {
+		if _, err := svc.GetProjectBudgets(ctx, uuid.New(), fx.orgID); !errors.Is(err, ErrNotFound) {
+			t.Errorf("unknown-project GetProjectBudgets = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("org financials summary rejects an unsupported currency", func(t *testing.T) {
+		if _, err := svc.GetOrgFinancialsSummary(ctx, fx.orgID, "EUR"); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("GetOrgFinancialsSummary(EUR) = %v, want ErrInvalidInput", err)
+		}
+	})
+}
