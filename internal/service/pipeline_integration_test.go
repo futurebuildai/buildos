@@ -372,6 +372,37 @@ func TestPipelineService_TransitionAndScopingGuards(t *testing.T) {
 		}
 	})
 
+	t.Run("estimate line-item without a wbs_code is rejected pre-tx", func(t *testing.T) {
+		bad := models.PipelineEstimateLineItems{
+			{WBSCode: "", Description: "Missing code", EstimatedCents: 100_000},
+		}
+		if _, err := svc.CreateEstimate(ctx, CreateEstimateInput{
+			ProspectID: p.ID, OrgID: orgID, CurrencyCode: "USD", LineItems: bad,
+		}); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("CreateEstimate(blank wbs_code) = %v, want ErrInvalidInput", err)
+		}
+	})
+
+	t.Run("estimate line-item with negative cents is rejected pre-tx", func(t *testing.T) {
+		bad := models.PipelineEstimateLineItems{
+			{WBSCode: "03.30.00", Description: "Credit", EstimatedCents: -1},
+		}
+		if _, err := svc.CreateEstimate(ctx, CreateEstimateInput{
+			ProspectID: p.ID, OrgID: orgID, CurrencyCode: "USD", LineItems: bad,
+		}); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("CreateEstimate(estimated_cents<0) = %v, want ErrInvalidInput", err)
+		}
+	})
+
+	t.Run("permit create with a negative fee is rejected pre-tx", func(t *testing.T) {
+		if _, err := svc.CreatePermit(ctx, CreatePermitInput{
+			ProspectID: p.ID, OrgID: orgID, PermitType: "building", Jurisdiction: "Boulder County",
+			FeeCents: -1, FeeCurrencyCode: "USD",
+		}); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("CreatePermit(fee_cents<0) = %v, want ErrInvalidInput", err)
+		}
+	})
+
 	t.Run("permit update with a negative fee is rejected pre-tx", func(t *testing.T) {
 		neg := int64(-1)
 		if _, err := svc.UpdatePermit(ctx, UpdatePermitInput{
@@ -566,6 +597,25 @@ func TestPipelineService_TransitionToPermitIssued(t *testing.T) {
 			ProspectID: p.ID, OrgID: uuid.New(), Target: models.StagePermitIssued, PermitIssuedDate: &permitDate,
 		}); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("err = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("LoseProspect on a PERMIT_ISSUED prospect is terminal", func(t *testing.T) {
+		// Once a prospect ships into CPM (PERMIT_ISSUED), marking it lost
+		// would orphan the construction project — LoseProspect must refuse
+		// with ErrTerminalStage. This is the only path that reaches that
+		// in-tx guard (the AdvanceAndLose terminal case goes via LOST).
+		p := seedProspect(t, svc, orgID, "Shipped Then Regret")
+		advanceToPermitApplied(t, svc, orgID, p)
+		if _, err := svc.AdvanceProspect(ctx, "owner-sub", AdvanceProspectInput{
+			ProspectID: p.ID, OrgID: orgID, Target: models.StagePermitIssued, PermitIssuedDate: &permitDate,
+		}); err != nil {
+			t.Fatalf("advance → PERMIT_ISSUED: %v", err)
+		}
+		if _, err := svc.LoseProspect(ctx, "owner-sub", LoseProspectInput{
+			ProspectID: p.ID, OrgID: orgID, Reason: "buyer backed out after permit",
+		}); !errors.Is(err, ErrTerminalStage) {
+			t.Errorf("LoseProspect(PERMIT_ISSUED) = %v, want ErrTerminalStage", err)
 		}
 	})
 }
