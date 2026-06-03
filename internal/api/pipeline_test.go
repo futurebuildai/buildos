@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -528,6 +529,12 @@ func guardCases() []pipelineCase {
 		{"UpdateProspect", "PUT", "/api/v1/org/" + otherOrgID + "/pipeline/prospects/" + testProspectID,
 			map[string]string{"orgID": otherOrgID, "prospectID": testProspectID},
 			(*PipelineHandler).UpdateProspect},
+		{"AdvanceProspect", "POST", "/api/v1/org/" + otherOrgID + "/pipeline/prospects/" + testProspectID + "/advance",
+			map[string]string{"orgID": otherOrgID, "prospectID": testProspectID},
+			(*PipelineHandler).AdvanceProspect},
+		{"LoseProspect", "POST", "/api/v1/org/" + otherOrgID + "/pipeline/prospects/" + testProspectID + "/lose",
+			map[string]string{"orgID": otherOrgID, "prospectID": testProspectID},
+			(*PipelineHandler).LoseProspect},
 		{"CreateEstimate", "POST", "/api/v1/org/" + otherOrgID + "/pipeline/prospects/" + testProspectID + "/estimates",
 			map[string]string{"orgID": otherOrgID, "prospectID": testProspectID},
 			(*PipelineHandler).CreateEstimate},
@@ -761,5 +768,96 @@ func TestAnalytics_OrgMismatchReturns403(t *testing.T) {
 	h.Analytics(w, r)
 	if w.Code != http.StatusForbidden {
 		t.Errorf("status=%d, want 403", w.Code)
+	}
+}
+
+// ---------- Remaining read/error/claim guard legs ----------
+
+// TestListProspects_ServiceErrorMaps500 covers ListProspects' writePipelineError
+// leg AND the writePipelineError default arm: an unmapped (non-sentinel) error
+// falls through to 500 INTERNAL_ERROR.
+func TestListProspects_ServiceErrorMaps500(t *testing.T) {
+	h := NewPipelineHandler(&mockPipelineService{listErr: errors.New("db exploded")})
+	r := buildRequest(t, "GET", "/api/v1/org/"+testOrgID+"/pipeline/prospects",
+		testOrgID, map[string]string{"orgID": testOrgID}, nil)
+	w := httptest.NewRecorder()
+	h.ListProspects(w, r)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status=%d, want 500", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "INTERNAL_ERROR") {
+		t.Errorf("body should contain INTERNAL_ERROR: %s", w.Body.String())
+	}
+}
+
+// TestAnalytics_ServiceErrorMaps404 covers Analytics' writePipelineError leg.
+func TestAnalytics_ServiceErrorMaps404(t *testing.T) {
+	h := NewPipelineHandler(&mockPipelineService{analyticsErr: service.ErrNotFound})
+	r := buildRequest(t, "GET", "/api/v1/org/"+testOrgID+"/pipeline/analytics",
+		testOrgID, map[string]string{"orgID": testOrgID}, nil)
+	w := httptest.NewRecorder()
+	h.Analytics(w, r)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status=%d, want 404", w.Code)
+	}
+}
+
+// TestCreateProspect_OrgMismatchReturns403 and _MalformedBodyReturns400 cover
+// CreateProspect's two top-of-handler guards. CreateProspect has no resource
+// path id (only {orgID}), so it isn't part of guardCases — hence dedicated
+// tests for its requireOrgIDFromURL and JSON-decode legs.
+func TestCreateProspect_OrgMismatchReturns403(t *testing.T) {
+	h := NewPipelineHandler(&mockPipelineService{})
+	r := buildRequest(t, "POST", "/api/v1/org/"+otherOrgID+"/pipeline/prospects",
+		testOrgID, map[string]string{"orgID": otherOrgID}, strings.NewReader(`{"name":"x"}`))
+	w := httptest.NewRecorder()
+	h.CreateProspect(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status=%d, want 403 (org mismatch)", w.Code)
+	}
+}
+
+func TestCreateProspect_MalformedBodyReturns400(t *testing.T) {
+	h := NewPipelineHandler(&mockPipelineService{})
+	r := buildRequest(t, "POST", "/api/v1/org/"+testOrgID+"/pipeline/prospects",
+		testOrgID, map[string]string{"orgID": testOrgID}, strings.NewReader("{"))
+	w := httptest.NewRecorder()
+	h.CreateProspect(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400 (malformed body)", w.Code)
+	}
+}
+
+// TestAdvanceProspect_BadPermitDateReturns400 covers the optional-date parse
+// guard on permit_issued_date (the other Advance guards are exercised by the
+// guardCases tables now that AdvanceProspect is a member).
+func TestAdvanceProspect_BadPermitDateReturns400(t *testing.T) {
+	h := NewPipelineHandler(&mockPipelineService{})
+	body := strings.NewReader(`{"target_stage":"PERMIT_ISSUED","permit_issued_date":"not-a-date"}`)
+	r := buildRequest(t, "POST", "/api/v1/org/"+testOrgID+"/pipeline/prospects/"+testProspectID+"/advance",
+		testOrgID, map[string]string{"orgID": testOrgID, "prospectID": testProspectID}, body)
+	w := httptest.NewRecorder()
+	h.AdvanceProspect(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400 (bad permit_issued_date)", w.Code)
+	}
+}
+
+// TestPipeline_InvalidClaimOrgReturns401 covers requireOrgIDFromURL's
+// callerOrgIDFromClaims failure arm: a caller whose org_id claim is not a UUID
+// is rejected 401 before the handler touches its resource id or body. (The
+// standalone callerOrgIDFromClaims calls deeper in each handler are
+// unreachable defensive copies — requireOrgIDFromURL validates the same claim
+// first — so this is the one reachable instance of that guard.)
+func TestPipeline_InvalidClaimOrgReturns401(t *testing.T) {
+	h := NewPipelineHandler(&mockPipelineService{})
+	// URL orgID is a valid UUID; the claim org is not, so parseUUIDFromURL
+	// passes and callerOrgIDFromClaims fails.
+	r := buildRequest(t, "GET", "/api/v1/org/"+testOrgID+"/pipeline/prospects",
+		"not-a-uuid", map[string]string{"orgID": testOrgID}, nil)
+	w := httptest.NewRecorder()
+	h.ListProspects(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status=%d, want 401 (invalid org_id claim)", w.Code)
 	}
 }
