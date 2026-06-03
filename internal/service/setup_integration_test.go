@@ -87,6 +87,59 @@ func TestSetupService_UpdateCompanyInfo_RejectsBadRegion(t *testing.T) {
 	}
 }
 
+// TestSetupService_UpdateCompanyInfo_GuardLegs covers the two
+// UpdateCompanyInfo branches the happy/empty-patch/bad-region tests
+// miss: the pre-tx nil-org short-circuit, and the in-tx
+// guardNotComplete leg (a late company-info edit on a finalized org is
+// rejected with ErrSetupAlreadyComplete via mapSetupStoreError rather
+// than silently mutating a configured org).
+func TestSetupService_UpdateCompanyInfo_GuardLegs(t *testing.T) {
+	svc, orgID := newSetupService(t, nil)
+	ctx := context.Background()
+
+	// nil org short-circuits before the tx.
+	if _, err := svc.UpdateCompanyInfo(ctx, UpdateCompanyInfoInput{
+		OrgID:     uuid.Nil,
+		LegalName: strPtr("Kelbrook LLC"),
+	}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("nil org: err = %v, want ErrInvalidInput", err)
+	}
+
+	// Drive the wizard to completion, then a late company-info edit is
+	// rejected by the in-tx guardNotComplete leg.
+	mustStep := func(name string, fn func() error) {
+		t.Helper()
+		if err := fn(); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	mustStep("company info", func() error {
+		_, e := svc.UpdateCompanyInfo(ctx, UpdateCompanyInfoInput{OrgID: orgID, LegalName: strPtr("Kelbrook LLC")})
+		return e
+	})
+	mustStep("trade", func() error {
+		_, e := svc.CreateTrade(ctx, CreateTradeInput{OrgID: orgID, Code: "ELEC", Name: "Electrical"})
+		return e
+	})
+	mustStep("cost code", func() error {
+		_, e := svc.CreateCostCode(ctx, CreateCostCodeInput{OrgID: orgID, Code: "03-30-00", Name: "x", Division: "03"})
+		return e
+	})
+	mustStep("calendar", func() error {
+		_, e := svc.CreateCalendar(ctx, CreateCalendarInput{OrgID: orgID, Name: "Default", WorkingDaysMask: models.WorkingDaysMonFri, IsDefault: true})
+		return e
+	})
+	mustStep("complete", func() error {
+		_, e := svc.Complete(ctx, CompleteSetupInput{OrgID: orgID, UserSub: "owner-1"})
+		return e
+	})
+
+	_, err := svc.UpdateCompanyInfo(ctx, UpdateCompanyInfoInput{OrgID: orgID, LegalName: strPtr("Renamed LLC")})
+	if !errors.Is(err, ErrSetupAlreadyComplete) {
+		t.Fatalf("post-complete UpdateCompanyInfo: err = %v, want ErrSetupAlreadyComplete", err)
+	}
+}
+
 func TestSetupService_CreateTrade_NormalizesCode(t *testing.T) {
 	svc, orgID := newSetupService(t, nil)
 	got, err := svc.CreateTrade(context.Background(), CreateTradeInput{
@@ -158,6 +211,31 @@ func TestSetupService_CreateCostCode_RejectsBadFormat(t *testing.T) {
 		if !errors.Is(err, ErrInvalidInput) {
 			t.Errorf("code %q: err = %v, want ErrInvalidInput", code, err)
 		}
+	}
+}
+
+// TestSetupService_CreateCostCode_ValidationGuards covers the three
+// pre-tx input guards the AcceptsCSIFormat/RejectsBadFormat tests miss:
+// a nil org, a blank (after-trim) name, and a blank division — each
+// short-circuits with ErrInvalidInput before the code reaches the
+// guardNotComplete tx, so no row is written.
+func TestSetupService_CreateCostCode_ValidationGuards(t *testing.T) {
+	svc, orgID := newSetupService(t, nil)
+	ctx := context.Background()
+	cases := []struct {
+		name string
+		in   CreateCostCodeInput
+	}{
+		{"nil org", CreateCostCodeInput{OrgID: uuid.Nil, Code: "03-30-00", Name: "x", Division: "03"}},
+		{"empty name", CreateCostCodeInput{OrgID: orgID, Code: "03-30-00", Name: "   ", Division: "03"}},
+		{"empty division", CreateCostCodeInput{OrgID: orgID, Code: "03-30-00", Name: "x", Division: "  "}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := svc.CreateCostCode(ctx, c.in); !errors.Is(err, ErrInvalidInput) {
+				t.Errorf("err = %v, want ErrInvalidInput", err)
+			}
+		})
 	}
 }
 
