@@ -157,17 +157,21 @@ func TestFieldService_ReportProgress(t *testing.T) {
 	})
 }
 
-// TestFieldService_Checkin covers the crew-checkin write + audit and the
-// idempotency-conflict leg.
+// TestFieldService_Checkin covers the crew-checkin write + audit, the
+// idempotency-conflict leg, and the two in-tx scoping legs (unknown caller
+// subject + cross-org project → ErrNotFound). The happy write supplies a
+// short non-nil Notes so the validateOptionalNotes within-limit branch runs.
 func TestFieldService_Checkin(t *testing.T) {
-	svc, _, _, orgID, subject, projectID := newFieldServiceFixture(t)
+	svc, _, pool, orgID, subject, projectID := newFieldServiceFixture(t)
 	ctx := context.Background()
 	key := uuid.New()
 	crew := json.RawMessage(`[{"worker_id":"crew-1"}]`)
+	notes := "all crew on site" // non-nil, within MaxFieldNotesLength
 
 	got, err := svc.Checkin(ctx, orgID, subject, CheckinInput{
 		ProjectID:      projectID,
 		CrewMembers:    crew,
+		Notes:          &notes,
 		IdempotencyKey: key,
 	})
 	if err != nil {
@@ -184,6 +188,32 @@ func TestFieldService_Checkin(t *testing.T) {
 	}); !errors.Is(err, ErrIdempotencyConflict) {
 		t.Fatalf("re-submit err = %v, want ErrIdempotencyConflict", err)
 	}
+
+	t.Run("unknown caller subject surfaces ErrNotFound", func(t *testing.T) {
+		_, err := svc.Checkin(ctx, orgID, uuid.NewString(), CheckinInput{
+			ProjectID:      projectID,
+			CrewMembers:    crew,
+			IdempotencyKey: uuid.New(),
+		})
+		if !errors.Is(err, ErrNotFound) {
+			t.Fatalf("err = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("project in another org surfaces ErrNotFound", func(t *testing.T) {
+		otherOrg := uuid.New()
+		otherProject := uuid.New()
+		testdb.SeedOrg(t, pool, otherOrg, "Other Org")
+		testdb.SeedProject(t, pool, otherProject, otherOrg, "Other Org Project")
+		_, err := svc.Checkin(ctx, orgID, subject, CheckinInput{
+			ProjectID:      otherProject, // belongs to otherOrg, not the caller's org
+			CrewMembers:    crew,
+			IdempotencyKey: uuid.New(),
+		})
+		if !errors.Is(err, ErrNotFound) {
+			t.Fatalf("err = %v, want ErrNotFound", err)
+		}
+	})
 }
 
 // TestFieldService_DailyLog covers the daily-log write + audit and the
@@ -191,12 +221,13 @@ func TestFieldService_Checkin(t *testing.T) {
 func TestFieldService_DailyLog(t *testing.T) {
 	svc, _, pool, orgID, subject, projectID := newFieldServiceFixture(t)
 	ctx := context.Background()
+	key := uuid.New()
 
 	got, err := svc.DailyLog(ctx, orgID, subject, DailyLogInput{
 		ProjectID:      projectID,
 		LogDate:        time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
 		WorkSummary:    "Framed the second floor.",
-		IdempotencyKey: uuid.New(),
+		IdempotencyKey: key,
 	})
 	if err != nil {
 		t.Fatalf("DailyLog: %v", err)
@@ -204,6 +235,30 @@ func TestFieldService_DailyLog(t *testing.T) {
 	if got.ProjectID != projectID {
 		t.Errorf("daily log project = %s, want %s", got.ProjectID, projectID)
 	}
+
+	t.Run("re-submit with same key is a 409 conflict", func(t *testing.T) {
+		_, err := svc.DailyLog(ctx, orgID, subject, DailyLogInput{
+			ProjectID:      projectID,
+			LogDate:        time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+			WorkSummary:    "Framed the second floor.",
+			IdempotencyKey: key, // reused
+		})
+		if !errors.Is(err, ErrIdempotencyConflict) {
+			t.Fatalf("err = %v, want ErrIdempotencyConflict", err)
+		}
+	})
+
+	t.Run("unknown caller subject surfaces ErrNotFound", func(t *testing.T) {
+		_, err := svc.DailyLog(ctx, orgID, uuid.NewString(), DailyLogInput{
+			ProjectID:      projectID,
+			LogDate:        time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+			WorkSummary:    "Should not land.",
+			IdempotencyKey: uuid.New(),
+		})
+		if !errors.Is(err, ErrNotFound) {
+			t.Fatalf("err = %v, want ErrNotFound", err)
+		}
+	})
 
 	t.Run("project in another org surfaces ErrNotFound", func(t *testing.T) {
 		otherOrg := uuid.New()

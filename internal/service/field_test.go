@@ -65,6 +65,7 @@ func TestFieldService_ReportProgress_RejectsBadInput(t *testing.T) {
 
 func TestFieldService_Checkin_RejectsBadInput(t *testing.T) {
 	svc := newFieldSvcForValidationTests()
+	bigNotes := strings.Repeat("a", MaxFieldNotesLength+1)
 	cases := []struct {
 		name string
 		org  uuid.UUID
@@ -75,6 +76,7 @@ func TestFieldService_Checkin_RejectsBadInput(t *testing.T) {
 		{"empty sub", uuid.New(), "", CheckinInput{ProjectID: uuid.New(), IdempotencyKey: uuid.New()}},
 		{"nil project", uuid.New(), "sub-1", CheckinInput{IdempotencyKey: uuid.New()}},
 		{"nil key", uuid.New(), "sub-1", CheckinInput{ProjectID: uuid.New()}},
+		{"big notes", uuid.New(), "sub-1", CheckinInput{ProjectID: uuid.New(), IdempotencyKey: uuid.New(), Notes: &bigNotes}},
 		{"half gps", uuid.New(), "sub-1", CheckinInput{ProjectID: uuid.New(), IdempotencyKey: uuid.New(), GPSLat: ptrFloat(40)}},
 	}
 	for _, c := range cases {
@@ -104,6 +106,8 @@ func TestFieldService_DailyLog_RejectsBadInput(t *testing.T) {
 		{"zero date", uuid.New(), "sub-1", DailyLogInput{ProjectID: uuid.New(), IdempotencyKey: uuid.New(), WorkSummary: "ok"}},
 		{"empty summary", uuid.New(), "sub-1", DailyLogInput{ProjectID: uuid.New(), IdempotencyKey: uuid.New(), LogDate: now, WorkSummary: "  "}},
 		{"oversized summary", uuid.New(), "sub-1", DailyLogInput{ProjectID: uuid.New(), IdempotencyKey: uuid.New(), LogDate: now, WorkSummary: bigSummary}},
+		{"oversized weather", uuid.New(), "sub-1", DailyLogInput{ProjectID: uuid.New(), IdempotencyKey: uuid.New(), LogDate: now, WorkSummary: "ok", WeatherConditions: &bigSummary}},
+		{"oversized safety", uuid.New(), "sub-1", DailyLogInput{ProjectID: uuid.New(), IdempotencyKey: uuid.New(), LogDate: now, WorkSummary: "ok", SafetyIncidents: &bigSummary}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
