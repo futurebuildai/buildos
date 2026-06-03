@@ -168,6 +168,44 @@ func TestSetupStore_CompleteOnboarding_FlipsFlagAndStampsTime(t *testing.T) {
 	}
 }
 
+// TestSetupStore_NotFoundPaths covers the ErrNotFound (no-rows) leg of the
+// three setup readers/mutators whose happy path is covered above but whose
+// not-found short-circuit was unreached: GetCompanyProfile + CompleteOnboarding
+// against an unknown org (QueryRow → pgx.ErrNoRows / Exec → RowsAffected()==0),
+// and GetDefaultWorkingCalendar against an org with no default calendar set
+// (wizard step 5 incomplete). These are deterministic legs — querying a
+// non-existent org/calendar always returns no rows. (UpdateCompanyProfile's
+// not-found leg is pinned separately above.)
+func TestSetupStore_NotFoundPaths(t *testing.T) {
+	pool := testdb.NewPool(t)
+	s := NewSetupStore()
+	ctx := context.Background()
+
+	// Seed a real org with NO default working calendar so the
+	// GetDefaultWorkingCalendar miss is "exists-but-no-default", not
+	// "org missing" — the more representative wizard-in-progress case.
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Halfway House")
+	missing := uuid.New() // org never inserted
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if _, e := s.GetCompanyProfile(ctx, tx, missing); !errors.Is(e, ErrNotFound) {
+			t.Errorf("GetCompanyProfile(missing org) = %v, want ErrNotFound", e)
+		}
+		if e := s.CompleteOnboarding(ctx, tx, missing, now); !errors.Is(e, ErrNotFound) {
+			t.Errorf("CompleteOnboarding(missing org) = %v, want ErrNotFound", e)
+		}
+		if _, e := s.GetDefaultWorkingCalendar(ctx, tx, orgID); !errors.Is(e, ErrNotFound) {
+			t.Errorf("GetDefaultWorkingCalendar(no default) = %v, want ErrNotFound", e)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("not-found tx: %v", err)
+	}
+}
+
 // ---------- bootstrap tokens ----------
 
 func TestSetupStore_BootstrapToken_LookupActive(t *testing.T) {
