@@ -167,6 +167,29 @@ func TestSetupService_CreateTrade_RejectsBadCode(t *testing.T) {
 	}
 }
 
+// TestSetupService_CreateTrade_ValidationGuards covers the two pre-tx
+// input guards the Normalizes/RejectsBadCode tests miss: a nil org and a
+// blank (after-trim) name. The code-format guard (isShortCode) is already
+// exercised by RejectsBadCode's "elec/plumbing".
+func TestSetupService_CreateTrade_ValidationGuards(t *testing.T) {
+	svc, orgID := newSetupService(t, nil)
+	ctx := context.Background()
+	cases := []struct {
+		name string
+		in   CreateTradeInput
+	}{
+		{"nil org", CreateTradeInput{OrgID: uuid.Nil, Code: "ELEC", Name: "Electrical"}},
+		{"empty name", CreateTradeInput{OrgID: orgID, Code: "ELEC", Name: "   "}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := svc.CreateTrade(ctx, c.in); !errors.Is(err, ErrInvalidInput) {
+				t.Errorf("err = %v, want ErrInvalidInput", err)
+			}
+		})
+	}
+}
+
 func TestSetupService_CreateTrade_DuplicateCode_MapsToInvalidInput(t *testing.T) {
 	// UNIQUE(org_id, code) at the DB layer becomes ErrInvalidInput
 	// at the service layer (via mapSetupStoreError) so the HTTP handler
@@ -289,6 +312,33 @@ func TestSetupService_CreateCalendar_TwoDefaults_SecondFails(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("err = %v, want ErrInvalidInput on duplicate default", err)
+	}
+}
+
+// TestSetupService_CreateCalendar_ValidationGuards covers the pre-tx
+// guards the HappyPath/RejectsBadTimezone tests miss: a nil org, a blank
+// (after-trim) name, a working-days mask outside 0..127 (both the negative
+// and the >127 leg), and a daily-minutes value above the 1440 ceiling. The
+// timezone guard is already exercised by RejectsBadTimezone.
+func TestSetupService_CreateCalendar_ValidationGuards(t *testing.T) {
+	svc, orgID := newSetupService(t, nil)
+	ctx := context.Background()
+	cases := []struct {
+		name string
+		in   CreateCalendarInput
+	}{
+		{"nil org", CreateCalendarInput{OrgID: uuid.Nil, Name: "Default"}},
+		{"empty name", CreateCalendarInput{OrgID: orgID, Name: "   "}},
+		{"mask negative", CreateCalendarInput{OrgID: orgID, Name: "Default", WorkingDaysMask: -1}},
+		{"mask too high", CreateCalendarInput{OrgID: orgID, Name: "Default", WorkingDaysMask: 128}},
+		{"minutes too high", CreateCalendarInput{OrgID: orgID, Name: "Default", DailyWorkMinutes: 1441}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := svc.CreateCalendar(ctx, c.in); !errors.Is(err, ErrInvalidInput) {
+				t.Errorf("err = %v, want ErrInvalidInput", err)
+			}
+		})
 	}
 }
 
