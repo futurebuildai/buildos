@@ -23,8 +23,9 @@ import (
 // the message was composed and addressed correctly. Not safe for concurrent
 // use; the auth service sends sequentially per request.
 type capturingMailer struct {
-	mu   sync.Mutex
-	sent []capturedMail
+	mu      sync.Mutex
+	sent    []capturedMail
+	sendErr error // when set, Send records the message but returns this error
 }
 
 type capturedMail struct {
@@ -36,7 +37,15 @@ func (m *capturingMailer) Send(_ context.Context, orgID string, msg mailer.Messa
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sent = append(m.sent, capturedMail{OrgID: orgID, Msg: msg})
-	return nil
+	return m.sendErr
+}
+
+// setErr arms the mailer to return err on the next (and every) Send, while
+// still recording the attempt — used to exercise the best-effort send leg.
+func (m *capturingMailer) setErr(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sendErr = err
 }
 
 func (m *capturingMailer) last() (capturedMail, bool) {
@@ -327,6 +336,72 @@ func TestAuthService_InputGuards(t *testing.T) {
 	// guard (after the non-empty-token check, before the consume tx).
 	if err := svc.ResetPassword(ctx, "some-non-empty-token", "short"); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("ResetPassword(tok, short): err = %v, want ErrInvalidInput", err)
+	}
+}
+
+// TestAuthService_Login_EmptyInputsRejected covers the pre-tx guard the
+// WrongPassword/UnknownEmail tests miss: an empty email OR empty password
+// short-circuits to ErrInvalidCredentials before any user lookup (the same
+// uniform sentinel, so a blank field can't be distinguished from a bad one).
+func TestAuthService_Login_EmptyInputsRejected(t *testing.T) {
+	svc, _, _ := newAuthService(t, nil)
+	ctx := context.Background()
+	if _, err := svc.Login(ctx, "   ", "some password here"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Errorf("empty email: err = %v, want ErrInvalidCredentials", err)
+	}
+	if _, err := svc.Login(ctx, "owner@kelbrook.test", ""); !errors.Is(err, ErrInvalidCredentials) {
+		t.Errorf("empty password: err = %v, want ErrInvalidCredentials", err)
+	}
+}
+
+// TestAuthService_Login_NoPasswordHashRejected covers the legacy/OIDC-row
+// leg: a user seeded with a NULL password_hash (no native credential ever
+// set) cannot log in via the native path — the found.PasswordHash == ""
+// branch returns ErrInvalidCredentials rather than running VerifyPassword
+// against an empty hash.
+func TestAuthService_Login_NoPasswordHashRejected(t *testing.T) {
+	svc, orgID, _ := newAuthService(t, nil)
+	userID := uuid.New()
+	testdb.SeedUser(t, svc.pool, userID, orgID) // inserts no password_hash
+	_, err := svc.Login(context.Background(), userID.String()+"@test.local", "any password at all here")
+	if !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("err = %v, want ErrInvalidCredentials", err)
+	}
+}
+
+// TestAuthService_RequestPasswordReset_EmptyEmailIsNoop covers the empty-email
+// short-circuit (returns nil before opening the tx, sends nothing) — distinct
+// from the unknown-email no-op which DOES open a tx and find nothing.
+func TestAuthService_RequestPasswordReset_EmptyEmailIsNoop(t *testing.T) {
+	svc, _, mail := newAuthService(t, nil)
+	if err := svc.RequestPasswordReset(context.Background(), "   "); err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if _, ok := mail.last(); ok {
+		t.Fatal("a reset email was sent for an empty address")
+	}
+}
+
+// TestAuthService_RequestPasswordReset_MailerFailureStillSucceeds covers the
+// best-effort send leg: a mailer outage is swallowed at WARN and the caller
+// still sees success (the token was minted; no enumeration via an error). The
+// RoundTrip test only ever exercises the happy send.
+func TestAuthService_RequestPasswordReset_MailerFailureStillSucceeds(t *testing.T) {
+	svc, orgID, mail := newAuthService(t, nil)
+	ctx := context.Background()
+	token := issueBootstrap(t, svc, orgID, nil)
+	if _, err := svc.ClaimFirstOwner(ctx, token, "owner@kelbrook.test", "correct horse battery staple", ""); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+
+	mail.setErr(errors.New("smtp upstream down"))
+	if err := svc.RequestPasswordReset(ctx, "owner@kelbrook.test"); err != nil {
+		t.Fatalf("RequestPasswordReset with failing mailer: err = %v, want nil", err)
+	}
+	// The send was attempted (and recorded) even though it errored — proof
+	// the WARN soft-fail leg ran rather than propagating the error.
+	if _, ok := mail.last(); !ok {
+		t.Fatal("send was not attempted")
 	}
 }
 
