@@ -207,3 +207,112 @@ func TestUpdateTask_BadJSONReturns400(t *testing.T) {
 		t.Errorf("status=%d, want 400", w.Code)
 	}
 }
+
+// ---------- cross-cutting guard short-circuits across every handler ----------
+
+// scheduleHandlerFn is the shared shape of every ScheduleHandler
+// method, so the guard-leg tables below can iterate over method values.
+type scheduleHandlerFn func(*ScheduleHandler, http.ResponseWriter, *http.Request)
+
+// TestSchedule_AllHandlers_BadProjectID_400 proves the leading
+// parseUUIDFromURL("projectID") gate 400s BEFORE the org claim or any
+// service call on every handler (UpdateTask carries a valid taskID so
+// the projectID parse — not the taskID parse — is the failing step).
+func TestSchedule_AllHandlers_BadProjectID_400(t *testing.T) {
+	cases := []struct {
+		name   string
+		method string
+		params map[string]string
+		call   scheduleHandlerFn
+	}{
+		{"recalculate", "POST", map[string]string{"projectID": "not-a-uuid"}, (*ScheduleHandler).Recalculate},
+		{"gantt", "GET", map[string]string{"projectID": "not-a-uuid"}, (*ScheduleHandler).Gantt},
+		{"list-tasks", "GET", map[string]string{"projectID": "not-a-uuid"}, (*ScheduleHandler).ListTasks},
+		{"update-task", "PUT", map[string]string{"projectID": "not-a-uuid", "taskID": testTaskID}, (*ScheduleHandler).UpdateTask},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := NewScheduleHandler(&mockScheduleService{})
+			r := buildRequest(t, c.method, "/api/v1/projects/not-a-uuid/x", testOrgID, c.params, nil)
+			w := httptest.NewRecorder()
+			c.call(h, w, r)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("status=%d, want 400", w.Code)
+			}
+		})
+	}
+}
+
+// TestSchedule_AllHandlers_InvalidOrgIDClaim_401 proves the
+// callerOrgIDFromClaims gate 401s on every handler once the projectID
+// (and taskID, for UpdateTask) parse cleanly — "not-a-uuid" is an
+// intentionally malformed org claim.
+func TestSchedule_AllHandlers_InvalidOrgIDClaim_401(t *testing.T) {
+	cases := []struct {
+		name   string
+		method string
+		params map[string]string
+		call   scheduleHandlerFn
+	}{
+		{"recalculate", "POST", map[string]string{"projectID": testProjID}, (*ScheduleHandler).Recalculate},
+		{"gantt", "GET", map[string]string{"projectID": testProjID}, (*ScheduleHandler).Gantt},
+		{"list-tasks", "GET", map[string]string{"projectID": testProjID}, (*ScheduleHandler).ListTasks},
+		{"update-task", "PUT", map[string]string{"projectID": testProjID, "taskID": testTaskID}, (*ScheduleHandler).UpdateTask},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := NewScheduleHandler(&mockScheduleService{})
+			r := buildRequest(t, c.method, "/api/v1/projects/"+testProjID+"/x", "not-a-uuid", c.params, nil)
+			w := httptest.NewRecorder()
+			c.call(h, w, r)
+			if w.Code != http.StatusUnauthorized {
+				t.Errorf("status=%d, want 401", w.Code)
+			}
+		})
+	}
+}
+
+// TestUpdateTask_BadTaskIDReturns400 covers UpdateTask's second URL
+// parse — a valid projectID but a malformed taskID 400s before the org
+// claim and the body decode.
+func TestUpdateTask_BadTaskIDReturns400(t *testing.T) {
+	h := NewScheduleHandler(&mockScheduleService{})
+	r := buildRequest(t, "PUT", "/api/v1/projects/"+testProjID+"/tasks/not-a-uuid",
+		testOrgID, map[string]string{"projectID": testProjID, "taskID": "not-a-uuid"}, strings.NewReader(`{}`))
+	w := httptest.NewRecorder()
+	h.UpdateTask(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400", w.Code)
+	}
+}
+
+// TestGantt_NotFoundReturns404 covers Gantt's service-error path (the
+// only Gantt test prior drove the happy 200) through writeScheduleError's
+// ErrNotFound arm.
+func TestGantt_NotFoundReturns404(t *testing.T) {
+	h := NewScheduleHandler(&mockScheduleService{ganttErr: service.ErrNotFound})
+	r := buildRequest(t, "GET", "/api/v1/projects/"+testProjID+"/schedule/gantt",
+		testOrgID, map[string]string{"projectID": testProjID}, nil)
+	w := httptest.NewRecorder()
+	h.Gantt(w, r)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status=%d, want 404", w.Code)
+	}
+}
+
+// TestListTasks_ServiceErrorReturns500 covers ListTasks' service-error
+// path AND writeScheduleError's default (unknown error → 500, message
+// NOT leaked) arm in one shot via a non-sentinel store fault.
+func TestListTasks_ServiceErrorReturns500(t *testing.T) {
+	h := NewScheduleHandler(&mockScheduleService{listErr: assertErr("query exploded")})
+	r := buildRequest(t, "GET", "/api/v1/projects/"+testProjID+"/tasks",
+		testOrgID, map[string]string{"projectID": testProjID}, nil)
+	w := httptest.NewRecorder()
+	h.ListTasks(w, r)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d, want 500; body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "exploded") {
+		t.Errorf("internal error leaked to client: %s", w.Body.String())
+	}
+}
