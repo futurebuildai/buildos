@@ -438,6 +438,39 @@ func TestIntegrationsDelete_NotFound404(t *testing.T) {
 	}
 }
 
+// ---------- shared 401 guard leg (List/Set/Delete) ----------
+
+type integrationsHandlerFn func(*IntegrationsHandler, http.ResponseWriter, *http.Request)
+
+// TestIntegrations_AllHandlers_InvalidOrgIDClaim_401 covers the
+// callerOrgIDFromClaims 401 short-circuit shared by List/Set/Delete: a
+// malformed org claim is rejected before the provider param or body is
+// touched, so the service is never consulted.
+func TestIntegrations_AllHandlers_InvalidOrgIDClaim_401(t *testing.T) {
+	cases := []struct {
+		name   string
+		method string
+		fn     integrationsHandlerFn
+	}{
+		{"list", "GET", (*IntegrationsHandler).List},
+		{"set", "PUT", (*IntegrationsHandler).Set},
+		{"delete", "DELETE", (*IntegrationsHandler).Delete},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			svc := &mockIntegrationsService{}
+			h := NewIntegrationsHandler(svc)
+			r := buildRequest(t, c.method, "/api/v1/integrations/anthropic", "not-a-uuid",
+				map[string]string{"provider": "anthropic"}, strings.NewReader(`{"key":"k"}`))
+			w := httptest.NewRecorder()
+			c.fn(h, w, r)
+			if w.Code != http.StatusUnauthorized {
+				t.Errorf("status=%d, want 401", w.Code)
+			}
+		})
+	}
+}
+
 // ---------- writeIntegrationError mapping ----------
 
 func TestWriteIntegrationError_Mapping(t *testing.T) {
