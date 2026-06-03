@@ -169,3 +169,90 @@ func TestAgentsService_GenerateDailyBriefing_AIError(t *testing.T) {
 		t.Errorf("audit entries = %d, want 0 (no audit on AI failure)", len(rec.entries))
 	}
 }
+
+// taskDuration reads a single task's stored duration_days — used to
+// prove RecommendScheduleAdjustments persisted the applied delta.
+func taskDuration(t *testing.T, pool *pgxpool.Pool, taskID uuid.UUID) int {
+	t.Helper()
+	var d int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT duration_days FROM project_tasks WHERE id = $1`, taskID).Scan(&d); err != nil {
+		t.Fatalf("read task duration: %v", err)
+	}
+	return d
+}
+
+// TestAgentsService_RecommendScheduleAdjustments drives the full
+// AI-tuning flow against a real pool: load the task graph → call the
+// (faked) adjuster → apply duration deltas + audit in tx1 → re-run CPM
+// in tx2. Reuses the schedule fixture (River tables + an insert-only
+// client) so the post-apply RecalculateSchedule can enqueue its
+// delay_cascade follow-up.
+func TestAgentsService_RecommendScheduleAdjustments(t *testing.T) {
+	sched, fx := newScheduleService(t)
+	ctx := context.Background()
+
+	a := seedSchedTask(t, sched.pool, fx.projectID, "1.0", "Foundation", 5)
+	b := seedSchedTask(t, sched.pool, fx.projectID, "2.0", "Framing", 3)
+	seedSchedDep(t, sched.pool, fx.projectID, a, b)
+
+	newDur := 9
+	adjuster := &fakeAdjuster{resp: &ai.UpdateScheduleResponse{Adjustments: []ai.ScheduleAdjustment{
+		{TaskID: a, NewDurationDays: &newDur, Rationale: "extend foundation cure"},
+		{TaskID: b, NewDurationDays: nil, Rationale: "monitor only"}, // rationale-only → skipped
+	}}}
+	rec := &capturingAuditRecorder{}
+	agents := NewAgentsService(sched.pool, nil, nil, store.NewScheduleStore(), sched, nil, adjuster, rec)
+
+	t.Run("applies deltas, audits, and re-runs CPM", func(t *testing.T) {
+		got, err := agents.RecommendScheduleAdjustments(ctx, fx.orgID, "owner-sub", fx.projectID)
+		if err != nil {
+			t.Fatalf("RecommendScheduleAdjustments: %v", err)
+		}
+		if got.AppliedDeltas != 1 || got.SkippedRationaleOnly != 1 || len(got.Adjustments) != 2 {
+			t.Errorf("result = %+v, want applied 1 / skipped 1 / 2 adjustments", got)
+		}
+		// The adjuster saw the loaded snapshot (both tasks + the dep).
+		if len(adjuster.lastReq.Tasks) != 2 || len(adjuster.lastReq.Dependencies) != 1 {
+			t.Errorf("req = %d tasks / %d deps, want 2 / 1", len(adjuster.lastReq.Tasks), len(adjuster.lastReq.Dependencies))
+		}
+		// The applied delta is persisted; the rationale-only task is untouched.
+		if d := taskDuration(t, sched.pool, a); d != newDur {
+			t.Errorf("task a duration = %d, want %d (delta applied)", d, newDur)
+		}
+		if d := taskDuration(t, sched.pool, b); d != 3 {
+			t.Errorf("task b duration = %d, want 3 (rationale-only, untouched)", d)
+		}
+		// tx1 wrote the maestro_edit audit; tx2's recalc wrote its own
+		// schedule.recalculated row + enqueued a delay_cascade job.
+		if len(rec.entries) == 0 || rec.entries[len(rec.entries)-1].Action != "schedule.maestro_edit" {
+			t.Errorf("maestro_edit audit not recorded: %+v", rec.entries)
+		}
+		if got := scheduleAuditCount(t, sched, fx.orgID, "schedule.recalculated"); got != 1 {
+			t.Errorf("schedule.recalculated rows = %d, want 1 (recalc ran)", got)
+		}
+		if got := delayCascadeJobCount(t, sched); got != 1 {
+			t.Errorf("delay_cascade jobs = %d, want 1 (recalc enqueued)", got)
+		}
+	})
+
+	t.Run("cross-org project surfaces ErrNotFound", func(t *testing.T) {
+		if _, err := agents.RecommendScheduleAdjustments(ctx, uuid.New(), "intruder", fx.projectID); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("err = %v, want ErrNotFound", err)
+		}
+	})
+}
+
+// TestAgentsService_RecommendScheduleAdjustments_NoTasks covers the
+// empty-graph guard: a valid project with no tasks fails the flow with
+// ErrInvalidInput before any AI dispatch.
+func TestAgentsService_RecommendScheduleAdjustments_NoTasks(t *testing.T) {
+	sched, fx := newScheduleService(t)
+	adjuster := &fakeAdjuster{resp: &ai.UpdateScheduleResponse{}}
+	agents := NewAgentsService(sched.pool, nil, nil, store.NewScheduleStore(), sched, nil, adjuster, &capturingAuditRecorder{})
+
+	_, err := agents.RecommendScheduleAdjustments(context.Background(), fx.orgID, "owner-sub", fx.projectID)
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("err = %v, want ErrInvalidInput", err)
+	}
+}
