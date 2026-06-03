@@ -225,6 +225,74 @@ func TestFeedCardsStore_ListFeedCards_TargetingAndOrdering(t *testing.T) {
 	})
 }
 
+// TestFeedCardsStore_InputGuardsAndNotFound covers the deterministic legs the
+// existing happy-path tests skip:
+//   - CreateFeedCard's empty-actions normalization (nil Actions → JSONB `null`);
+//     every fixture above passes an explicit json.RawMessage(`null`), so the
+//     len(actions)==0 branch was unreached.
+//   - GetFeedCard's no-rows short-circuit → ErrFeedCardNotFound.
+//   - ListFeedCards' three input-guard clamps in one call: Limit>200 → 200,
+//     Offset<0 → 0, and a malformed CallerOIDCSubject → uuid.Nil (role-targeted
+//     cards still resolve since the subject only gates the target_user_id arm).
+func TestFeedCardsStore_InputGuardsAndNotFound(t *testing.T) {
+	pool := testdb.NewPool(t)
+	s := NewFeedCardsStore()
+	ctx := context.Background()
+
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Guardrail Builders")
+	roleAdmin := "admin"
+
+	var cardID uuid.UUID
+	err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		c, e := s.CreateFeedCard(ctx, tx, CreateFeedCardParams{
+			OrgID: orgID, CardType: "alert", Title: "guard", Body: "b",
+			Priority: "critical", TargetRole: &roleAdmin, Actions: nil,
+		})
+		if e != nil {
+			return e
+		}
+		cardID = c.ID
+		if string(c.Actions) != "null" {
+			t.Errorf("nil Actions normalized to %q, want null", string(c.Actions))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	err = pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		// No-rows leg → ErrFeedCardNotFound.
+		if _, e := s.GetFeedCard(ctx, tx, uuid.New(), orgID); !errors.Is(e, ErrFeedCardNotFound) {
+			t.Errorf("GetFeedCard(missing) = %v, want ErrFeedCardNotFound", e)
+		}
+
+		// Out-of-range inputs exercise all three clamps in a single query;
+		// the role-targeted card still resolves under the uuid.Nil subject.
+		res, e := s.ListFeedCards(ctx, tx, ListFeedCardsParams{
+			OrgID:             orgID,
+			CallerOIDCSubject: "not-a-uuid",
+			CallerRole:        "admin",
+			Limit:             500,
+			Offset:            -5,
+		})
+		if e != nil {
+			return e
+		}
+		if res.Total != 1 || len(res.Cards) != 1 {
+			t.Errorf("list with clamped inputs: Total=%d len=%d, want 1/1", res.Total, len(res.Cards))
+		}
+		if len(res.Cards) == 1 && res.Cards[0].ID != cardID {
+			t.Errorf("listed card = %s, want %s", res.Cards[0].ID, cardID)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("read tx: %v", err)
+	}
+}
+
 func TestFeedCardsStore_DismissAndActionTransitions(t *testing.T) {
 	pool := testdb.NewPool(t)
 	s := NewFeedCardsStore()
