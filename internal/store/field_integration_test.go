@@ -246,6 +246,44 @@ func TestFieldStore_Checkin_Idempotency(t *testing.T) {
 	}
 }
 
+func TestFieldStore_Checkin_NilCrewNormalizesToEmptyArray(t *testing.T) {
+	// CrewMembers nil (len 0) must normalize to a JSONB `[]` — the
+	// idempotency test always passes a non-empty array (or an explicit
+	// `[]`, len 2), so the len(crew)==0 branch is otherwise unreached.
+	pool := testdb.NewPool(t)
+	s := NewFieldStore()
+	ctx := context.Background()
+
+	orgID := uuid.New()
+	projectID := uuid.New()
+	userID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Crewless Co")
+	testdb.SeedProject(t, pool, projectID, orgID, "P")
+	testdb.SeedUser(t, pool, userID, orgID)
+
+	err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		c, err := s.Checkin(ctx, tx, CheckinParams{
+			OrgID: orgID, ProjectID: projectID, ReportedBy: userID,
+			CrewMembers:    nil, // exercises the len()==0 normalization
+			IdempotencyKey: uuid.New(),
+		})
+		if err != nil {
+			return err
+		}
+		var arr []any
+		if err := json.Unmarshal(c.CrewMembers, &arr); err != nil {
+			t.Errorf("crew_members unmarshal: %v", err)
+		}
+		if len(arr) != 0 {
+			t.Errorf("nil CrewMembers should normalize to [], got %s", string(c.CrewMembers))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("checkin: %v", err)
+	}
+}
+
 func TestFieldStore_DailyLog_Idempotency(t *testing.T) {
 	pool := testdb.NewPool(t)
 	s := NewFieldStore()
