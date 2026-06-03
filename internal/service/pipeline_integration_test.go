@@ -8,8 +8,12 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivermigrate"
 
 	"github.com/futurebuildai/buildos/internal/models"
 	"github.com/futurebuildai/buildos/internal/store"
@@ -320,4 +324,142 @@ func TestPipelineService_Analytics(t *testing.T) {
 	if _, err := svc.GetPipelineAnalytics(ctx, orgID); err != nil {
 		t.Errorf("GetPipelineAnalytics: %v", err)
 	}
+}
+
+// newPipelineServiceWithRiver mirrors newPipelineService but wires a REAL
+// insert-only River client (and applies River's job tables, which are not in
+// migrations/*.up.sql). The PERMIT_ISSUED Kanban→CPM transition enqueues a
+// HydrateProject job via river.InsertTx inside the transition tx, so it needs
+// both the river_job table and a client to insert with — the nil-river fixture
+// can't reach the happy path.
+func newPipelineServiceWithRiver(t *testing.T) (*PipelineService, uuid.UUID) {
+	t.Helper()
+	pool := testdb.NewPool(t)
+	ctx := context.Background()
+
+	migrator, err := rivermigrate.New(riverpgxv5.New(pool), nil)
+	if err != nil {
+		t.Fatalf("river migrator: %v", err)
+	}
+	if _, err := migrator.Migrate(ctx, rivermigrate.DirectionUp, nil); err != nil {
+		t.Fatalf("river migrate up: %v", err)
+	}
+	riverClient, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
+	if err != nil {
+		t.Fatalf("river client: %v", err)
+	}
+
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Summit Ridge Builders")
+	audit := NewAuditService(store.NewAuditStore(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	svc := NewPipelineService(pool, store.NewPipelineStore(), riverClient, audit)
+	return svc, orgID
+}
+
+// hydrateProjectJobCount reads the River queue directly to prove the
+// HydrateProject follow-up was enqueued inside the transition tx.
+func hydrateProjectJobCount(t *testing.T, s *PipelineService) int {
+	t.Helper()
+	var n int
+	if err := s.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM river_job WHERE kind = $1`, "hydrate_project").Scan(&n); err != nil {
+		t.Fatalf("count river_job: %v", err)
+	}
+	return n
+}
+
+// advanceToPermitApplied walks a freshly-seeded prospect up the state machine
+// to PERMIT_APPLIED — the only stage from which PERMIT_ISSUED is permitted.
+func advanceToPermitApplied(t *testing.T, svc *PipelineService, orgID uuid.UUID, p models.Prospect) {
+	t.Helper()
+	for _, target := range []models.PipelineStage{
+		models.StageQualified,
+		models.StageEstimateSent,
+		models.StageVerbalCommitment,
+		models.StagePermitApplied,
+	} {
+		if _, err := svc.AdvanceProspect(context.Background(), "owner-sub", AdvanceProspectInput{
+			ProspectID: p.ID, OrgID: orgID, Target: target,
+		}); err != nil {
+			t.Fatalf("advance → %s: %v", target, err)
+		}
+	}
+}
+
+// TestPipelineService_TransitionToPermitIssued covers the atomic Kanban→CPM
+// promotion (the river-backed PERMIT_ISSUED transition): the happy path
+// creates the construction project + flips the prospect to PERMIT_ISSUED/100
+// with a project_id + enqueues HydrateProject, plus the GSF-required guard,
+// the invalid-source-stage guard, and the cross-org no-leak leg.
+func TestPipelineService_TransitionToPermitIssued(t *testing.T) {
+	svc, orgID := newPipelineServiceWithRiver(t)
+	ctx := context.Background()
+	permitDate := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
+
+	t.Run("promotes to a CPM project and enqueues hydration", func(t *testing.T) {
+		p := seedProspect(t, svc, orgID, "Granite Peak Custom")
+		advanceToPermitApplied(t, svc, orgID, p)
+
+		out, err := svc.AdvanceProspect(ctx, "owner-sub", AdvanceProspectInput{
+			ProspectID: p.ID, OrgID: orgID, Target: models.StagePermitIssued, PermitIssuedDate: &permitDate,
+		})
+		if err != nil {
+			t.Fatalf("AdvanceProspect → PERMIT_ISSUED: %v", err)
+		}
+		if out.PipelineStage != models.StagePermitIssued || out.ProbabilityPct != 100 {
+			t.Errorf("result = %s/%d, want PERMIT_ISSUED/100", out.PipelineStage, out.ProbabilityPct)
+		}
+		if out.ProjectID == nil {
+			t.Fatal("ProjectID = nil, want the new construction project id")
+		}
+		// The construction project row exists, anchored at the permit date.
+		var startDate time.Time
+		if err := svc.pool.QueryRow(ctx,
+			`SELECT project_start_date FROM projects WHERE id = $1`, *out.ProjectID).Scan(&startDate); err != nil {
+			t.Fatalf("read project: %v", err)
+		}
+		if !startDate.Equal(permitDate) {
+			t.Errorf("project_start_date = %s, want %s (permit date)", startDate, permitDate)
+		}
+		if got := hydrateProjectJobCount(t, svc); got != 1 {
+			t.Errorf("hydrate_project jobs = %d, want 1 (enqueued in tx)", got)
+		}
+	})
+
+	t.Run("missing GSF is rejected before any write", func(t *testing.T) {
+		// CreateProspect with no GSF, then advance to PERMIT_APPLIED — the
+		// transition must fail the CPM-needs-square-footage guard.
+		noGSF, err := svc.CreateProspect(ctx, CreateProspectInput{
+			OrgID: orgID, Name: "No Footprint", ClientName: "Client",
+		})
+		if err != nil {
+			t.Fatalf("CreateProspect(no gsf): %v", err)
+		}
+		advanceToPermitApplied(t, svc, orgID, noGSF)
+		if _, err := svc.AdvanceProspect(ctx, "owner-sub", AdvanceProspectInput{
+			ProspectID: noGSF.ID, OrgID: orgID, Target: models.StagePermitIssued, PermitIssuedDate: &permitDate,
+		}); !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("err = %v, want ErrInvalidInput (gsf required)", err)
+		}
+	})
+
+	t.Run("PERMIT_ISSUED from a non-applied stage is an invalid transition", func(t *testing.T) {
+		// A fresh LEAD prospect can't jump straight to PERMIT_ISSUED.
+		lead := seedProspect(t, svc, orgID, "Still A Lead")
+		if _, err := svc.AdvanceProspect(ctx, "owner-sub", AdvanceProspectInput{
+			ProspectID: lead.ID, OrgID: orgID, Target: models.StagePermitIssued, PermitIssuedDate: &permitDate,
+		}); !errors.Is(err, ErrInvalidTransition) {
+			t.Fatalf("err = %v, want ErrInvalidTransition", err)
+		}
+	})
+
+	t.Run("cross-org prospect surfaces ErrNotFound", func(t *testing.T) {
+		p := seedProspect(t, svc, orgID, "Foreign Eyes")
+		advanceToPermitApplied(t, svc, orgID, p)
+		if _, err := svc.AdvanceProspect(ctx, "intruder", AdvanceProspectInput{
+			ProspectID: p.ID, OrgID: uuid.New(), Target: models.StagePermitIssued, PermitIssuedDate: &permitDate,
+		}); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("err = %v, want ErrNotFound", err)
+		}
+	})
 }
