@@ -531,6 +531,88 @@ func TestProcurementStore_CreateProcurementRecommendation(t *testing.T) {
 	}
 }
 
+// TestProcurementStore_RecomputeStatuses_GuardsAndDefaults covers the two
+// deterministic input legs the bulk-transition test skips (it always passes a
+// non-negative window and a fixed non-zero Now):
+//   - WarningWindowDays < 0 → early error, no UPDATE issued;
+//   - Now.IsZero() → defaults to time.Now().UTC(), so an item whose
+//     must_order_date sits far in the past flips OK → CRITICAL.
+func TestProcurementStore_RecomputeStatuses_GuardsAndDefaults(t *testing.T) {
+	pool := testdb.NewPool(t)
+	s := NewProcurementStore()
+	ctx := context.Background()
+
+	orgID := uuid.New()
+	projectID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Acme Builders")
+	testdb.SeedProject(t, pool, projectID, orgID, "Test Project")
+
+	// Seed one item with a must_order_date far in the past (need_by 2020,
+	// so must_order ~2019). Against a defaulted real-now it must read CRITICAL.
+	needBy := time.Date(2020, 1, 10, 0, 0, 0, 0, time.UTC)
+	var itemID uuid.UUID
+	err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		it, e := s.CreateProcurementItem(ctx, tx, CreateProcurementItemParams{
+			ProjectID:                 projectID,
+			OrgID:                     orgID,
+			Name:                      "stale",
+			WBSCode:                   "01.00.00",
+			EstimatedCostCents:        1000,
+			EstimatedCostCurrencyCode: "USD",
+			LeadTimeDays:              5,
+			WeatherBufferDays:         1,
+			NeedByDate:                &needBy,
+		})
+		if e != nil {
+			return e
+		}
+		itemID = it.ID
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Negative window → guard error before any UPDATE.
+	err = pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		n, e := s.RecomputeStatuses(ctx, tx, RecomputeStatusesParams{WarningWindowDays: -1, Now: time.Now().UTC()})
+		if e == nil {
+			t.Error("negative window should error")
+		}
+		if n != 0 {
+			t.Errorf("rowsChanged = %d, want 0 on guard error", n)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("negative-window tx: %v", err)
+	}
+
+	// Zero Now → defaults to time.Now().UTC(); the 2019 must_order_date is
+	// well in the past so the item flips OK → CRITICAL (one row changed).
+	err = pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		n, e := s.RecomputeStatuses(ctx, tx, RecomputeStatusesParams{WarningWindowDays: 7}) // Now left zero
+		if e != nil {
+			return e
+		}
+		if n != 1 {
+			t.Errorf("rowsChanged = %d, want 1 (defaulted now flips stale → CRITICAL)", n)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("zero-now tx: %v", err)
+	}
+
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM procurement_items WHERE id = $1`, itemID).Scan(&status); err != nil {
+		t.Fatalf("read status: %v", err)
+	}
+	if status != models.ProcurementStatusCritical {
+		t.Errorf("status = %q, want %q", status, models.ProcurementStatusCritical)
+	}
+}
+
 func TestProcurementStore_RecomputeStatuses_BulkTransition(t *testing.T) {
 	pool := testdb.NewPool(t)
 	s := NewProcurementStore()
