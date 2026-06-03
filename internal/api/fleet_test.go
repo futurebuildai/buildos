@@ -158,6 +158,20 @@ func TestCreateAsset_ValidationError(t *testing.T) {
 	}
 }
 
+func TestCreateAsset_OrgMismatch403(t *testing.T) {
+	h := NewFleetHandler(&fakeFleetService{})
+	r := fleetReq(t, "POST", "/api/v1/org/"+otherOrgID+"/fleet", testOrgID,
+		map[string]string{"orgID": otherOrgID}, `{"name":"x","asset_type":"grader"}`)
+	w := httptest.NewRecorder()
+	h.CreateAsset(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status=%d, want 403", w.Code)
+	}
+	if code := decodeErrCode(t, w); code != "FORBIDDEN" {
+		t.Errorf("code=%q, want FORBIDDEN", code)
+	}
+}
+
 // ---------- POST /fleet/{assetID}/allocate ----------
 
 func TestAllocateAsset_OK(t *testing.T) {
@@ -213,6 +227,66 @@ func TestAllocateAsset_Conflict409(t *testing.T) {
 	}
 	if code := decodeErrCode(t, w); code != "CONFLICT" {
 		t.Errorf("code=%q, want CONFLICT", code)
+	}
+}
+
+func TestAllocateAsset_OrgMismatch403(t *testing.T) {
+	assetID := uuid.New()
+	h := NewFleetHandler(&fakeFleetService{})
+	body := `{"project_id":"` + uuid.New().String() + `","start_date":"2026-03-01","end_date":"2026-03-05"}`
+	r := fleetReq(t, "POST", "/api/v1/org/"+otherOrgID+"/fleet/"+assetID.String()+"/allocate",
+		testOrgID, map[string]string{"orgID": otherOrgID, "assetID": assetID.String()}, body)
+	w := httptest.NewRecorder()
+	h.AllocateAsset(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status=%d, want 403", w.Code)
+	}
+	if code := decodeErrCode(t, w); code != "FORBIDDEN" {
+		t.Errorf("code=%q, want FORBIDDEN", code)
+	}
+}
+
+func TestAllocateAsset_BadAssetID400(t *testing.T) {
+	h := NewFleetHandler(&fakeFleetService{})
+	body := `{"project_id":"` + uuid.New().String() + `","start_date":"2026-03-01","end_date":"2026-03-05"}`
+	r := fleetReq(t, "POST", "/api/v1/org/"+testOrgID+"/fleet/not-a-uuid/allocate",
+		testOrgID, map[string]string{"assetID": "not-a-uuid"}, body)
+	w := httptest.NewRecorder()
+	h.AllocateAsset(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400", w.Code)
+	}
+}
+
+func TestAllocateAsset_BadJSON400(t *testing.T) {
+	assetID := uuid.New()
+	h := NewFleetHandler(&fakeFleetService{})
+	r := fleetReq(t, "POST", "/api/v1/org/"+testOrgID+"/fleet/"+assetID.String()+"/allocate",
+		testOrgID, map[string]string{"assetID": assetID.String()}, "{bad")
+	w := httptest.NewRecorder()
+	h.AllocateAsset(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400", w.Code)
+	}
+}
+
+// TestAllocateAsset_BadEndDate400 covers the end_date parse leg specifically:
+// start_date is valid (passing the first parseRequiredDate), so the handler
+// reaches the SECOND parse and rejects the malformed end_date. The sibling
+// TestAllocateAsset_BadDate trips on start_date and never gets here.
+func TestAllocateAsset_BadEndDate400(t *testing.T) {
+	assetID := uuid.New()
+	h := NewFleetHandler(&fakeFleetService{})
+	body := `{"project_id":"` + uuid.New().String() + `","start_date":"2026-03-01","end_date":"nope"}`
+	r := fleetReq(t, "POST", "/api/v1/org/"+testOrgID+"/fleet/"+assetID.String()+"/allocate",
+		testOrgID, map[string]string{"assetID": assetID.String()}, body)
+	w := httptest.NewRecorder()
+	h.AllocateAsset(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400", w.Code)
+	}
+	if code := decodeErrCode(t, w); code != "VALIDATION_ERROR" {
+		t.Errorf("code=%q, want VALIDATION_ERROR", code)
 	}
 }
 
@@ -313,6 +387,20 @@ func TestListEmployees_ServiceErr500(t *testing.T) {
 	}
 }
 
+func TestListEmployees_OrgMismatch403(t *testing.T) {
+	h := NewHRHandler(&fakeHRService{})
+	r := fleetReq(t, "GET", "/api/v1/org/"+otherOrgID+"/employees", testOrgID,
+		map[string]string{"orgID": otherOrgID}, "")
+	w := httptest.NewRecorder()
+	h.ListEmployees(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status=%d, want 403", w.Code)
+	}
+	if code := decodeErrCode(t, w); code != "FORBIDDEN" {
+		t.Errorf("code=%q, want FORBIDDEN", code)
+	}
+}
+
 func TestListCertifications_OK(t *testing.T) {
 	empID := uuid.New()
 	svc := &fakeHRService{certs: []models.Certification{{ID: uuid.New(), EmployeeID: empID, CertType: "osha-30"}}}
@@ -337,6 +425,33 @@ func TestListCertifications_BadEmployeeID(t *testing.T) {
 	h.ListCertifications(w, r)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d, want 400", w.Code)
+	}
+}
+
+func TestListCertifications_OrgMismatch403(t *testing.T) {
+	empID := uuid.New()
+	h := NewHRHandler(&fakeHRService{})
+	r := fleetReq(t, "GET", "/api/v1/org/"+otherOrgID+"/employees/"+empID.String()+"/certifications",
+		testOrgID, map[string]string{"orgID": otherOrgID, "employeeID": empID.String()}, "")
+	w := httptest.NewRecorder()
+	h.ListCertifications(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status=%d, want 403", w.Code)
+	}
+	if code := decodeErrCode(t, w); code != "FORBIDDEN" {
+		t.Errorf("code=%q, want FORBIDDEN", code)
+	}
+}
+
+func TestListCertifications_ServiceErr500(t *testing.T) {
+	empID := uuid.New()
+	h := NewHRHandler(&fakeHRService{certErr: errInternal()})
+	r := fleetReq(t, "GET", "/api/v1/org/"+testOrgID+"/employees/"+empID.String()+"/certifications",
+		testOrgID, map[string]string{"employeeID": empID.String()}, "")
+	w := httptest.NewRecorder()
+	h.ListCertifications(w, r)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d, want 500", w.Code)
 	}
 }
 
