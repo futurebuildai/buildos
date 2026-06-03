@@ -421,6 +421,55 @@ func TestProcurementUpdate_NotFound404(t *testing.T) {
 	}
 }
 
+func TestProcurementUpdate_BadProjectID400(t *testing.T) {
+	// Update parses projectID FIRST (before itemID), so a bad projectID
+	// short-circuits at the leading guard — distinct from the bad-itemID
+	// leg covered above.
+	h := NewProcurementHandler(&mockProcurementService{})
+	r := buildRequest(t, "PUT", "/api/v1/projects/not-a-uuid/procurement/"+testItemID,
+		testOrgID, map[string]string{"projectID": "not-a-uuid", "itemID": testItemID}, strings.NewReader(`{}`))
+	w := httptest.NewRecorder()
+	h.Update(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400", w.Code)
+	}
+}
+
+// ---------- shared 401 guard leg (List/Create/Update/RequestVendorReview) ----------
+
+type procurementHandlerFn func(*ProcurementHandler, http.ResponseWriter, *http.Request)
+
+// TestProcurement_AllHandlers_InvalidOrgIDClaim_401 covers the
+// callerOrgIDFromClaims 401 short-circuit shared by all four handlers:
+// each parses the URL UUID(s) FIRST then the org claim, so a malformed
+// org claim is rejected before the body is decoded or the service is
+// consulted.
+func TestProcurement_AllHandlers_InvalidOrgIDClaim_401(t *testing.T) {
+	cases := []struct {
+		name   string
+		method string
+		target string
+		fn     procurementHandlerFn
+	}{
+		{"list", "GET", "/api/v1/projects/" + testProjID + "/procurement", (*ProcurementHandler).List},
+		{"create", "POST", "/api/v1/projects/" + testProjID + "/procurement", (*ProcurementHandler).Create},
+		{"update", "PUT", "/api/v1/projects/" + testProjID + "/procurement/" + testItemID, (*ProcurementHandler).Update},
+		{"request-review", "POST", "/api/v1/projects/" + testProjID + "/procurement/" + testItemID + "/request-review", (*ProcurementHandler).RequestVendorReview},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := NewProcurementHandler(&mockProcurementService{})
+			r := buildRequest(t, c.method, c.target, "not-a-uuid",
+				map[string]string{"projectID": testProjID, "itemID": testItemID}, strings.NewReader(`{}`))
+			w := httptest.NewRecorder()
+			c.fn(h, w, r)
+			if w.Code != http.StatusUnauthorized {
+				t.Errorf("status=%d, want 401", w.Code)
+			}
+		})
+	}
+}
+
 // ---------- procurement writeServiceError mapping ----------
 
 func TestProcurementWriteServiceError_Mapping(t *testing.T) {
