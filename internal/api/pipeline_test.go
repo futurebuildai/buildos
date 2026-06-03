@@ -502,6 +502,224 @@ func TestUpdatePermit_TerminalSourceReturns409(t *testing.T) {
 	}
 }
 
+// ---------- Shared guard legs (org-mismatch / bad-UUID / malformed body) ----------
+
+// pipelineCase is one handler invocation for the cross-cutting guard-leg
+// tables below: the same 403/400 short-circuits live at the top of every
+// write/read handler, so a table over the handler set proves each one rather
+// than copy-pasting a near-identical test per method.
+type pipelineCase struct {
+	name   string
+	method string
+	target string
+	vars   map[string]string
+	call   func(*PipelineHandler, http.ResponseWriter, *http.Request)
+}
+
+// guardCases enumerates the authenticated pipeline handlers that begin with
+// requireOrgIDFromURL → parseUUIDFromURL(resource) → callerOrgIDFromClaims.
+// The targets here use otherOrgID in the path so the org-mismatch table trips
+// the 403; the bad-UUID table overrides the resource path var instead.
+func guardCases() []pipelineCase {
+	return []pipelineCase{
+		{"GetProspect", "GET", "/api/v1/org/" + otherOrgID + "/pipeline/prospects/" + testProspectID,
+			map[string]string{"orgID": otherOrgID, "prospectID": testProspectID},
+			(*PipelineHandler).GetProspect},
+		{"UpdateProspect", "PUT", "/api/v1/org/" + otherOrgID + "/pipeline/prospects/" + testProspectID,
+			map[string]string{"orgID": otherOrgID, "prospectID": testProspectID},
+			(*PipelineHandler).UpdateProspect},
+		{"CreateEstimate", "POST", "/api/v1/org/" + otherOrgID + "/pipeline/prospects/" + testProspectID + "/estimates",
+			map[string]string{"orgID": otherOrgID, "prospectID": testProspectID},
+			(*PipelineHandler).CreateEstimate},
+		{"UpdateEstimate", "PUT", "/api/v1/org/" + otherOrgID + "/pipeline/estimates/" + testEstimateID,
+			map[string]string{"orgID": otherOrgID, "estimateID": testEstimateID},
+			(*PipelineHandler).UpdateEstimate},
+		{"CreatePermit", "POST", "/api/v1/org/" + otherOrgID + "/pipeline/prospects/" + testProspectID + "/permits",
+			map[string]string{"orgID": otherOrgID, "prospectID": testProspectID},
+			(*PipelineHandler).CreatePermit},
+		{"UpdatePermit", "PUT", "/api/v1/org/" + otherOrgID + "/pipeline/permits/" + testPermitID,
+			map[string]string{"orgID": otherOrgID, "permitID": testPermitID},
+			(*PipelineHandler).UpdatePermit},
+	}
+}
+
+// TestPipelineHandlers_OrgMismatchReturns403 proves the cross-tenant guard on
+// every prospect/estimate/permit handler: a caller whose claim org differs
+// from the {orgID} path segment is refused before the service is touched.
+func TestPipelineHandlers_OrgMismatchReturns403(t *testing.T) {
+	h := NewPipelineHandler(&mockPipelineService{})
+	for _, c := range guardCases() {
+		t.Run(c.name, func(t *testing.T) {
+			// callerOrgID = testOrgID, path orgID = otherOrgID → mismatch.
+			r := buildRequest(t, c.method, c.target, testOrgID, c.vars, nil)
+			w := httptest.NewRecorder()
+			c.call(h, w, r)
+			if w.Code != http.StatusForbidden {
+				t.Errorf("status=%d, want 403 (org mismatch)", w.Code)
+			}
+		})
+	}
+}
+
+// TestPipelineHandlers_BadResourceUUIDReturns400 proves the resource-id parse
+// guard: with the org matching the caller (so requireOrgIDFromURL passes), a
+// malformed prospect/estimate/permit path id is rejected as 400.
+func TestPipelineHandlers_BadResourceUUIDReturns400(t *testing.T) {
+	h := NewPipelineHandler(&mockPipelineService{})
+	// Each case names the resource path var to corrupt (the non-orgID key).
+	for _, c := range guardCases() {
+		t.Run(c.name, func(t *testing.T) {
+			vars := map[string]string{"orgID": testOrgID}
+			var resourceKey string
+			for k := range c.vars {
+				if k != "orgID" {
+					resourceKey = k
+				}
+			}
+			vars[resourceKey] = "not-a-uuid"
+			// Rebuild a same-org target so requireOrgIDFromURL passes first.
+			target := strings.Replace(c.target, otherOrgID, testOrgID, 1)
+			r := buildRequest(t, c.method, target, testOrgID, vars, nil)
+			w := httptest.NewRecorder()
+			c.call(h, w, r)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("status=%d, want 400 (bad %s)", w.Code, resourceKey)
+			}
+		})
+	}
+}
+
+// TestPipelineHandlers_MalformedBodyReturns400 proves the JSON-decode guard on
+// the write handlers: a body that isn't valid JSON is rejected as 400 after
+// the org + resource-id gates pass. GetProspect is read-only (no body) so it's
+// excluded.
+func TestPipelineHandlers_MalformedBodyReturns400(t *testing.T) {
+	h := NewPipelineHandler(&mockPipelineService{})
+	for _, c := range guardCases() {
+		if c.name == "GetProspect" {
+			continue
+		}
+		t.Run(c.name, func(t *testing.T) {
+			vars := map[string]string{"orgID": testOrgID}
+			for k, v := range c.vars {
+				if k != "orgID" {
+					vars[k] = v
+				}
+			}
+			target := strings.Replace(c.target, otherOrgID, testOrgID, 1)
+			r := buildRequest(t, c.method, target, testOrgID, vars, strings.NewReader("{"))
+			w := httptest.NewRecorder()
+			c.call(h, w, r)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("status=%d, want 400 (malformed body)", w.Code)
+			}
+		})
+	}
+}
+
+// TestGetProspect_HappyPath drives the read happy path (the existing GetProspect
+// test only exercises the 404 leg, leaving the 200 writeJSON unreached).
+func TestGetProspect_HappyPath(t *testing.T) {
+	svc := &mockPipelineService{
+		getResult: models.ProspectWithDetails{Prospect: models.Prospect{Name: "Hilltop"}},
+	}
+	h := NewPipelineHandler(svc)
+	r := buildRequest(t, "GET", "/api/v1/org/"+testOrgID+"/pipeline/prospects/"+testProspectID,
+		testOrgID, map[string]string{"orgID": testOrgID, "prospectID": testProspectID}, nil)
+	w := httptest.NewRecorder()
+	h.GetProspect(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, body=%s", w.Code, w.Body.String())
+	}
+	if svc.lastGetProspectID.String() != testProspectID || svc.lastGetCallerOrg.String() != testOrgID {
+		t.Errorf("service got (%s,%s), want (%s,%s)", svc.lastGetProspectID, svc.lastGetCallerOrg, testProspectID, testOrgID)
+	}
+}
+
+// TestUpdateProspect_ServiceErrorMaps404 covers the writePipelineError leg of
+// UpdateProspect (the existing test only drives the 200 happy path).
+func TestUpdateProspect_ServiceErrorMaps404(t *testing.T) {
+	h := NewPipelineHandler(&mockPipelineService{updateErr: service.ErrNotFound})
+	body := strings.NewReader(`{"name":"Updated"}`)
+	r := buildRequest(t, "PUT", "/api/v1/org/"+testOrgID+"/pipeline/prospects/"+testProspectID,
+		testOrgID, map[string]string{"orgID": testOrgID, "prospectID": testProspectID}, body)
+	w := httptest.NewRecorder()
+	h.UpdateProspect(w, r)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status=%d, want 404", w.Code)
+	}
+}
+
+// TestUpdateEstimate_MissingStatusReturns400 covers the status-required guard
+// (the existing missing-prospect-id test sends a status, so the nil-status leg
+// was unreached).
+func TestUpdateEstimate_MissingStatusReturns400(t *testing.T) {
+	h := NewPipelineHandler(&mockPipelineService{})
+	body := strings.NewReader(`{"prospect_id":"` + testProspectID + `"}`) // no status
+	r := buildRequest(t, "PUT", "/api/v1/org/"+testOrgID+"/pipeline/estimates/"+testEstimateID,
+		testOrgID, map[string]string{"orgID": testOrgID, "estimateID": testEstimateID}, body)
+	w := httptest.NewRecorder()
+	h.UpdateEstimate(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400 (status required)", w.Code)
+	}
+}
+
+// TestCreatePermit_ServiceErrorMaps404 covers CreatePermit's writePipelineError
+// leg, and TestCreatePermit_BadExpectedIssueDateReturns400 covers the second
+// (expected_issue_date) optional-date parse guard the existing bad-date test
+// (which corrupts submitted_date) skips.
+func TestCreatePermit_ServiceErrorMaps404(t *testing.T) {
+	h := NewPipelineHandler(&mockPipelineService{createPermitErr: service.ErrNotFound})
+	body := strings.NewReader(`{"permit_type":"building","jurisdiction":"Austin TX","fee_cents":1,"fee_currency_code":"USD"}`)
+	r := buildRequest(t, "POST", "/api/v1/org/"+testOrgID+"/pipeline/prospects/"+testProspectID+"/permits",
+		testOrgID, map[string]string{"orgID": testOrgID, "prospectID": testProspectID}, body)
+	w := httptest.NewRecorder()
+	h.CreatePermit(w, r)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status=%d, want 404", w.Code)
+	}
+}
+
+func TestCreatePermit_BadExpectedIssueDateReturns400(t *testing.T) {
+	h := NewPipelineHandler(&mockPipelineService{})
+	body := strings.NewReader(`{"permit_type":"building","jurisdiction":"Austin TX","fee_cents":1,"fee_currency_code":"USD","expected_issue_date":"not-a-date"}`)
+	r := buildRequest(t, "POST", "/api/v1/org/"+testOrgID+"/pipeline/prospects/"+testProspectID+"/permits",
+		testOrgID, map[string]string{"orgID": testOrgID, "prospectID": testProspectID}, body)
+	w := httptest.NewRecorder()
+	h.CreatePermit(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400 (bad expected_issue_date)", w.Code)
+	}
+}
+
+// TestUpdatePermit_BadBodyFieldsReturn400 covers the four body-parse guards
+// after the path/org gates: a non-UUID prospect_id and each of the three
+// optional date fields (submitted / expected_issue / actual_issue).
+func TestUpdatePermit_BadBodyFieldsReturn400(t *testing.T) {
+	h := NewPipelineHandler(&mockPipelineService{})
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"bad prospect_id", `{"prospect_id":"not-a-uuid","status":"submitted"}`},
+		{"bad submitted_date", `{"prospect_id":"` + testProspectID + `","submitted_date":"nope"}`},
+		{"bad expected_issue_date", `{"prospect_id":"` + testProspectID + `","expected_issue_date":"nope"}`},
+		{"bad actual_issue_date", `{"prospect_id":"` + testProspectID + `","actual_issue_date":"nope"}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := buildRequest(t, "PUT", "/api/v1/org/"+testOrgID+"/pipeline/permits/"+testPermitID,
+				testOrgID, map[string]string{"orgID": testOrgID, "permitID": testPermitID}, strings.NewReader(c.body))
+			w := httptest.NewRecorder()
+			h.UpdatePermit(w, r)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("status=%d, want 400 (%s)", w.Code, c.name)
+			}
+		})
+	}
+}
+
 // ---------- Analytics ----------
 
 func TestAnalytics_OK(t *testing.T) {
