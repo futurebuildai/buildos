@@ -138,6 +138,9 @@ func TestProcurementService_RequestVendorReview_RejectsBadInput(t *testing.T) {
 	}{
 		{"nil org", uuid.Nil, func(*RequestVendorReviewInput) {}},
 		{"nil item", uuid.New(), func(in *RequestVendorReviewInput) { in.ProcurementItemID = uuid.Nil }},
+		{"blank vendor", uuid.New(), func(in *RequestVendorReviewInput) { in.Vendor = "   " }},
+		{"negative total", uuid.New(), func(in *RequestVendorReviewInput) { in.TotalCents = -1 }},
+		{"bad currency", uuid.New(), func(in *RequestVendorReviewInput) { in.CurrencyCode = "EUR" }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
