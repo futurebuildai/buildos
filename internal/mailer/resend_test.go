@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,6 +20,22 @@ type stubResolver struct {
 
 func (s stubResolver) ResendKey(_ context.Context, _ string) (string, error) {
 	return s.key, s.err
+}
+
+// TestWithLoggerOption asserts the WithLogger functional option installs
+// the supplied slog.Logger, and that the default is non-nil when the
+// option is omitted (so log calls never nil-panic).
+func TestWithLoggerOption(t *testing.T) {
+	custom := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := NewResendMailer(stubResolver{key: "re_test"}, "from@example.com", "From", WithLogger(custom))
+	if m.logger != custom {
+		t.Errorf("WithLogger did not install the supplied logger")
+	}
+
+	def := NewResendMailer(stubResolver{key: "re_test"}, "from@example.com", "From")
+	if def.logger == nil {
+		t.Errorf("default logger is nil; want slog.Default()")
+	}
 }
 
 func TestResendMailerHappyPath(t *testing.T) {

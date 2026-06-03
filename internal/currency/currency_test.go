@@ -46,6 +46,21 @@ func TestNew(t *testing.T) {
 	}
 }
 
+func TestZero(t *testing.T) {
+	m, err := Zero(USD)
+	if err != nil {
+		t.Fatalf("Zero(USD): %v", err)
+	}
+	if m.Cents != 0 || m.CurrencyCode != USD {
+		t.Errorf("Zero(USD) = %+v, want {0 USD}", m)
+	}
+
+	// An unsupported code propagates New's validation error.
+	if _, err := Zero("EUR"); err == nil {
+		t.Error("Zero(EUR) should fail (unsupported currency)")
+	}
+}
+
 func TestAdd(t *testing.T) {
 	a, _ := New(100, USD)
 	b, _ := New(50, USD)
