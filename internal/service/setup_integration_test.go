@@ -251,6 +251,105 @@ func TestSetupService_AddJurisdiction_RejectsInvalidJSON(t *testing.T) {
 	}
 }
 
+// TestSetupService_AddJurisdiction_HappyPath drives the step-6 write tx
+// end-to-end: a fully-populated jurisdiction (region, both JSONB blobs,
+// notes) round-trips back through the returned model with the name
+// trimmed. The leading/trailing whitespace on Name proves the TrimSpace
+// guard runs before the insert.
+func TestSetupService_AddJurisdiction_HappyPath(t *testing.T) {
+	svc, orgID := newSetupService(t, nil)
+	got, err := svc.AddJurisdiction(context.Background(), AddJurisdictionInput{
+		OrgID:               orgID,
+		UserSub:             "owner-1",
+		Name:                "  Hartford CT  ",
+		Region:              strPtr("US-CT"),
+		PermitTypes:         []byte(`["building","electrical"]`),
+		InspectionChecklist: []byte(`["rough-in","final"]`),
+		Notes:               strPtr("County office closes at noon Fridays."),
+	})
+	if err != nil {
+		t.Fatalf("AddJurisdiction: %v", err)
+	}
+	if got.ID == uuid.Nil {
+		t.Error("ID is nil, want a generated uuid")
+	}
+	if got.OrgID != orgID {
+		t.Errorf("OrgID = %s, want %s", got.OrgID, orgID)
+	}
+	if got.Name != "Hartford CT" {
+		t.Errorf("Name = %q, want trimmed %q", got.Name, "Hartford CT")
+	}
+	if got.Region == nil || *got.Region != "US-CT" {
+		t.Errorf("Region = %v, want US-CT", got.Region)
+	}
+	if !json.Valid(got.PermitTypes) || string(got.PermitTypes) != `["building", "electrical"]` {
+		t.Errorf("PermitTypes = %s", got.PermitTypes)
+	}
+	if got.Notes == nil || *got.Notes == "" {
+		t.Errorf("Notes = %v, want the seeded note", got.Notes)
+	}
+}
+
+// TestSetupService_AddJurisdiction_ValidationGuards covers the input
+// guards that short-circuit before the tx opens: nil org, blank (after
+// trim) name, and the inspection_checklist JSON validity check (the
+// permit_types leg is already covered by RejectsInvalidJSON above).
+func TestSetupService_AddJurisdiction_ValidationGuards(t *testing.T) {
+	svc, orgID := newSetupService(t, nil)
+	ctx := context.Background()
+	cases := map[string]AddJurisdictionInput{
+		"nil org":             {Name: "Hartford CT"},
+		"blank name":          {OrgID: orgID, Name: "   "},
+		"bad inspection json": {OrgID: orgID, Name: "Hartford CT", InspectionChecklist: []byte(`{nope`)},
+	}
+	for name, in := range cases {
+		if _, err := svc.AddJurisdiction(ctx, in); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("%s: err = %v, want ErrInvalidInput", name, err)
+		}
+	}
+}
+
+// TestSetupService_AddJurisdiction_RejectsAfterComplete proves the
+// guardNotComplete leg inside the tx: once the wizard is finalized, a
+// late jurisdiction write is rejected with ErrSetupAlreadyComplete
+// rather than silently mutating a configured org.
+func TestSetupService_AddJurisdiction_RejectsAfterComplete(t *testing.T) {
+	svc, orgID := newSetupService(t, nil)
+	ctx := context.Background()
+
+	mustStep := func(name string, fn func() error) {
+		t.Helper()
+		if err := fn(); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	mustStep("company info", func() error {
+		_, e := svc.UpdateCompanyInfo(ctx, UpdateCompanyInfoInput{OrgID: orgID, LegalName: strPtr("Kelbrook LLC")})
+		return e
+	})
+	mustStep("trade", func() error {
+		_, e := svc.CreateTrade(ctx, CreateTradeInput{OrgID: orgID, Code: "ELEC", Name: "Electrical"})
+		return e
+	})
+	mustStep("cost code", func() error {
+		_, e := svc.CreateCostCode(ctx, CreateCostCodeInput{OrgID: orgID, Code: "03-30-00", Name: "x", Division: "03"})
+		return e
+	})
+	mustStep("calendar", func() error {
+		_, e := svc.CreateCalendar(ctx, CreateCalendarInput{OrgID: orgID, Name: "Default", WorkingDaysMask: models.WorkingDaysMonFri, IsDefault: true})
+		return e
+	})
+	mustStep("complete", func() error {
+		_, e := svc.Complete(ctx, CompleteSetupInput{OrgID: orgID, UserSub: "owner-1"})
+		return e
+	})
+
+	_, err := svc.AddJurisdiction(ctx, AddJurisdictionInput{OrgID: orgID, Name: "Hartford CT"})
+	if !errors.Is(err, ErrSetupAlreadyComplete) {
+		t.Fatalf("err = %v, want ErrSetupAlreadyComplete", err)
+	}
+}
+
 func TestSetupService_Complete_RejectsIncompletePrereqs(t *testing.T) {
 	svc, orgID := newSetupService(t, nil)
 	ctx := context.Background()
