@@ -354,6 +354,12 @@ func TestScheduleStore_GetProjectStartDate(t *testing.T) {
 		if fb.IsZero() {
 			t.Errorf("fallback start date is zero, want created_at")
 		}
+
+		// Unknown project → the QueryRow finds no row and surfaces the
+		// raw pgx.ErrNoRows (this reader does not remap to ErrNotFound).
+		if _, err := s.GetProjectStartDate(ctx, tx, uuid.New()); !errors.Is(err, pgx.ErrNoRows) {
+			t.Errorf("missing project: got err %v, want pgx.ErrNoRows", err)
+		}
 		return nil
 	})
 	if err != nil {
