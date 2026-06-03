@@ -30,6 +30,13 @@ import (
 var (
 	ErrSetupAlreadyComplete  = errors.New("setup: onboarding already complete")
 	ErrInvalidBootstrapToken = errors.New("setup: invalid bootstrap token")
+
+	// errBootstrapTokenExists is an internal sentinel used to unwind a
+	// SeedBootstrapTokenIfNeeded tx that hit the UNIQUE(token_hash)
+	// constraint. It forces a clean rollback of the poisoned tx and is
+	// translated to the documented (false, nil) idempotent no-op by the
+	// caller — it never escapes the package.
+	errBootstrapTokenExists = errors.New("setup: bootstrap token already exists")
 )
 
 // Setup audit-log resource type / action constants. Wizard rows are
@@ -856,10 +863,14 @@ func (s *SetupService) SeedBootstrapTokenIfNeeded(ctx context.Context, cleartext
 		})
 		if qErr != nil {
 			// SQLSTATE 23505: token already exists — idempotent
-			// re-boot. Not an error.
+			// re-boot. Return a sentinel (not nil) so BeginTxFunc
+			// ROLLS BACK the now-poisoned tx: a failed statement
+			// aborts the tx, so committing it would surface as
+			// "commit unexpectedly resulted in rollback". Translated
+			// to (false, nil) below.
 			var pgErr *pgconn.PgError
 			if errors.As(qErr, &pgErr) && pgErr.Code == "23505" {
-				return nil
+				return errBootstrapTokenExists
 			}
 			return fmt.Errorf("seed bootstrap token: %w", qErr)
 		}
@@ -874,6 +885,11 @@ func (s *SetupService) SeedBootstrapTokenIfNeeded(ctx context.Context, cleartext
 		return nil
 	})
 	if err != nil {
+		// An already-present token is the documented idempotent
+		// re-boot case: report no-op, not failure.
+		if errors.Is(err, errBootstrapTokenExists) {
+			return false, nil
+		}
 		if errors.Is(err, ErrInvalidInput) {
 			return false, err
 		}

@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -518,4 +519,153 @@ type capturingAuditRecorder struct {
 
 func (c *capturingAuditRecorder) Record(_ context.Context, _ pgx.Tx, e AuditEntry) {
 	c.entries = append(c.entries, e)
+}
+
+// validBootstrapCleartext returns a well-formed 43-char base64url
+// cleartext (RawURLEncoding of bootstrapTokenByteLen bytes) — the exact
+// shape SeedBootstrapTokenIfNeeded validates before hashing.
+func validBootstrapCleartext() string {
+	b := make([]byte, bootstrapTokenByteLen)
+	for i := range b {
+		b[i] = byte(i + 1)
+	}
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+func TestSetupService_SeedBootstrapTokenIfNeeded_ValidationShortCircuits(t *testing.T) {
+	// The three format guards return before any DB work, so a bad env
+	// var fails fast at boot rather than at first redeem.
+	svc, orgID := newSetupService(t, nil)
+	ctx := context.Background()
+
+	// Empty cleartext: not configured → silent no-op, never touches DB.
+	if seeded, err := svc.SeedBootstrapTokenIfNeeded(ctx, "", orgID, 0); err != nil || seeded {
+		t.Fatalf("empty cleartext = (%v, %v), want (false, nil)", seeded, err)
+	}
+	// Wrong length: rejected before hashing.
+	if _, err := svc.SeedBootstrapTokenIfNeeded(ctx, "too-short", orgID, 0); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("short cleartext err = %v, want ErrInvalidInput", err)
+	}
+	// Right length (43) but not base64url ('!' is outside the alphabet).
+	bad := "!" + validBootstrapCleartext()[1:]
+	if _, err := svc.SeedBootstrapTokenIfNeeded(ctx, bad, orgID, 0); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("non-base64url cleartext err = %v, want ErrInvalidInput", err)
+	}
+}
+
+func TestSetupService_SeedBootstrapTokenIfNeeded_SeedsAndIsIdempotent(t *testing.T) {
+	rec := &capturingAuditRecorder{}
+	pool := testdb.NewPool(t)
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Kelbrook Construction")
+	userID := uuid.New()
+	testdb.SeedUser(t, pool, userID, orgID)
+	svc := NewSetupService(pool, store.NewSetupStore(), rec, nil)
+	ctx := context.Background()
+
+	cleartext := validBootstrapCleartext()
+
+	// First call lands a fresh row. ttl=0 exercises the
+	// DefaultBootstrapTokenTTL fallback.
+	seeded, err := svc.SeedBootstrapTokenIfNeeded(ctx, cleartext, orgID, 0)
+	if err != nil {
+		t.Fatalf("first seed: %v", err)
+	}
+	if !seeded {
+		t.Fatal("first seed = false, want true (fresh row)")
+	}
+	// Audit captured a system-boot issue entry for the org.
+	if len(rec.entries) != 1 {
+		t.Fatalf("audit entries = %d, want 1", len(rec.entries))
+	}
+	if e := rec.entries[0]; e.Action != AuditActionSetupBootstrapIssue || e.UserSub != "system:boot" || e.OrgID != orgID {
+		t.Errorf("audit entry = %+v, want issue/system:boot/%s", e, orgID)
+	}
+
+	// Second call with the same cleartext is a no-op (UNIQUE(token_hash)
+	// swallows the re-insert) and records no new audit row.
+	seeded, err = svc.SeedBootstrapTokenIfNeeded(ctx, cleartext, orgID, 0)
+	if err != nil {
+		t.Fatalf("re-seed: %v", err)
+	}
+	if seeded {
+		t.Error("re-seed = true, want false (idempotent)")
+	}
+	if len(rec.entries) != 1 {
+		t.Errorf("audit entries after re-seed = %d, want 1", len(rec.entries))
+	}
+
+	// The seeded cleartext is a genuine, redeemable token — proves the
+	// hash landed correctly, not just that a row exists.
+	got, err := svc.RedeemBootstrapToken(ctx, cleartext, userID)
+	if err != nil {
+		t.Fatalf("redeem seeded token: %v", err)
+	}
+	if got.OrgID != orgID {
+		t.Errorf("redeemed OrgID = %s, want %s", got.OrgID, orgID)
+	}
+}
+
+func TestSetupService_SeedBootstrapTokenIfNeeded_NilOrgPicksIncompleteOrg(t *testing.T) {
+	// cmd/server doesn't always know the fork's org_id at boot; uuid.Nil
+	// resolves the single onboarding-incomplete org.
+	pool := testdb.NewPool(t)
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Kelbrook Construction")
+	userID := uuid.New()
+	testdb.SeedUser(t, pool, userID, orgID)
+	svc := NewSetupService(pool, store.NewSetupStore(), NewNoopAuditRecorder(), nil)
+	ctx := context.Background()
+
+	cleartext := validBootstrapCleartext()
+	seeded, err := svc.SeedBootstrapTokenIfNeeded(ctx, cleartext, uuid.Nil, time.Hour)
+	if err != nil {
+		t.Fatalf("seed with nil org: %v", err)
+	}
+	if !seeded {
+		t.Fatal("seeded = false, want true")
+	}
+	// Redeeming proves the row resolved to the seeded (incomplete) org.
+	got, err := svc.RedeemBootstrapToken(ctx, cleartext, userID)
+	if err != nil {
+		t.Fatalf("redeem: %v", err)
+	}
+	if got.OrgID != orgID {
+		t.Errorf("resolved OrgID = %s, want %s", got.OrgID, orgID)
+	}
+}
+
+func TestSetupService_SeedBootstrapTokenIfNeeded_CompleteOrgIsNoOp(t *testing.T) {
+	svc, orgID := newSetupService(t, nil)
+	ctx := context.Background()
+
+	// Drive the wizard to completion so onboarding_complete = true.
+	if _, err := svc.UpdateCompanyInfo(ctx, UpdateCompanyInfoInput{OrgID: orgID, LegalName: strPtr("Kelbrook LLC")}); err != nil {
+		t.Fatalf("update company: %v", err)
+	}
+	if _, err := svc.CreateTrade(ctx, CreateTradeInput{OrgID: orgID, Code: "ELEC", Name: "Electrical"}); err != nil {
+		t.Fatalf("trade: %v", err)
+	}
+	if _, err := svc.CreateCostCode(ctx, CreateCostCodeInput{OrgID: orgID, Code: "03-30-00", Name: "x", Division: "03"}); err != nil {
+		t.Fatalf("cost code: %v", err)
+	}
+	if _, err := svc.CreateCalendar(ctx, CreateCalendarInput{OrgID: orgID, Name: "Default", WorkingDaysMask: models.WorkingDaysMonFri, IsDefault: true}); err != nil {
+		t.Fatalf("calendar: %v", err)
+	}
+	if _, err := svc.Complete(ctx, CompleteSetupInput{OrgID: orgID}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	cleartext := validBootstrapCleartext()
+
+	// Explicit orgID whose onboarding is done → GetCompanyProfile sees
+	// OnboardingComplete and the seed is a no-op.
+	if seeded, err := svc.SeedBootstrapTokenIfNeeded(ctx, cleartext, orgID, time.Hour); err != nil || seeded {
+		t.Errorf("seed against complete org = (%v, %v), want (false, nil)", seeded, err)
+	}
+	// uuid.Nil with no incomplete org left → the ORDER BY query returns
+	// no rows and the seed is a no-op.
+	if seeded, err := svc.SeedBootstrapTokenIfNeeded(ctx, cleartext, uuid.Nil, time.Hour); err != nil || seeded {
+		t.Errorf("nil-org seed with all orgs onboarded = (%v, %v), want (false, nil)", seeded, err)
+	}
 }
