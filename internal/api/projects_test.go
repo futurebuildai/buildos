@@ -134,6 +134,43 @@ func TestProjects_List_InvalidOrgIDClaim_401(t *testing.T) {
 	}
 }
 
+// TestProjects_Create_InvalidOrgIDClaim_401 covers Create's direct
+// callerOrgIDFromClaims !ok leg (projects are not org-scoped in the URL,
+// so the claim is the sole org source). An unparseable claim org → 401
+// before the body is ever read.
+func TestProjects_Create_InvalidOrgIDClaim_401(t *testing.T) {
+	h := NewProjectHandler(&mockProjectService{})
+	r := buildRequest(t, "POST", "/api/v1/projects", "not-a-uuid", nil,
+		strings.NewReader(`{"name":"x"}`))
+	w := httptest.NewRecorder()
+	h.Create(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status=%d, want 401", w.Code)
+	}
+}
+
+func TestProjects_Get_InvalidOrgIDClaim_401(t *testing.T) {
+	h := NewProjectHandler(&mockProjectService{})
+	r := buildRequest(t, "GET", "/api/v1/projects/"+testProjID, "not-a-uuid",
+		map[string]string{"projectID": testProjID}, nil)
+	w := httptest.NewRecorder()
+	h.Get(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status=%d, want 401", w.Code)
+	}
+}
+
+func TestProjects_Update_InvalidOrgIDClaim_401(t *testing.T) {
+	h := NewProjectHandler(&mockProjectService{})
+	r := buildRequest(t, "PUT", "/api/v1/projects/"+testProjID, "not-a-uuid",
+		map[string]string{"projectID": testProjID}, strings.NewReader(`{"name":"x"}`))
+	w := httptest.NewRecorder()
+	h.Update(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status=%d, want 401", w.Code)
+	}
+}
+
 // ---------- POST /projects ----------
 
 func TestProjects_Create_HappyPath(t *testing.T) {
