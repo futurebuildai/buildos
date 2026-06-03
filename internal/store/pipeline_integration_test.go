@@ -638,6 +638,49 @@ func TestPipelineStore_MarkProspectPermitIssued_LinksProject(t *testing.T) {
 	}
 }
 
+// TestPipelineStore_NotFoundPaths exercises the ErrNotFound (no-rows) leg of
+// every pipeline getter/mutator whose happy path is covered elsewhere but whose
+// not-found short-circuit was unreached: GetProspect, AdvanceStage, MarkLost,
+// GetEstimate, UpdateEstimateStatus, UpdatePermit. Each is driven with a random
+// non-existent id so the QueryRow returns pgx.ErrNoRows → ErrNotFound. (The
+// UPDATE...RETURNING mutators return no rows when the WHERE matches nothing, so
+// they map to ErrNotFound too — proving the optimistic "row must exist" contract.)
+func TestPipelineStore_NotFoundPaths(t *testing.T) {
+	pool := testdb.NewPool(t)
+	s := NewPipelineStore()
+	ctx := context.Background()
+
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Ghost")
+
+	missing := uuid.New() // never inserted
+
+	err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if _, e := s.GetProspect(ctx, tx, missing, orgID); !errors.Is(e, ErrNotFound) {
+			t.Errorf("GetProspect(missing) = %v, want ErrNotFound", e)
+		}
+		if _, e := s.AdvanceStage(ctx, tx, missing, orgID, models.StageQualified); !errors.Is(e, ErrNotFound) {
+			t.Errorf("AdvanceStage(missing) = %v, want ErrNotFound", e)
+		}
+		if _, e := s.MarkLost(ctx, tx, missing, orgID, "n/a"); !errors.Is(e, ErrNotFound) {
+			t.Errorf("MarkLost(missing) = %v, want ErrNotFound", e)
+		}
+		if _, e := s.GetEstimate(ctx, tx, missing, missing); !errors.Is(e, ErrNotFound) {
+			t.Errorf("GetEstimate(missing) = %v, want ErrNotFound", e)
+		}
+		if _, e := s.UpdateEstimateStatus(ctx, tx, missing, "sent"); !errors.Is(e, ErrNotFound) {
+			t.Errorf("UpdateEstimateStatus(missing) = %v, want ErrNotFound", e)
+		}
+		if _, e := s.UpdatePermit(ctx, tx, UpdatePermitParams{PermitID: missing}); !errors.Is(e, ErrNotFound) {
+			t.Errorf("UpdatePermit(missing) = %v, want ErrNotFound", e)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("not-found tx: %v", err)
+	}
+}
+
 func TestPipelineStore_ListPipelineAnalytics_WeightsAndExcludes(t *testing.T) {
 	pool := testdb.NewPool(t)
 	s := NewPipelineStore()
