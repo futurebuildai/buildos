@@ -261,6 +261,61 @@ func TestFieldDailyLog_BadDate400(t *testing.T) {
 	}
 }
 
+func TestFieldCheckin_ServiceErr500(t *testing.T) {
+	projID := uuid.New()
+	h := NewFieldHandler(&fakeFieldService{checkinErr: errInternal()})
+	body := `{"project_id":"` + projID.String() + `","idempotency_key":"` + uuid.New().String() + `"}`
+	r := fieldReq(t, "POST", "/api/v1/field/checkin", testOrgID, body)
+	w := httptest.NewRecorder()
+	h.Checkin(w, r)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d, want 500", w.Code)
+	}
+}
+
+func TestFieldDailyLog_ServiceErr500(t *testing.T) {
+	projID := uuid.New()
+	h := NewFieldHandler(&fakeFieldService{dailyLogErr: errInternal()})
+	body := `{"project_id":"` + projID.String() + `","log_date":"2026-03-01","work_summary":"x","idempotency_key":"` + uuid.New().String() + `"}`
+	r := fieldReq(t, "POST", "/api/v1/field/daily-log", testOrgID, body)
+	w := httptest.NewRecorder()
+	h.DailyLog(w, r)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d, want 500", w.Code)
+	}
+}
+
+// ---------- shared 401 guard leg (ReportProgress/Checkin/DailyLog) ----------
+
+type fieldHandlerFn func(*FieldHandler, http.ResponseWriter, *http.Request)
+
+// TestField_BodyHandlers_InvalidOrgClaim_401 covers the claimsAndOrg 401
+// short-circuit shared by the three POST handlers: a malformed org claim
+// is rejected before the body is decoded, so the service is never called
+// (Sync's own 401 leg is covered separately).
+func TestField_BodyHandlers_InvalidOrgClaim_401(t *testing.T) {
+	cases := []struct {
+		name   string
+		target string
+		fn     fieldHandlerFn
+	}{
+		{"progress", "/api/v1/field/progress", (*FieldHandler).ReportProgress},
+		{"checkin", "/api/v1/field/checkin", (*FieldHandler).Checkin},
+		{"daily-log", "/api/v1/field/daily-log", (*FieldHandler).DailyLog},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := NewFieldHandler(&fakeFieldService{})
+			r := fieldReq(t, "POST", c.target, "not-a-uuid", `{}`)
+			w := httptest.NewRecorder()
+			c.fn(h, w, r)
+			if w.Code != http.StatusUnauthorized {
+				t.Errorf("status=%d, want 401", w.Code)
+			}
+		})
+	}
+}
+
 // ---------- field writeServiceError mapping ----------
 
 func TestFieldWriteServiceError_Mapping(t *testing.T) {
