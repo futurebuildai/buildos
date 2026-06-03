@@ -82,6 +82,60 @@ func TestFinancialsStore_ListProjectBudgets_Empty(t *testing.T) {
 	}
 }
 
+// TestFinancialsStore_ListProjectBudgets_RoundTrip drives the populated
+// scan loop (the _Empty test only covers the zero-row path): two phases
+// seeded out of WBS order must come back ordered by wbs_code with every
+// monetary pair + currency scanned back intact.
+func TestFinancialsStore_ListProjectBudgets_RoundTrip(t *testing.T) {
+	pool := testdb.NewPool(t)
+	s := NewFinancialsStore()
+	ctx := context.Background()
+
+	orgID := uuid.New()
+	projectID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Cedar Works")
+	testdb.SeedProject(t, pool, projectID, orgID, "Birch Lane")
+
+	// Seed out of order so the ORDER BY wbs_code is observable.
+	seedBudgetPhase(t, pool, projectID, "02-200", "CAD", 200_000, 80_000, 40_000)
+	seedBudgetPhase(t, pool, projectID, "01-100", "USD", 100_000, 50_000, 25_000)
+
+	err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		got, err := s.ListProjectBudgets(ctx, tx, projectID)
+		if err != nil {
+			return err
+		}
+		if len(got) != 2 {
+			t.Fatalf("ListProjectBudgets = %d rows, want 2", len(got))
+		}
+		// Ordered by wbs_code: 01-100 first, 02-200 second.
+		if got[0].WBSCode != "01-100" || got[1].WBSCode != "02-200" {
+			t.Fatalf("rows not ordered by wbs_code: %q, %q", got[0].WBSCode, got[1].WBSCode)
+		}
+		first := got[0]
+		if first.ProjectID != projectID {
+			t.Errorf("ProjectID = %s, want %s", first.ProjectID, projectID)
+		}
+		if first.EstimatedCostCents != 100_000 || first.EstimatedCostCurrencyCode != "USD" {
+			t.Errorf("estimated pair = %d/%s, want 100000/USD", first.EstimatedCostCents, first.EstimatedCostCurrencyCode)
+		}
+		if first.CommittedCostCents != 50_000 || first.ActualCostCents != 25_000 {
+			t.Errorf("committed/actual = %d/%d, want 50000/25000", first.CommittedCostCents, first.ActualCostCents)
+		}
+		if first.PhaseName != "phase 01-100" {
+			t.Errorf("PhaseName = %q, want %q", first.PhaseName, "phase 01-100")
+		}
+		// CAD row's currency must scan back distinctly.
+		if got[1].EstimatedCostCurrencyCode != "CAD" {
+			t.Errorf("second row currency = %q, want CAD", got[1].EstimatedCostCurrencyCode)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("read tx: %v", err)
+	}
+}
+
 func TestFinancialsStore_CreateInvoice_RoundTrip(t *testing.T) {
 	pool := testdb.NewPool(t)
 	s := NewFinancialsStore()
