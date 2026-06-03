@@ -165,3 +165,31 @@ func TestNotification_DeliverNotification_AdapterWritesDLQ(t *testing.T) {
 		t.Errorf("adapter DLQ rows = %d, want 1", got)
 	}
 }
+
+// TestNotification_FinalAttempt_DLQInsertFailure_StillReturnsTransportError
+// covers recordDLQAndError's failure leg: when the DLQ insert itself errors,
+// the service logs and falls through, returning the ORIGINAL transport error
+// so River still discards the job (we never swallow the retry signal). The
+// insert is forced to fail deterministically by delivering for a user_id that
+// was never seeded — the field_notification_dlq.user_id FK rejects the row.
+func TestNotification_FinalAttempt_DLQInsertFailure_StillReturnsTransportError(t *testing.T) {
+	wantErr := errors.New("transport: twilio 500")
+	svc, _ := newNotificationService(t, &scriptedSender{errs: []error{wantErr}})
+	ctx := context.Background()
+
+	// Deliberately NOT seeded — the DLQ FK on user_id will reject the insert.
+	orphanUser := uuid.New()
+
+	err := svc.Deliver(ctx, MaxNotificationAttempts, NotificationDelivery{
+		UserID:           orphanUser,
+		NotificationType: "sms",
+		Payload:          json.RawMessage(`{"to":"+15550000000","body":"orphan"}`),
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Deliver(final, DLQ insert fails) = %v, want wrapped %v", err, wantErr)
+	}
+	// The insert failed, so no row should have landed.
+	if got := dlqCount(t, svc.pool, orphanUser); got != 0 {
+		t.Errorf("DLQ rows = %d, want 0 (insert should have failed the FK)", got)
+	}
+}
