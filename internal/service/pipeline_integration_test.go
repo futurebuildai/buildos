@@ -312,6 +312,112 @@ func TestPipelineService_Permits(t *testing.T) {
 	}
 }
 
+// TestPipelineService_TransitionAndScopingGuards fills the in-tx legs the
+// happy-path estimate/permit tests skip: the status-machine reject
+// (ErrInvalidTransition), the unknown-id and cross-org no-leak legs
+// (ErrNotFound), the permit fee_cents<0 guard (ErrInvalidInput), and the
+// LoseProspect cross-org leg. Each method's pre-tx input gates are already
+// covered by TestPipelineService_{Estimates,Permits,AdvanceAndLose}; this
+// drives the body once a real prospect/estimate/permit exists.
+func TestPipelineService_TransitionAndScopingGuards(t *testing.T) {
+	svc, orgID := newPipelineService(t)
+	ctx := context.Background()
+	otherOrg := uuid.New()
+
+	p := seedProspect(t, svc, orgID, "Guard-Leg Prospect")
+	items := models.PipelineEstimateLineItems{
+		{WBSCode: "03.30.00", Description: "Foundation", EstimatedCents: 500_000},
+	}
+	est, err := svc.CreateEstimate(ctx, CreateEstimateInput{
+		ProspectID: p.ID, OrgID: orgID, CurrencyCode: "USD", LineItems: items,
+	})
+	if err != nil {
+		t.Fatalf("CreateEstimate: %v", err)
+	}
+	permit, err := svc.CreatePermit(ctx, CreatePermitInput{
+		ProspectID: p.ID, OrgID: orgID, PermitType: "building", Jurisdiction: "Boulder County",
+		FeeCents: 45_000, FeeCurrencyCode: "USD",
+	})
+	if err != nil {
+		t.Fatalf("CreatePermit: %v", err)
+	}
+
+	t.Run("estimate transition out of a terminal status is rejected", func(t *testing.T) {
+		// draft → accepted is permitted; accepted → sent is not.
+		if _, err := svc.UpdateEstimateStatus(ctx, UpdateEstimateStatusInput{
+			EstimateID: est.ID, ProspectID: p.ID, OrgID: orgID, NewStatus: models.EstimateStatusAccepted,
+		}); err != nil {
+			t.Fatalf("UpdateEstimateStatus(→accepted): %v", err)
+		}
+		if _, err := svc.UpdateEstimateStatus(ctx, UpdateEstimateStatusInput{
+			EstimateID: est.ID, ProspectID: p.ID, OrgID: orgID, NewStatus: models.EstimateStatusSent,
+		}); !errors.Is(err, ErrInvalidTransition) {
+			t.Errorf("accepted→sent = %v, want ErrInvalidTransition", err)
+		}
+	})
+
+	t.Run("estimate update for an unknown id surfaces ErrNotFound", func(t *testing.T) {
+		if _, err := svc.UpdateEstimateStatus(ctx, UpdateEstimateStatusInput{
+			EstimateID: uuid.New(), ProspectID: p.ID, OrgID: orgID, NewStatus: models.EstimateStatusSent,
+		}); !errors.Is(err, ErrNotFound) {
+			t.Errorf("unknown-estimate update = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("estimate update from another org is hidden", func(t *testing.T) {
+		if _, err := svc.UpdateEstimateStatus(ctx, UpdateEstimateStatusInput{
+			EstimateID: est.ID, ProspectID: p.ID, OrgID: otherOrg, NewStatus: models.EstimateStatusSent,
+		}); !errors.Is(err, ErrNotFound) {
+			t.Errorf("cross-org estimate update = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("permit update with a negative fee is rejected pre-tx", func(t *testing.T) {
+		neg := int64(-1)
+		if _, err := svc.UpdatePermit(ctx, UpdatePermitInput{
+			PermitID: permit.ID, ProspectID: p.ID, OrgID: orgID, FeeCents: &neg,
+		}); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("UpdatePermit(fee<0) = %v, want ErrInvalidInput", err)
+		}
+	})
+
+	t.Run("permit no-op self-transition is rejected", func(t *testing.T) {
+		// permit is still not_submitted (the fee-guard attempt rolled back);
+		// not_submitted → not_submitted trips CanTransitionPermitStatus's
+		// from==to guard.
+		same := models.PermitStatusNotSubmitted
+		if _, err := svc.UpdatePermit(ctx, UpdatePermitInput{
+			PermitID: permit.ID, ProspectID: p.ID, OrgID: orgID, NewStatus: &same,
+		}); !errors.Is(err, ErrInvalidTransition) {
+			t.Errorf("not_submitted→not_submitted = %v, want ErrInvalidTransition", err)
+		}
+	})
+
+	t.Run("permit update for an unknown id surfaces ErrNotFound", func(t *testing.T) {
+		if _, err := svc.UpdatePermit(ctx, UpdatePermitInput{
+			PermitID: uuid.New(), ProspectID: p.ID, OrgID: orgID,
+		}); !errors.Is(err, ErrNotFound) {
+			t.Errorf("unknown-permit update = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("permit update from another org is hidden", func(t *testing.T) {
+		if _, err := svc.UpdatePermit(ctx, UpdatePermitInput{
+			PermitID: permit.ID, ProspectID: p.ID, OrgID: otherOrg,
+		}); !errors.Is(err, ErrNotFound) {
+			t.Errorf("cross-org permit update = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("lose prospect from another org is hidden", func(t *testing.T) {
+		if _, err := svc.LoseProspect(ctx, "intruder", LoseProspectInput{
+			ProspectID: p.ID, OrgID: otherOrg, Reason: "should not land",
+		}); !errors.Is(err, ErrNotFound) {
+			t.Errorf("cross-org LoseProspect = %v, want ErrNotFound", err)
+		}
+	})
+}
+
 // TestPipelineService_Analytics exercises the weighted-revenue aggregation
 // read: it must succeed (empty or populated) for an org with prospects.
 func TestPipelineService_Analytics(t *testing.T) {
