@@ -296,3 +296,65 @@ func TestVaultService_ListCredentials_MetadataOnly(t *testing.T) {
 		t.Errorf("Label = %q, want Main", c.Label)
 	}
 }
+
+// TestVaultService_CredentialGuardsAndResolverSoftFails covers the legs the
+// round-trip tests skip: the pre-tx input guards on SetCredential /
+// DeleteCredential (ErrInvalidInput, before any seal or tx) and the two
+// resolveActiveKey soft-fail branches that must NEVER 500 the AI/mail path —
+// an unparseable org id, and a stored credential whose ciphertext can't be
+// opened (rotated/tampered master key). Both soft-fails return ("", nil) so
+// the caller treats the provider as simply unconfigured.
+func TestVaultService_CredentialGuardsAndResolverSoftFails(t *testing.T) {
+	svc, orgID := newVaultService(t)
+	ctx := context.Background()
+
+	t.Run("set credential input guards", func(t *testing.T) {
+		cases := map[string]SetCredentialInput{
+			"nil org":        {Provider: ProviderAnthropic, Key: "k"},
+			"empty provider": {OrgID: orgID, Key: "k"},
+			"empty key":      {OrgID: orgID, Provider: ProviderAnthropic},
+		}
+		for name, in := range cases {
+			if _, err := svc.SetCredential(ctx, in); !errors.Is(err, ErrInvalidInput) {
+				t.Errorf("%s: err = %v, want ErrInvalidInput", name, err)
+			}
+		}
+	})
+
+	t.Run("delete credential input guards", func(t *testing.T) {
+		if err := svc.DeleteCredential(ctx, uuid.Nil, ProviderAnthropic, "u"); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("nil org: err = %v, want ErrInvalidInput", err)
+		}
+		if err := svc.DeleteCredential(ctx, orgID, "  ", "u"); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("blank provider: err = %v, want ErrInvalidInput", err)
+		}
+	})
+
+	t.Run("unparseable org id soft-fails to unconfigured", func(t *testing.T) {
+		got, err := svc.AnthropicKey(ctx, "not-a-uuid")
+		if err != nil || got != "" {
+			t.Errorf("AnthropicKey(bad org) = (%q, %v), want (\"\", nil)", got, err)
+		}
+	})
+
+	t.Run("undecryptable ciphertext soft-fails to unconfigured", func(t *testing.T) {
+		// Store a valid Resend key, then corrupt the row's ciphertext so
+		// cipher.Open fails the GCM auth check on the next resolve.
+		if _, err := svc.SetCredential(ctx, SetCredentialInput{
+			OrgID: orgID, Provider: ProviderResend, Key: "re_live_abcd",
+		}); err != nil {
+			t.Fatalf("SetCredential resend: %v", err)
+		}
+		if _, err := svc.pool.Exec(ctx,
+			`UPDATE integration_credentials SET ciphertext = $1
+			   WHERE org_id = $2 AND provider = $3 AND is_active = true`,
+			[]byte("tampered-garbage-bytes"), orgID, ProviderResend,
+		); err != nil {
+			t.Fatalf("corrupt ciphertext: %v", err)
+		}
+		got, err := svc.ResendKey(ctx, orgID.String())
+		if err != nil || got != "" {
+			t.Errorf("ResendKey(corrupted) = (%q, %v), want (\"\", nil)", got, err)
+		}
+	})
+}
