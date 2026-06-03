@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -293,6 +294,60 @@ func TestProcurementService_RecommendVendors_PersistsAndAudits(t *testing.T) {
 	if _, err := svc.RecommendVendors(ctx, uuid.New(), "intruder", item.ID); !errors.Is(err, ErrProcurementItemNotFound) {
 		t.Errorf("cross-tenant RecommendVendors = %v, want ErrProcurementItemNotFound", err)
 	}
+}
+
+// TestProcurementService_RecommendVendors_AIFaultAndVendorIDLegs covers the
+// RecommendVendors branches the happy path leaves unreached, all reachable
+// deterministically by steering the fake recommender (the item ownership check
+// passes first, so these are the post-Get legs): a model-side error is wrapped
+// as the generic "recommend vendors" failure (not a not-found sentinel), a nil
+// response with a nil error is rejected, and a recommendation carrying a
+// non-nil VendorID exercises the nullable-vendor-id persist branch (the happy
+// path above only sends rows with a zero VendorID).
+func TestProcurementService_RecommendVendors_AIFaultAndVendorIDLegs(t *testing.T) {
+	svc, rec, fx := newProcurementService(t)
+	ctx := context.Background()
+	item := seedItem(t, svc, fx, "Steel Joists")
+
+	t.Run("model error wraps as recommend-vendors failure", func(t *testing.T) {
+		rec.resp = nil
+		rec.err = errors.New("model upstream timeout")
+		_, err := svc.RecommendVendors(ctx, fx.orgID, "owner-sub", item.ID)
+		if err == nil || errors.Is(err, ErrProcurementItemNotFound) {
+			t.Fatalf("err = %v, want a non-nil non-not-found wrap", err)
+		}
+		if !strings.Contains(err.Error(), "model upstream timeout") {
+			t.Errorf("err = %q, want it to wrap the model error", err)
+		}
+	})
+
+	t.Run("nil response is rejected", func(t *testing.T) {
+		rec.resp = nil
+		rec.err = nil
+		if _, err := svc.RecommendVendors(ctx, fx.orgID, "owner-sub", item.ID); err == nil {
+			t.Fatal("err = nil, want a nil-response rejection")
+		}
+	})
+
+	t.Run("non-nil vendor id is persisted", func(t *testing.T) {
+		vendorID := uuid.New()
+		rec.err = nil
+		rec.resp = &ai.ProcurementRecommendResponse{
+			Recommendations: []ai.ProcurementVendorRec{
+				{VendorID: vendorID, VendorName: "Ironworks Supply", PredictedSpendCents: 240_000, CurrencyCode: "USD", Confidence: 0.88},
+			},
+		}
+		set, err := svc.RecommendVendors(ctx, fx.orgID, "owner-sub", item.ID)
+		if err != nil {
+			t.Fatalf("RecommendVendors: %v", err)
+		}
+		if len(set.Items) != 1 {
+			t.Fatalf("persisted %d recommendations, want 1", len(set.Items))
+		}
+		if set.Items[0].VendorID == nil || *set.Items[0].VendorID != vendorID {
+			t.Errorf("persisted vendor id = %v, want %s", set.Items[0].VendorID, vendorID)
+		}
+	})
 }
 
 // TestProcurementService_RequestVendorReview_CreatesCardAndAudits drives the
