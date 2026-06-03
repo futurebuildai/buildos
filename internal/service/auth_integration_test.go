@@ -103,6 +103,42 @@ func issueBootstrap(t *testing.T, svc *AuthService, orgID uuid.UUID, clock func(
 	return issued.Cleartext
 }
 
+// TestAuthService_NewAuthService_Guards covers the constructor's two legs the
+// newAuthService helper never exercises: the required-dependency guard (a nil
+// Pool/Users/Setup/Issuer → error) and the nil-Mailer default (the helper
+// always injects a capturingMailer, so the noop-mailer fallback is unreached).
+func TestAuthService_NewAuthService_Guards(t *testing.T) {
+	pool := testdb.NewPool(t)
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key: %v", err)
+	}
+	issuer, err := auth.NewTokenIssuer(priv, "test-kid", "buildos", "buildos")
+	if err != nil {
+		t.Fatalf("new token issuer: %v", err)
+	}
+
+	// Missing a required dependency (Pool) is rejected.
+	if _, err := NewAuthService(AuthServiceConfig{
+		Users: store.NewUserStore(), Setup: store.NewSetupStore(), Issuer: issuer,
+	}); err == nil {
+		t.Error("NewAuthService(nil pool) = nil error, want a required-deps error")
+	}
+
+	// A nil Mailer is allowed — it defaults to the noop mailer and the
+	// service constructs successfully.
+	svc, err := NewAuthService(AuthServiceConfig{
+		Pool: pool, Users: store.NewUserStore(), Setup: store.NewSetupStore(), Issuer: issuer,
+		// Mailer intentionally nil → exercises the noop-default leg.
+	})
+	if err != nil {
+		t.Fatalf("NewAuthService(nil mailer) = %v, want success", err)
+	}
+	if svc.mailer == nil {
+		t.Error("mailer was not defaulted to the noop mailer")
+	}
+}
+
 func TestAuthService_ClaimFirstOwner_HappyPath(t *testing.T) {
 	svc, orgID, _ := newAuthService(t, nil)
 	ctx := context.Background()
@@ -166,6 +202,25 @@ func TestAuthService_ClaimFirstOwner_RejectsShortPassword(t *testing.T) {
 	_, err := svc.ClaimFirstOwner(context.Background(), token, "owner@kelbrook.test", "short", "")
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("err = %v, want ErrInvalidInput", err)
+	}
+}
+
+// TestAuthService_ClaimFirstOwner_RejectsEmptyTokenAndBadEmail covers the
+// two pre-redemption guards the InvalidToken/RejectsShortPassword tests miss:
+// an empty cleartext token short-circuits to ErrInvalidBootstrapToken before
+// any DB touch (InvalidToken passes a non-empty bogus token, which instead
+// reaches the redemption-failure leg), and a malformed email trips
+// validateEmail → ErrInvalidInput before the redemption tx (so a non-empty
+// cleartext is enough to get past the empty-token guard to the email check).
+func TestAuthService_ClaimFirstOwner_RejectsEmptyTokenAndBadEmail(t *testing.T) {
+	svc, _, _ := newAuthService(t, nil)
+	ctx := context.Background()
+
+	if _, err := svc.ClaimFirstOwner(ctx, "", "owner@kelbrook.test", "correct horse battery staple", ""); !errors.Is(err, ErrInvalidBootstrapToken) {
+		t.Errorf("empty cleartext: err = %v, want ErrInvalidBootstrapToken", err)
+	}
+	if _, err := svc.ClaimFirstOwner(ctx, "any-non-empty-token", "not-an-email", "correct horse battery staple", ""); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("bad email: err = %v, want ErrInvalidInput", err)
 	}
 }
 
