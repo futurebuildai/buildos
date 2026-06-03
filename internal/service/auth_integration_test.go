@@ -300,6 +300,36 @@ func TestAuthService_ResetPassword_InvalidToken(t *testing.T) {
 	}
 }
 
+// TestAuthService_InputGuards covers the early input-validation legs that
+// short-circuit before any DB work on the three token-consuming flows —
+// the branches the happy-path round-trips above never reach. One fixture
+// (one container) is shared across all guards since none touch the pool.
+func TestAuthService_InputGuards(t *testing.T) {
+	svc, _, _ := newAuthService(t, nil)
+	ctx := context.Background()
+
+	// Refresh with an empty token is rejected before the lookup tx.
+	if _, err := svc.Refresh(ctx, ""); !errors.Is(err, ErrInvalidRefreshToken) {
+		t.Errorf("Refresh(\"\"): err = %v, want ErrInvalidRefreshToken", err)
+	}
+
+	// Logout with an empty token is a no-op success (idempotent goal state).
+	if err := svc.Logout(ctx, ""); err != nil {
+		t.Errorf("Logout(\"\"): err = %v, want nil", err)
+	}
+
+	// ResetPassword with an empty token is rejected before validatePassword.
+	if err := svc.ResetPassword(ctx, "", "a perfectly fine password"); !errors.Is(err, ErrInvalidResetToken) {
+		t.Errorf("ResetPassword(\"\", ...): err = %v, want ErrInvalidResetToken", err)
+	}
+
+	// ResetPassword with a too-short new password hits the validatePassword
+	// guard (after the non-empty-token check, before the consume tx).
+	if err := svc.ResetPassword(ctx, "some-non-empty-token", "short"); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("ResetPassword(tok, short): err = %v, want ErrInvalidInput", err)
+	}
+}
+
 // extractResetToken pulls the token query-param value out of the reset link
 // embedded in the email text body.
 func extractResetToken(t *testing.T, body string) string {
