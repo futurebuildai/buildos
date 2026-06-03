@@ -363,6 +363,50 @@ func TestSetupService_Complete_RejectsIncompletePrereqs(t *testing.T) {
 	}
 }
 
+// TestSetupService_Complete_PrereqLegs walks the four in-tx
+// minimum-prerequisite checks one at a time by adding exactly the
+// missing piece between calls — each Complete fails with ErrInvalidInput
+// on the *next* unmet requirement, exercising the legal-name / trade /
+// cost-code / default-calendar legs individually (the happy-path test
+// only ever sees them all satisfied). The nil-org guard is checked too.
+func TestSetupService_Complete_PrereqLegs(t *testing.T) {
+	svc, orgID := newSetupService(t, nil)
+	ctx := context.Background()
+
+	mustFail := func(stage string) {
+		t.Helper()
+		if _, err := svc.Complete(ctx, CompleteSetupInput{OrgID: orgID}); !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("%s: err = %v, want ErrInvalidInput", stage, err)
+		}
+	}
+
+	// Fresh org: no legal_name yet.
+	mustFail("no legal name")
+
+	// +legal_name → next missing is a trade.
+	if _, err := svc.UpdateCompanyInfo(ctx, UpdateCompanyInfoInput{OrgID: orgID, LegalName: strPtr("Kelbrook LLC")}); err != nil {
+		t.Fatalf("update company: %v", err)
+	}
+	mustFail("no trade")
+
+	// +trade → next missing is a cost code.
+	if _, err := svc.CreateTrade(ctx, CreateTradeInput{OrgID: orgID, Code: "ELEC", Name: "Electrical"}); err != nil {
+		t.Fatalf("trade: %v", err)
+	}
+	mustFail("no cost code")
+
+	// +cost code → next missing is a default working calendar.
+	if _, err := svc.CreateCostCode(ctx, CreateCostCodeInput{OrgID: orgID, Code: "03-30-00", Name: "x", Division: "03"}); err != nil {
+		t.Fatalf("cost code: %v", err)
+	}
+	mustFail("no default calendar")
+
+	// nil org short-circuits before the tx.
+	if _, err := svc.Complete(ctx, CompleteSetupInput{OrgID: uuid.Nil}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("nil org: err = %v, want ErrInvalidInput", err)
+	}
+}
+
 func TestSetupService_Complete_HappyPathAndIdempotent(t *testing.T) {
 	now := time.Date(2026, time.May, 13, 12, 0, 0, 0, time.UTC)
 	svc, orgID := newSetupService(t, fixedClock(now))
