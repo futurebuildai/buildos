@@ -358,3 +358,49 @@ func TestVaultService_CredentialGuardsAndResolverSoftFails(t *testing.T) {
 		}
 	})
 }
+
+// TestVaultService_ConstructorDefaultsAndReadGuards covers the legs the
+// round-trip + guard tests skip: the nil-audit constructor default (the
+// newVaultService helper always passes a non-nil recorder), the
+// ListCredentials nil-org guard, the Capabilities path that propagates that
+// guard error, and the lastNRunes short-key branch (a key with <=4 runes,
+// where last4 is the whole key).
+func TestVaultService_ConstructorDefaultsAndReadGuards(t *testing.T) {
+	svc, orgID := newVaultService(t)
+	ctx := context.Background()
+
+	t.Run("nil audit recorder defaults to a no-op", func(t *testing.T) {
+		// Passing nil audit must not leave a nil field (a nil recorder
+		// would panic on the first Record inside SetCredential's tx).
+		got := NewVaultService(svc.pool, store.NewIntegrationCredentialStore(), nil, nil, nil, nil)
+		if got.audit == nil {
+			t.Fatal("nil audit should default to a no-op recorder, got nil")
+		}
+	})
+
+	t.Run("ListCredentials rejects a nil org", func(t *testing.T) {
+		if _, err := svc.ListCredentials(ctx, uuid.Nil); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("err = %v, want ErrInvalidInput", err)
+		}
+	})
+
+	t.Run("Capabilities propagates the nil-org guard", func(t *testing.T) {
+		if _, err := svc.Capabilities(ctx, uuid.Nil); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("err = %v, want ErrInvalidInput", err)
+		}
+	})
+
+	t.Run("a short key yields the whole key as last4", func(t *testing.T) {
+		// A key shorter than 4 runes exercises the lastNRunes len(r)<=n
+		// branch: the non-secret fingerprint is the entire key.
+		cred, err := svc.SetCredential(ctx, SetCredentialInput{
+			OrgID: orgID, Provider: ProviderAnthropic, Key: "ab",
+		})
+		if err != nil {
+			t.Fatalf("SetCredential(short key): %v", err)
+		}
+		if cred.Last4 != "ab" {
+			t.Errorf("Last4 = %q, want ab (whole key)", cred.Last4)
+		}
+	})
+}
