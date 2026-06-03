@@ -494,3 +494,80 @@ func TestProjectFinancials_ServiceInvalidInput400(t *testing.T) {
 		t.Fatalf("status=%d, want 400", w.Code)
 	}
 }
+
+// ---------- remaining guard short-circuits ----------
+//
+// ProjectFinancials' org-mismatch 403 (the cross-tenant guard via
+// requireOrgIDFromURL — a security contract; Summary/ARAging had it,
+// this read did not), plus the leading parseUUIDFromURL/
+// callerOrgIDFromClaims short-circuits on the project-scoped
+// budgets/invoice handlers that weren't otherwise driven.
+
+func TestProjectFinancials_OrgMismatch403(t *testing.T) {
+	h := NewFinancialsHandler(&mockBudgetService{})
+	r := buildRequest(t, "GET", "/api/v1/org/"+otherOrgID+"/financials/projects",
+		testOrgID, map[string]string{"orgID": otherOrgID}, nil)
+	w := httptest.NewRecorder()
+	h.ProjectFinancials(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status=%d, want 403", w.Code)
+	}
+}
+
+func TestListBudgets_InvalidProjectIDReturns400(t *testing.T) {
+	h := NewFinancialsHandler(&mockBudgetService{})
+	r := buildRequest(t, "GET", "/api/v1/projects/not-a-uuid/budgets",
+		testOrgID, map[string]string{"projectID": "not-a-uuid"}, nil)
+	w := httptest.NewRecorder()
+	h.ListBudgets(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400", w.Code)
+	}
+}
+
+func TestListBudgets_InvalidOrgIDClaim401(t *testing.T) {
+	h := NewFinancialsHandler(&mockBudgetService{})
+	r := buildRequest(t, "GET", "/api/v1/projects/"+testProjID+"/budgets",
+		"not-a-uuid", map[string]string{"projectID": testProjID}, nil)
+	w := httptest.NewRecorder()
+	h.ListBudgets(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status=%d, want 401", w.Code)
+	}
+}
+
+func TestCreateInvoice_InvalidOrgIDClaim401(t *testing.T) {
+	h := NewFinancialsHandler(&mockBudgetService{})
+	body := strings.NewReader(`{"vendor_name":"X","amount_cents":1,"currency_code":"USD"}`)
+	r := buildRequest(t, "POST", "/api/v1/projects/"+testProjID+"/invoices",
+		"not-a-uuid", map[string]string{"projectID": testProjID}, body)
+	w := httptest.NewRecorder()
+	h.CreateInvoice(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status=%d, want 401", w.Code)
+	}
+}
+
+func TestUpdateInvoice_InvalidProjectIDReturns400(t *testing.T) {
+	h := NewFinancialsHandler(&mockBudgetService{})
+	body := strings.NewReader(`{"status":"paid"}`)
+	r := buildRequest(t, "PUT", "/api/v1/projects/not-a-uuid/invoices/"+testInvID,
+		testOrgID, map[string]string{"projectID": "not-a-uuid", "invoiceID": testInvID}, body)
+	w := httptest.NewRecorder()
+	h.UpdateInvoice(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400", w.Code)
+	}
+}
+
+func TestUpdateInvoice_InvalidOrgIDClaim401(t *testing.T) {
+	h := NewFinancialsHandler(&mockBudgetService{})
+	body := strings.NewReader(`{"status":"paid"}`)
+	r := buildRequest(t, "PUT", "/api/v1/projects/"+testProjID+"/invoices/"+testInvID,
+		"not-a-uuid", map[string]string{"projectID": testProjID, "invoiceID": testInvID}, body)
+	w := httptest.NewRecorder()
+	h.UpdateInvoice(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status=%d, want 401", w.Code)
+	}
+}
