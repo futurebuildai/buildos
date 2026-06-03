@@ -239,6 +239,29 @@ func TestSetupService_AddHoliday_TruncatesToDate(t *testing.T) {
 	}
 }
 
+// TestSetupService_AddHoliday_ValidationGuards covers the three input
+// guards that short-circuit before the tx opens — the legs the
+// TruncatesToDate happy path never reaches: missing org/calendar id,
+// a blank (after trim) name, and a zero holiday date.
+func TestSetupService_AddHoliday_ValidationGuards(t *testing.T) {
+	svc, orgID := newSetupService(t, nil)
+	ctx := context.Background()
+	calID := uuid.New()
+	someDate := time.Date(2026, time.July, 4, 0, 0, 0, 0, time.UTC)
+
+	cases := map[string]AddHolidayInput{
+		"nil org":      {CalendarID: calID, HolidayDate: someDate, Name: "Independence Day"},
+		"nil calendar": {OrgID: orgID, HolidayDate: someDate, Name: "Independence Day"},
+		"blank name":   {OrgID: orgID, CalendarID: calID, HolidayDate: someDate, Name: "   "},
+		"zero date":    {OrgID: orgID, CalendarID: calID, Name: "Independence Day"},
+	}
+	for name, in := range cases {
+		if _, err := svc.AddHoliday(ctx, in); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("%s: err = %v, want ErrInvalidInput", name, err)
+		}
+	}
+}
+
 func TestSetupService_AddJurisdiction_RejectsInvalidJSON(t *testing.T) {
 	svc, orgID := newSetupService(t, nil)
 	_, err := svc.AddJurisdiction(context.Background(), AddJurisdictionInput{
