@@ -389,3 +389,337 @@ func TestPipelineStore_VerifyProspectInOrg(t *testing.T) {
 		t.Errorf("cross-org verify = %v, want ErrNotFound", err)
 	}
 }
+
+// mkProspect is a tx-scoped convenience for the list/analytics tests.
+func mkProspect(ctx context.Context, t *testing.T, s *PipelineStore, tx pgx.Tx, orgID uuid.UUID, name string) models.Prospect {
+	t.Helper()
+	p, err := s.CreateProspect(ctx, tx, CreateProspectParams{OrgID: orgID, Name: name, ClientName: "c"})
+	if err != nil {
+		t.Fatalf("create prospect %q: %v", name, err)
+	}
+	return p
+}
+
+func TestPipelineStore_ListProspects_FilterAndPaginate(t *testing.T) {
+	pool := testdb.NewPool(t)
+	s := NewPipelineStore()
+	ctx := context.Background()
+
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Ridgeline")
+
+	// 3 prospects; advance one to QUALIFIED so the stage filter has a target.
+	err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		a := mkProspect(ctx, t, s, tx, orgID, "Alpha")
+		mkProspect(ctx, t, s, tx, orgID, "Bravo")
+		mkProspect(ctx, t, s, tx, orgID, "Charlie")
+		_, err := s.AdvanceStage(ctx, tx, a.ID, orgID, models.StageQualified)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	err = pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		all, err := s.ListProspects(ctx, tx, ListProspectsParams{OrgID: orgID})
+		if err != nil {
+			return err
+		}
+		if all.Total != 3 || len(all.Prospects) != 3 {
+			t.Errorf("list all: Total=%d len=%d, want 3/3", all.Total, len(all.Prospects))
+		}
+
+		qualified, err := s.ListProspects(ctx, tx, ListProspectsParams{OrgID: orgID, Stage: string(models.StageQualified)})
+		if err != nil {
+			return err
+		}
+		if qualified.Total != 1 || len(qualified.Prospects) != 1 {
+			t.Errorf("stage filter: Total=%d len=%d, want 1/1", qualified.Total, len(qualified.Prospects))
+		}
+
+		page1, err := s.ListProspects(ctx, tx, ListProspectsParams{OrgID: orgID, Page: 1, PerPage: 2})
+		if err != nil {
+			return err
+		}
+		if len(page1.Prospects) != 2 || page1.Total != 3 || page1.TotalPages != 2 {
+			t.Errorf("paginate: len=%d Total=%d TotalPages=%d, want 2/3/2", len(page1.Prospects), page1.Total, page1.TotalPages)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("read tx: %v", err)
+	}
+}
+
+func TestPipelineStore_UpdateProspect_PartialAndCrossOrg(t *testing.T) {
+	pool := testdb.NewPool(t)
+	s := NewPipelineStore()
+	ctx := context.Background()
+
+	orgA := uuid.New()
+	orgB := uuid.New()
+	testdb.SeedOrg(t, pool, orgA, "A")
+	testdb.SeedOrg(t, pool, orgB, "B")
+
+	var p models.Prospect
+	_ = pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		p = mkProspect(ctx, t, s, tx, orgA, "Original")
+		return nil
+	})
+
+	newName := "Renamed Residence"
+	newNotes := "client wants a basement"
+	err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		got, err := s.UpdateProspect(ctx, tx, UpdateProspectParams{
+			ProspectID: p.ID, OrgID: orgA,
+			Name: &newName, Notes: &newNotes,
+		})
+		if err != nil {
+			return err
+		}
+		if got.Name != newName {
+			t.Errorf("name = %q, want %q", got.Name, newName)
+		}
+		if got.Notes == nil || *got.Notes != newNotes {
+			t.Errorf("notes = %v, want %q", got.Notes, newNotes)
+		}
+		// pipeline_stage stays LEAD — UpdateProspect never touches it.
+		if got.PipelineStage != models.StageLead {
+			t.Errorf("stage drifted to %s, want LEAD", got.PipelineStage)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	// Cross-org update → ErrNotFound.
+	err = pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		_, qErr := s.UpdateProspect(ctx, tx, UpdateProspectParams{ProspectID: p.ID, OrgID: orgB, Name: &newName})
+		return qErr
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("cross-org update = %v, want ErrNotFound", err)
+	}
+}
+
+func TestPipelineStore_ListEstimatesAndPermits(t *testing.T) {
+	pool := testdb.NewPool(t)
+	s := NewPipelineStore()
+	ctx := context.Background()
+
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Cornerstone")
+
+	var prospect models.Prospect
+	err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		prospect = mkProspect(ctx, t, s, tx, orgID, "Multi")
+		for i := 0; i < 2; i++ {
+			if _, err := s.CreateEstimate(ctx, tx, CreateEstimateParams{
+				ProspectID: prospect.ID, CurrencyCode: "USD",
+				LineItemsJSON: []byte("[]"), MarginPct: 15,
+			}); err != nil {
+				return err
+			}
+		}
+		for _, j := range []string{"Austin TX", "Travis County"} {
+			if _, err := s.CreatePermit(ctx, tx, CreatePermitParams{
+				ProspectID: prospect.ID, PermitType: "building",
+				Jurisdiction: j, FeeCents: 50000, FeeCurrencyCode: "USD",
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	err = pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		ests, err := s.ListEstimatesForProspect(ctx, tx, prospect.ID)
+		if err != nil {
+			return err
+		}
+		if len(ests) != 2 {
+			t.Errorf("estimates = %d, want 2", len(ests))
+		}
+		// newest version first.
+		if len(ests) == 2 && ests[0].Version < ests[1].Version {
+			t.Errorf("estimates not newest-first: %d then %d", ests[0].Version, ests[1].Version)
+		}
+
+		permits, err := s.ListPermitsForProspect(ctx, tx, prospect.ID)
+		if err != nil {
+			return err
+		}
+		if len(permits) != 2 {
+			t.Errorf("permits = %d, want 2", len(permits))
+		}
+
+		// GetPermit scoped by (id, prospect): match, then wrong prospect → ErrNotFound.
+		got, err := s.GetPermit(ctx, tx, permits[0].ID, prospect.ID)
+		if err != nil {
+			return err
+		}
+		if got.ID != permits[0].ID {
+			t.Errorf("GetPermit id mismatch")
+		}
+		_, err = s.GetPermit(ctx, tx, permits[0].ID, uuid.New())
+		if !errors.Is(err, ErrNotFound) {
+			t.Errorf("GetPermit(wrong prospect) = %v, want ErrNotFound", err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("read tx: %v", err)
+	}
+}
+
+func TestPipelineStore_MarkProspectPermitIssued_LinksProject(t *testing.T) {
+	pool := testdb.NewPool(t)
+	s := NewPipelineStore()
+	ctx := context.Background()
+
+	orgA := uuid.New()
+	orgB := uuid.New()
+	testdb.SeedOrg(t, pool, orgA, "A")
+	testdb.SeedOrg(t, pool, orgB, "B")
+
+	addr := "9 Oak Ln"
+	gsf := 3200
+	var prospect models.Prospect
+	var projectID uuid.UUID
+	err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		var qErr error
+		prospect, qErr = s.CreateProspect(ctx, tx, CreateProspectParams{
+			OrgID: orgA, Name: "Permit House", ClientName: "Jane", Address: &addr, GSF: &gsf,
+		})
+		if qErr != nil {
+			return qErr
+		}
+		projectID, qErr = s.CreateProjectFromProspect(ctx, tx, CreateProjectFromProspectParams{
+			OrgID: orgA, Name: prospect.Name, Address: prospect.Address,
+			GSF: gsf, PermitIssuedDate: mustParseDate("2026-04-15"),
+		})
+		return qErr
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	err = pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		got, err := s.MarkProspectPermitIssued(ctx, tx, prospect.ID, orgA, projectID)
+		if err != nil {
+			return err
+		}
+		if got.PipelineStage != models.StagePermitIssued {
+			t.Errorf("stage = %s, want PERMIT_ISSUED", got.PipelineStage)
+		}
+		if got.ProbabilityPct != 100 {
+			t.Errorf("probability = %d, want 100", got.ProbabilityPct)
+		}
+		if got.ProjectID == nil || *got.ProjectID != projectID {
+			t.Errorf("project_id = %v, want %v", got.ProjectID, projectID)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("mark permit issued: %v", err)
+	}
+
+	// Cross-org → ErrNotFound.
+	err = pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		_, qErr := s.MarkProspectPermitIssued(ctx, tx, prospect.ID, orgB, projectID)
+		return qErr
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("cross-org mark = %v, want ErrNotFound", err)
+	}
+}
+
+func TestPipelineStore_ListPipelineAnalytics_WeightsAndExcludes(t *testing.T) {
+	pool := testdb.NewPool(t)
+	s := NewPipelineStore()
+	ctx := context.Background()
+
+	orgID := uuid.New()
+	testdb.SeedOrg(t, pool, orgID, "Vantage")
+
+	err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		// USD prospect, advanced to QUALIFIED (probability 25), with an estimate.
+		usd := mkProspect(ctx, t, s, tx, orgID, "USD Deal")
+		if _, err := s.AdvanceStage(ctx, tx, usd.ID, orgID, models.StageQualified); err != nil {
+			return err
+		}
+		if _, err := s.CreateEstimate(ctx, tx, CreateEstimateParams{
+			ProspectID: usd.ID, TotalEstimatedCents: 1_000_000, CurrencyCode: "USD",
+			LineItemsJSON: []byte("[]"), MarginPct: 15,
+		}); err != nil {
+			return err
+		}
+		// CAD prospect with an estimate (stays LEAD, probability 10).
+		cad := mkProspect(ctx, t, s, tx, orgID, "CAD Deal")
+		if _, err := s.CreateEstimate(ctx, tx, CreateEstimateParams{
+			ProspectID: cad.ID, TotalEstimatedCents: 500_000, CurrencyCode: "CAD",
+			LineItemsJSON: []byte("[]"), MarginPct: 15,
+		}); err != nil {
+			return err
+		}
+		// LOST prospect with an estimate → excluded.
+		lost := mkProspect(ctx, t, s, tx, orgID, "Lost Deal")
+		if _, err := s.CreateEstimate(ctx, tx, CreateEstimateParams{
+			ProspectID: lost.ID, TotalEstimatedCents: 9_000_000, CurrencyCode: "USD",
+			LineItemsJSON: []byte("[]"), MarginPct: 15,
+		}); err != nil {
+			return err
+		}
+		if _, err := s.MarkLost(ctx, tx, lost.ID, orgID, "gone"); err != nil {
+			return err
+		}
+		// Estimate-less prospect → excluded (nothing to weight).
+		mkProspect(ctx, t, s, tx, orgID, "No Estimate")
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	err = pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		rows, err := s.ListPipelineAnalytics(ctx, tx, orgID)
+		if err != nil {
+			return err
+		}
+		if len(rows) != 2 {
+			t.Fatalf("analytics rows = %d, want 2 (USD + CAD; LOST + estimate-less excluded)", len(rows))
+		}
+		byCur := map[string]models.PipelineAnalyticsRow{}
+		for _, r := range rows {
+			byCur[r.CurrencyCode] = r
+		}
+		usd, ok := byCur["USD"]
+		if !ok {
+			t.Fatalf("USD bucket missing (LOST 9M must not leak in)")
+		}
+		// Only the QUALIFIED prospect (1M) counts; LOST excluded.
+		if usd.TotalEstimatedCents != 1_000_000 {
+			t.Errorf("USD total = %d, want 1000000 (LOST excluded)", usd.TotalEstimatedCents)
+		}
+		// weighted = 1_000_000 * 25 / 100 = 250_000.
+		if usd.WeightedRevenueCents != 250_000 {
+			t.Errorf("USD weighted = %d, want 250000", usd.WeightedRevenueCents)
+		}
+		if usd.ProspectCount != 1 {
+			t.Errorf("USD prospect_count = %d, want 1", usd.ProspectCount)
+		}
+		cad := byCur["CAD"]
+		// weighted = 500_000 * 10 / 100 = 50_000.
+		if cad.WeightedRevenueCents != 50_000 {
+			t.Errorf("CAD weighted = %d, want 50000", cad.WeightedRevenueCents)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("read tx: %v", err)
+	}
+}
