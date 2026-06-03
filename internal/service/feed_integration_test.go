@@ -81,6 +81,25 @@ func TestFeedService_ListFeed(t *testing.T) {
 		}
 	})
 
+	t.Run("oversized perPage is clamped to 200", func(t *testing.T) {
+		// PerPage > 200 exercises the upper-bound clamp (the default-zero
+		// and <=0 legs are covered by the pagination-defaults case above).
+		// The call must still succeed and return the caller's card; the
+		// clamp itself is the branch under test.
+		res, err := svc.ListFeed(ctx, FeedListOptions{
+			CallerOrgID:       orgID,
+			CallerOIDCSubject: subject,
+			CallerRole:        "field_worker",
+			PerPage:           5000,
+		})
+		if err != nil {
+			t.Fatalf("ListFeed(perPage=5000): %v", err)
+		}
+		if res.Total != 1 || len(res.Cards) != 1 {
+			t.Fatalf("res = %+v, want exactly 1 card after clamp", res)
+		}
+	})
+
 	t.Run("validation guards", func(t *testing.T) {
 		base := FeedListOptions{CallerOrgID: orgID, CallerOIDCSubject: subject, CallerRole: "field_worker"}
 		cases := map[string]FeedListOptions{
