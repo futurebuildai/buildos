@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -434,3 +435,203 @@ func TestSetup_ErrorMapping_UnknownErrorIs500(t *testing.T) {
 type assertErr string
 
 func (a assertErr) Error() string { return string(a) }
+
+// ---------- newSetupStateResponse: jurisdiction loop + nil-list branches ----------
+
+// TestSetup_State_JurisdictionsAndNilLists drives newSetupStateResponse
+// through its remaining legs in one shot: PermitJurisdictions populated
+// (the len>0 loop that lifts each row through newPermitJurisdictionDTO),
+// Trades/CostCodes nil (the nonNil* "→ stable []" branches), and
+// DefaultHolidays non-nil (the nonNilHolidays passthrough). The
+// State_OK test covers the inverse, so together they close all three
+// nonNil helpers + the response builder.
+func TestSetup_State_JurisdictionsAndNilLists(t *testing.T) {
+	orgUUID := uuid.MustParse(testOrgID)
+	region := "US-CT"
+	svc := &mockSetupService{
+		stateResult: service.SetupState{
+			OrgID:              orgUUID,
+			OnboardingComplete: true,
+			Trades:             nil, // → nonNilTrades returns []
+			CostCodes:          nil, // → nonNilCostCodes returns []
+			DefaultHolidays: []models.HolidayOverride{ // → nonNilHolidays passthrough
+				{Name: "Independence Day"},
+			},
+			PermitJurisdictions: []models.PermitJurisdiction{{
+				Name:        "Town of Glastonbury",
+				Region:      &region,
+				PermitTypes: []byte(`["building"]`),
+			}},
+		},
+	}
+	h := NewSetupHandler(svc)
+	r := buildRequest(t, "GET", "/api/v1/setup/state", testOrgID, nil, nil)
+	w := httptest.NewRecorder()
+	h.State(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, body=%s", w.Code, w.Body.String())
+	}
+	var env struct {
+		Data setupStateResponse `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if env.Data.Trades == nil || len(env.Data.Trades) != 0 {
+		t.Errorf("Trades should be a stable empty slice, got %+v", env.Data.Trades)
+	}
+	if env.Data.CostCodes == nil || len(env.Data.CostCodes) != 0 {
+		t.Errorf("CostCodes should be a stable empty slice, got %+v", env.Data.CostCodes)
+	}
+	if len(env.Data.DefaultHolidays) != 1 {
+		t.Errorf("DefaultHolidays passthrough failed: %+v", env.Data.DefaultHolidays)
+	}
+	if len(env.Data.PermitJurisdictions) != 1 ||
+		!strings.Contains(string(env.Data.PermitJurisdictions[0].PermitTypes), "building") {
+		t.Errorf("jurisdiction loop not surfaced as raw JSON: %+v", env.Data.PermitJurisdictions)
+	}
+}
+
+// ---------- claim-guard (401) across every wizard handler ----------
+
+// setupHandlerFn is the shared shape of every SetupHandler method, so
+// the guard-leg tables below can iterate over method values.
+type setupHandlerFn func(*SetupHandler, http.ResponseWriter, *http.Request)
+
+// TestSetup_AllHandlers_InvalidOrgIDClaim_401 proves the
+// callerOrgIDFromClaims gate short-circuits with 401 BEFORE any body
+// decode or service call on every mutating wizard handler (State has
+// its own test). "not-a-uuid" is an intentionally malformed org claim.
+func TestSetup_AllHandlers_InvalidOrgIDClaim_401(t *testing.T) {
+	cases := []struct {
+		name   string
+		target string
+		params map[string]string
+		call   setupHandlerFn
+	}{
+		{"company-info", "/api/v1/setup/company-info", nil, (*SetupHandler).CompanyInfo},
+		{"trades", "/api/v1/setup/trades", nil, (*SetupHandler).CreateTrade},
+		{"cost-codes", "/api/v1/setup/cost-codes", nil, (*SetupHandler).CreateCostCode},
+		{"calendars", "/api/v1/setup/calendars", nil, (*SetupHandler).CreateCalendar},
+		{"holidays", "/api/v1/setup/calendars/" + testCalendarID + "/holidays",
+			map[string]string{"calendarID": testCalendarID}, (*SetupHandler).AddHoliday},
+		{"jurisdictions", "/api/v1/setup/jurisdictions", nil, (*SetupHandler).AddJurisdiction},
+		{"complete", "/api/v1/setup/complete", nil, (*SetupHandler).Complete},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := NewSetupHandler(&mockSetupService{})
+			r := buildRequest(t, "POST", c.target, "not-a-uuid", c.params, strings.NewReader(`{}`))
+			w := httptest.NewRecorder()
+			c.call(h, w, r)
+			if w.Code != http.StatusUnauthorized {
+				t.Errorf("status=%d, want 401", w.Code)
+			}
+		})
+	}
+}
+
+// ---------- malformed-JSON (400) across the body handlers ----------
+
+// TestSetup_BodyHandlers_InvalidJSON_400 covers the json.Decode→400
+// leg on each body-reading handler (CompanyInfo already has its own).
+// AddHoliday gets a valid calendarID so the decode (not the URL parse)
+// is the failing step.
+func TestSetup_BodyHandlers_InvalidJSON_400(t *testing.T) {
+	cases := []struct {
+		name   string
+		target string
+		params map[string]string
+		call   setupHandlerFn
+	}{
+		{"trades", "/api/v1/setup/trades", nil, (*SetupHandler).CreateTrade},
+		{"cost-codes", "/api/v1/setup/cost-codes", nil, (*SetupHandler).CreateCostCode},
+		{"calendars", "/api/v1/setup/calendars", nil, (*SetupHandler).CreateCalendar},
+		{"holidays", "/api/v1/setup/calendars/" + testCalendarID + "/holidays",
+			map[string]string{"calendarID": testCalendarID}, (*SetupHandler).AddHoliday},
+		{"jurisdictions", "/api/v1/setup/jurisdictions", nil, (*SetupHandler).AddJurisdiction},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := NewSetupHandler(&mockSetupService{})
+			r := buildRequest(t, "POST", c.target, testOrgID, c.params, strings.NewReader(`{`))
+			w := httptest.NewRecorder()
+			c.call(h, w, r)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("status=%d, want 400", w.Code)
+			}
+		})
+	}
+}
+
+// ---------- service-error → 500 mapping on the remaining handlers ----------
+
+// TestSetup_BodyHandlers_ServiceError_500 exercises the writeSetupError
+// default leg (unknown error → 500, message NOT leaked) on the three
+// handlers whose error path wasn't otherwise covered: CreateCalendar,
+// AddHoliday, AddJurisdiction.
+func TestSetup_BodyHandlers_ServiceError_500(t *testing.T) {
+	boom := assertErr("storage exploded")
+	cases := []struct {
+		name   string
+		target string
+		params map[string]string
+		body   string
+		mock   *mockSetupService
+		call   setupHandlerFn
+	}{
+		{
+			"calendars", "/api/v1/setup/calendars", nil,
+			`{"name":"Default","timezone":"America/New_York","working_days_mask":31,"daily_work_minutes":480}`,
+			&mockSetupService{calendarErr: boom}, (*SetupHandler).CreateCalendar,
+		},
+		{
+			"holidays", "/api/v1/setup/calendars/" + testCalendarID + "/holidays",
+			map[string]string{"calendarID": testCalendarID},
+			`{"holiday_date":"2026-07-04","name":"x"}`,
+			&mockSetupService{holidayErr: boom}, (*SetupHandler).AddHoliday,
+		},
+		{
+			"jurisdictions", "/api/v1/setup/jurisdictions", nil,
+			`{"name":"Town of Glastonbury"}`,
+			&mockSetupService{jurisdictionErr: boom}, (*SetupHandler).AddJurisdiction,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := NewSetupHandler(c.mock)
+			r := buildRequest(t, "POST", c.target, testOrgID, c.params, strings.NewReader(c.body))
+			w := httptest.NewRecorder()
+			c.call(h, w, r)
+			if w.Code != http.StatusInternalServerError {
+				t.Fatalf("status=%d, want 500; body=%s", w.Code, w.Body.String())
+			}
+			if strings.Contains(w.Body.String(), "exploded") {
+				t.Errorf("internal error leaked to client: %s", w.Body.String())
+			}
+		})
+	}
+}
+
+// ---------- parseHolidayDate ----------
+
+// TestParseHolidayDate covers the wizard's date parser directly: the
+// empty-string guard, the canonical YYYY-MM-DD shape, the RFC3339
+// fallback, and a garbage input that fails both formats.
+func TestParseHolidayDate(t *testing.T) {
+	if _, err := parseHolidayDate(""); err == nil {
+		t.Error("empty date should error")
+	}
+	ymd, err := parseHolidayDate("2026-07-04")
+	if err != nil || ymd.Year() != 2026 || ymd.Month() != time.July || ymd.Day() != 4 {
+		t.Errorf("YYYY-MM-DD parse: got %v err=%v", ymd, err)
+	}
+	rfc, err := parseHolidayDate("2026-12-25T00:00:00Z")
+	if err != nil || rfc.Month() != time.December || rfc.Day() != 25 {
+		t.Errorf("RFC3339 fallback: got %v err=%v", rfc, err)
+	}
+	if _, err := parseHolidayDate("not-a-date"); err == nil {
+		t.Error("garbage date should error")
+	}
+}
