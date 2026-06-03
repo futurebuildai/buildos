@@ -561,6 +561,22 @@ func TestSetupService_RedeemBootstrapToken_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestSetupService_RedeemBootstrapToken_Guards covers the two early
+// input guards that short-circuit before the redeem tx: an empty
+// cleartext maps to the uniform ErrInvalidBootstrapToken (never leaking
+// probe info), and a nil redeemer id is an ErrInvalidInput caller fault.
+func TestSetupService_RedeemBootstrapToken_Guards(t *testing.T) {
+	svc, _ := newSetupService(t, nil)
+	ctx := context.Background()
+
+	if _, err := svc.RedeemBootstrapToken(ctx, "", uuid.New()); !errors.Is(err, ErrInvalidBootstrapToken) {
+		t.Errorf("empty cleartext: err = %v, want ErrInvalidBootstrapToken", err)
+	}
+	if _, err := svc.RedeemBootstrapToken(ctx, "some-cleartext", uuid.Nil); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("nil redeemer: err = %v, want ErrInvalidInput", err)
+	}
+}
+
 func TestSetupService_RedeemBootstrapToken_WrongCleartext(t *testing.T) {
 	pool := testdb.NewPool(t)
 	orgID := uuid.New()
