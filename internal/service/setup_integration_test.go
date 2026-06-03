@@ -573,6 +573,100 @@ func TestSetupService_IsOnboardingComplete(t *testing.T) {
 	}
 }
 
+// TestSetupService_IsOnboardingComplete_Guards covers the two error
+// legs the happy-path test above never reaches: the nil-org input guard
+// and the unknown-org → store.ErrNotFound translation (the pgx.ErrNoRows
+// → ErrNotFound mapping the SetupGate middleware relies on to 403 a
+// request whose org has no organizations row).
+func TestSetupService_IsOnboardingComplete_Guards(t *testing.T) {
+	svc, _ := newSetupService(t, nil)
+	ctx := context.Background()
+
+	if _, err := svc.IsOnboardingComplete(ctx, uuid.Nil); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("nil org: err = %v, want ErrInvalidInput", err)
+	}
+	if _, err := svc.IsOnboardingComplete(ctx, uuid.New()); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("unknown org: err = %v, want store.ErrNotFound", err)
+	}
+}
+
+// TestSetupService_GetState_PopulatedSnapshot drives the read-only-tx
+// snapshot with every wizard section filled — exercising the legs the
+// FreshOrg test skips: the default-calendar-present branch (calendar +
+// its holidays loaded) plus non-empty trades / cost-codes / permit
+// jurisdictions. The nil-org input guard is checked too.
+func TestSetupService_GetState_PopulatedSnapshot(t *testing.T) {
+	svc, orgID := newSetupService(t, nil)
+	ctx := context.Background()
+
+	mustStep := func(name string, fn func() error) {
+		t.Helper()
+		if err := fn(); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	mustStep("company info", func() error {
+		_, e := svc.UpdateCompanyInfo(ctx, UpdateCompanyInfoInput{OrgID: orgID, LegalName: strPtr("Kelbrook LLC")})
+		return e
+	})
+	mustStep("trade", func() error {
+		_, e := svc.CreateTrade(ctx, CreateTradeInput{OrgID: orgID, Code: "ELEC", Name: "Electrical"})
+		return e
+	})
+	mustStep("cost code", func() error {
+		_, e := svc.CreateCostCode(ctx, CreateCostCodeInput{OrgID: orgID, Code: "03-30-00", Name: "Cast-in-Place", Division: "03 Concrete"})
+		return e
+	})
+	var calID uuid.UUID
+	mustStep("calendar", func() error {
+		cal, e := svc.CreateCalendar(ctx, CreateCalendarInput{OrgID: orgID, Name: "Default", WorkingDaysMask: models.WorkingDaysMonFri, IsDefault: true})
+		calID = cal.ID
+		return e
+	})
+	mustStep("holiday", func() error {
+		_, e := svc.AddHoliday(ctx, AddHolidayInput{
+			OrgID:       orgID,
+			CalendarID:  calID,
+			HolidayDate: time.Date(2026, time.July, 4, 0, 0, 0, 0, time.UTC),
+			Name:        "Independence Day",
+		})
+		return e
+	})
+	mustStep("jurisdiction", func() error {
+		_, e := svc.AddJurisdiction(ctx, AddJurisdictionInput{OrgID: orgID, Name: "Hartford CT"})
+		return e
+	})
+
+	got, err := svc.GetState(ctx, orgID)
+	if err != nil {
+		t.Fatalf("GetState: %v", err)
+	}
+	if got.OnboardingComplete {
+		t.Error("OnboardingComplete = true, want false (Complete not called)")
+	}
+	if len(got.Trades) != 1 {
+		t.Errorf("Trades len = %d, want 1", len(got.Trades))
+	}
+	if len(got.CostCodes) != 1 {
+		t.Errorf("CostCodes len = %d, want 1", len(got.CostCodes))
+	}
+	if got.DefaultCalendar == nil || got.DefaultCalendar.ID != calID {
+		t.Fatalf("DefaultCalendar = %v, want the seeded default", got.DefaultCalendar)
+	}
+	if len(got.DefaultHolidays) != 1 {
+		t.Errorf("DefaultHolidays len = %d, want 1", len(got.DefaultHolidays))
+	}
+	if len(got.PermitJurisdictions) != 1 {
+		t.Errorf("PermitJurisdictions len = %d, want 1", len(got.PermitJurisdictions))
+	}
+
+	t.Run("nil org is rejected", func(t *testing.T) {
+		if _, err := svc.GetState(ctx, uuid.Nil); !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("err = %v, want ErrInvalidInput", err)
+		}
+	})
+}
+
 func TestSetupService_AuditTrail(t *testing.T) {
 	// Spot-check that audit rows DO land for wizard steps. A separate
 	// recorder captures entries instead of writing to audit_log.
