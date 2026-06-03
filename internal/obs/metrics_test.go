@@ -1,13 +1,44 @@
 package obs
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 )
+
+func TestObserveAICall_LabelsAndOutcome(t *testing.T) {
+	m := NewMetrics()
+
+	// A success and an error call on the same (kind, model) — outcome is
+	// derived from err (nil → "success", non-nil → "error").
+	m.ObserveAICall("InvoiceExtract", "claude-opus-4", 120*time.Millisecond, nil)
+	m.ObserveAICall("InvoiceExtract", "claude-opus-4", 80*time.Millisecond, errors.New("rate limited"))
+
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	// Counter lines carry the outcome derived from err; labels are
+	// alphabetised by Prometheus (kind, model, outcome).
+	wantSuccess := `buildos_ai_requests_total{kind="InvoiceExtract",model="claude-opus-4",outcome="success"} 1`
+	wantError := `buildos_ai_requests_total{kind="InvoiceExtract",model="claude-opus-4",outcome="error"} 1`
+	if !strings.Contains(body, wantSuccess) {
+		t.Errorf("missing success counter line %q\ngot:\n%s", wantSuccess, body)
+	}
+	if !strings.Contains(body, wantError) {
+		t.Errorf("missing error counter line %q\ngot:\n%s", wantError, body)
+	}
+	// The duration histogram recorded both observations (count == 2).
+	wantDurCount := `buildos_ai_request_duration_seconds_count{kind="InvoiceExtract",model="claude-opus-4"} 2`
+	if !strings.Contains(body, wantDurCount) {
+		t.Errorf("missing duration count line %q\ngot:\n%s", wantDurCount, body)
+	}
+}
 
 func TestStatusClass(t *testing.T) {
 	cases := map[int]string{

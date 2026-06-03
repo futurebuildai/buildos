@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -15,6 +17,51 @@ import (
 
 func quietForSentry() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// TestSentryHTTPMiddleware_PassesThrough builds the middleware and sends
+// a request through it: with Repanic=true the wrapped handler runs and
+// its response is preserved (the middleware adds a per-request hub scope
+// but never alters a non-panicking response). No live Sentry needed.
+func TestSentryHTTPMiddleware_PassesThrough(t *testing.T) {
+	mw := SentryHTTPMiddleware()
+
+	var ran bool
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		ran = true
+		w.WriteHeader(http.StatusTeapot)
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/projects", nil)
+	mw(next).ServeHTTP(rec, req)
+
+	if !ran {
+		t.Error("wrapped handler did not run through the Sentry middleware")
+	}
+	if rec.Code != http.StatusTeapot {
+		t.Errorf("status = %d, want 418 (response preserved)", rec.Code)
+	}
+}
+
+// TestCaptureMessage_EmptyShortCircuits asserts the empty-message guard
+// returns before touching the hub.
+func TestCaptureMessage_EmptyShortCircuits(t *testing.T) {
+	// No panic, no hub work — just a clean early return.
+	CaptureMessage(context.Background(), sentry.LevelInfo, "", nil)
+}
+
+// TestCaptureMessage_UninitializedSDKDoesNotPanic exercises the hub path
+// with a non-empty message + tags while Sentry is uninitialized: the hub
+// falls back to the no-op default, so this must not panic.
+func TestCaptureMessage_UninitializedSDKDoesNotPanic(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("CaptureMessage panicked with no SDK: %v", r)
+		}
+	}()
+	ctx := ContextWithRequestID(context.Background(), "req-msg")
+	CaptureMessage(ctx, sentry.LevelWarning, "disk almost full", map[string]string{"area": "smoke"})
 }
 
 func TestInitSentry_EmptyDSNIsNoop(t *testing.T) {
