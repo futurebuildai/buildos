@@ -134,3 +134,40 @@ func TestFeedService_ActionCard_RejectsOversizedPayload(t *testing.T) {
 		t.Errorf("error message should call out the size cap: %v", err)
 	}
 }
+
+// TestMarshalAudit covers all three legs of the audit-payload helper: a
+// nil value short-circuits to nil (no "null" bytes on the audit row), a
+// marshalable value round-trips to its JSON, and an unmarshalable value
+// (a channel — json.Marshal returns an UnsupportedTypeError) soft-fails
+// to nil rather than panicking inside the audit write.
+func TestMarshalAudit(t *testing.T) {
+	if got := marshalAudit(nil); got != nil {
+		t.Errorf("marshalAudit(nil) = %q, want nil", got)
+	}
+
+	got := marshalAudit(map[string]any{"k": "v"})
+	if string(got) != `{"k":"v"}` {
+		t.Errorf("marshalAudit(map) = %q, want {\"k\":\"v\"}", got)
+	}
+
+	// chan is not JSON-marshalable → the error leg returns nil.
+	if got := marshalAudit(make(chan int)); got != nil {
+		t.Errorf("marshalAudit(chan) = %q, want nil (marshal error leg)", got)
+	}
+}
+
+// TestIsValidFeedStatus covers the four allowed migration-003 statuses
+// (true) plus the default reject leg the ListFeed filter test never
+// reaches with a known-good filter.
+func TestIsValidFeedStatus(t *testing.T) {
+	for _, s := range []string{"active", "dismissed", "actioned", "expired"} {
+		if !isValidFeedStatus(s) {
+			t.Errorf("isValidFeedStatus(%q) = false, want true", s)
+		}
+	}
+	for _, s := range []string{"", "ACTIVE", "bogus"} {
+		if isValidFeedStatus(s) {
+			t.Errorf("isValidFeedStatus(%q) = true, want false", s)
+		}
+	}
+}
