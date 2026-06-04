@@ -6,7 +6,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -581,4 +583,271 @@ type orgCapturingResolver struct {
 func (r orgCapturingResolver) AnthropicKey(_ context.Context, orgID string) (string, error) {
 	*r.seen = orgID
 	return r.key, nil
+}
+
+// ---- transport-level edge legs ----------------------------------------
+
+// recordingMetrics is a MetricsObserver that records the last observed
+// call so a test can assert observe() forwarded to it.
+type recordingMetrics struct {
+	calls     int
+	lastKind  string
+	lastModel string
+	lastErr   error
+}
+
+func (m *recordingMetrics) ObserveAICall(kind, model string, _ time.Duration, err error) {
+	m.calls++
+	m.lastKind = kind
+	m.lastModel = model
+	m.lastErr = err
+}
+
+// erroringBody is a response body whose Read always fails, used to drive
+// the io.ReadAll failure legs in messages() and fetchDocumentImage().
+type erroringBody struct{}
+
+func (erroringBody) Read([]byte) (int, error) { return 0, errors.New("read boom") }
+func (erroringBody) Close() error             { return nil }
+
+// stubTransport is an http.RoundTripper backed by a function, so a test
+// can synthesize a response (or transport error) without a live server.
+type stubTransport struct {
+	fn func(*http.Request) (*http.Response, error)
+}
+
+func (s stubTransport) RoundTrip(r *http.Request) (*http.Response, error) { return s.fn(r) }
+
+// TestObserve_ForwardsToMetrics proves the optional MetricsObserver is
+// invoked on a completed call (the observe() metrics!=nil branch).
+func TestObserve_ForwardsToMetrics(t *testing.T) {
+	rec := &recordingMetrics{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeText(w, "hello")
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(Config{
+		KeyResolver: staticKey("k"),
+		BaseURL:     srv.URL,
+		Metrics:     rec,
+		Retry:       RetryConfig{MaxAttempts: 2, BaseDelayMs: 1, Multiplier: 2.0},
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if _, err := c.DailyBriefing(context.Background(), DailyBriefingRequest{Tasks: []string{"t"}}); err != nil {
+		t.Fatalf("DailyBriefing: %v", err)
+	}
+	if rec.calls != 1 {
+		t.Errorf("ObserveAICall calls=%d, want 1", rec.calls)
+	}
+	if rec.lastErr != nil {
+		t.Errorf("observed err=%v, want nil on success", rec.lastErr)
+	}
+	if rec.lastKind != "daily_briefing" {
+		t.Errorf("observed kind=%q, want daily_briefing", rec.lastKind)
+	}
+}
+
+// TestMessages_InvalidJSONBodyMapsToDecodeError covers the 2xx decode leg:
+// a 200 with a malformed body is the client's bug, not transport's, so it
+// returns immediately (no retry) with a decode error.
+func TestMessages_InvalidJSONBodyMapsToDecodeError(t *testing.T) {
+	c, cleanup := newTaskTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{not json`))
+	})
+	defer cleanup()
+
+	_, err := c.DailyBriefing(context.Background(), DailyBriefingRequest{Tasks: []string{"t"}})
+	if err == nil || !strings.Contains(err.Error(), "decode response") {
+		t.Fatalf("err = %v, want a decode response error", err)
+	}
+}
+
+// TestMessages_ContextCancelledReturnsCtxErr covers the per-attempt
+// ctx.Err() guard at the top of the retry loop: an already-cancelled
+// context returns before any HTTP attempt.
+func TestMessages_ContextCancelledReturnsCtxErr(t *testing.T) {
+	c, cleanup := newTaskTestClient(t, func(http.ResponseWriter, *http.Request) {
+		t.Error("server must not be hit when ctx is already cancelled")
+	})
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := c.DailyBriefing(ctx, DailyBriefingRequest{Tasks: []string{"t"}})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
+// TestMessages_ResponseBodyReadErrorMapsToTransient covers the readErr
+// leg: a 200 whose body fails mid-read counts as a transport failure,
+// retries are exhausted, and the call maps to ErrTransient.
+func TestMessages_ResponseBodyReadErrorMapsToTransient(t *testing.T) {
+	rt := stubTransport{fn: func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       erroringBody{},
+			Header:     make(http.Header),
+		}, nil
+	}}
+	c, err := NewClient(Config{
+		KeyResolver: staticKey("k"),
+		BaseURL:     "http://anthropic.invalid",
+		HTTPClient:  &http.Client{Transport: rt},
+		Retry:       RetryConfig{MaxAttempts: 2, BaseDelayMs: 1, Multiplier: 2.0},
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if _, err := c.DailyBriefing(context.Background(), DailyBriefingRequest{Tasks: []string{"t"}}); !errors.Is(err, ErrTransient) {
+		t.Fatalf("err = %v, want ErrTransient", err)
+	}
+}
+
+// ---- task egress legs -------------------------------------------------
+
+// TestTask_CallToolErrorPropagates covers the callTool-error leg in every
+// tool-backed task method: a 4xx from /v1/messages surfaces as an
+// *HTTPError through each method's error wrap.
+func TestTask_CallToolErrorPropagates(t *testing.T) {
+	c, cleanup := newTaskTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"nope"}}`))
+	})
+	defer cleanup()
+	ctx := context.Background()
+
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{"InvoiceExtract", func() error {
+			_, err := c.InvoiceExtract(ctx, InvoiceExtractRequest{Text: "an invoice"})
+			return err
+		}},
+		{"ProcurementRecommend", func() error {
+			_, err := c.ProcurementRecommend(ctx, ProcurementRecommendRequest{MaterialRequestID: uuid.New()})
+			return err
+		}},
+		{"TribunalReview", func() error {
+			_, err := c.TribunalReview(ctx, TribunalReviewRequest{DisputeID: uuid.New(), Facts: json.RawMessage(`{"x":1}`)})
+			return err
+		}},
+		{"UpdateSchedule", func() error {
+			_, err := c.UpdateSchedule(ctx, UpdateScheduleRequest{
+				ProjectID: uuid.New(),
+				Tasks:     []ScheduleTaskSnapshot{{TaskID: uuid.New()}},
+			})
+			return err
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var httpErr *HTTPError
+			if err := tc.call(); !errors.As(err, &httpErr) {
+				t.Fatalf("err = %v (%T), want *HTTPError chain", err, err)
+			}
+		})
+	}
+}
+
+// TestTask_DecodeToolOutputError covers each task method's
+// json.Unmarshal-of-tool-output leg. The server echoes the requested
+// tool name but returns a JSON array as the tool input, which cannot
+// decode into any typed response struct.
+func TestTask_DecodeToolOutputError(t *testing.T) {
+	c, cleanup := newTaskTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		req := decodeMessagesReq(t, r)
+		toolName := ""
+		if len(req.Tools) > 0 {
+			toolName = req.Tools[0].Name
+		}
+		resp := messagesResponse{
+			ID: "msg_x", Type: "message", Role: "assistant", Model: "m", StopReason: "tool_use",
+			Content: []contentBlock{
+				{Type: "tool_use", ID: "toolu_1", Name: toolName, Input: json.RawMessage(`[1,2,3]`)},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	defer cleanup()
+	ctx := context.Background()
+
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{"IntentClassify", func() error {
+			_, err := c.IntentClassify(ctx, IntentClassifyRequest{Utterance: "u"})
+			return err
+		}},
+		{"InvoiceExtract", func() error {
+			_, err := c.InvoiceExtract(ctx, InvoiceExtractRequest{Text: "an invoice"})
+			return err
+		}},
+		{"ProcurementRecommend", func() error {
+			_, err := c.ProcurementRecommend(ctx, ProcurementRecommendRequest{MaterialRequestID: uuid.New()})
+			return err
+		}},
+		{"TribunalReview", func() error {
+			_, err := c.TribunalReview(ctx, TribunalReviewRequest{DisputeID: uuid.New(), Facts: json.RawMessage(`{"x":1}`)})
+			return err
+		}},
+		{"UpdateSchedule", func() error {
+			_, err := c.UpdateSchedule(ctx, UpdateScheduleRequest{
+				ProjectID: uuid.New(),
+				Tasks:     []ScheduleTaskSnapshot{{TaskID: uuid.New()}},
+			})
+			return err
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.call()
+			if err == nil || !strings.Contains(err.Error(), "decode tool output") {
+				t.Fatalf("err = %v, want a decode tool output error", err)
+			}
+		})
+	}
+}
+
+// TestInvoiceExtract_DocumentFetchError covers the fetchDocumentImage
+// error wrap in InvoiceExtract: a doc URL that 404s fails before the
+// model is ever called.
+func TestInvoiceExtract_DocumentFetchError(t *testing.T) {
+	c, cleanup := newTaskTestClient(t, func(http.ResponseWriter, *http.Request) {
+		t.Error("anthropic endpoint must not be called when the doc fetch fails")
+	})
+	defer cleanup()
+
+	docSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer docSrv.Close()
+
+	if _, err := c.InvoiceExtract(context.Background(), InvoiceExtractRequest{DocumentURL: docSrv.URL}); err == nil {
+		t.Fatal("expected an error when the document fetch fails")
+	}
+}
+
+// TestTribunalReview_RequiresDisputeID covers the dispute_id guard: a nil
+// DisputeID is rejected before any model call.
+func TestTribunalReview_RequiresDisputeID(t *testing.T) {
+	c, cleanup := newTaskTestClient(t, func(http.ResponseWriter, *http.Request) {
+		t.Error("model must not be called when dispute_id is missing")
+	})
+	defer cleanup()
+
+	if _, err := c.TribunalReview(context.Background(), TribunalReviewRequest{Facts: json.RawMessage(`{"x":1}`)}); err == nil {
+		t.Fatal("expected an error when dispute_id is nil")
+	}
 }

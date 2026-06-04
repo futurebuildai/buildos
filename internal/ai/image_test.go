@@ -10,6 +10,7 @@ import (
 	"image/png"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -130,6 +131,42 @@ func TestFetchDocumentImage_HTTPErrorStatus(t *testing.T) {
 	c := imageTestClient(t, defaultMaxImageBytes)
 	if _, _, err := c.fetchDocumentImage(context.Background(), srv.URL); err == nil {
 		t.Fatal("expected error on 404")
+	}
+}
+
+// TestFetchDocumentImage_TransportError covers the httpClient.Do error
+// leg: a connection to a closed server fails before any status check.
+func TestFetchDocumentImage_TransportError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := srv.URL
+	srv.Close() // connections now refused
+
+	c := imageTestClient(t, defaultMaxImageBytes)
+	if _, _, err := c.fetchDocumentImage(context.Background(), url); err == nil {
+		t.Fatal("expected a transport error fetching from a closed server")
+	}
+}
+
+// TestFetchDocumentImage_BodyReadError covers the io.ReadAll error leg: a
+// 200 whose body fails mid-read surfaces a read error. The erroringBody /
+// stubTransport helpers live in client_test.go (same package).
+func TestFetchDocumentImage_BodyReadError(t *testing.T) {
+	rt := stubTransport{fn: func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       erroringBody{},
+			Header:     make(http.Header),
+		}, nil
+	}}
+	c, err := NewClient(Config{
+		KeyResolver: staticKey("k"),
+		HTTPClient:  &http.Client{Transport: rt},
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if _, _, ferr := c.fetchDocumentImage(context.Background(), "http://doc.invalid/x.png"); ferr == nil || !strings.Contains(ferr.Error(), "read document image") {
+		t.Fatalf("err = %v, want a read document image error", ferr)
 	}
 }
 

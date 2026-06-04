@@ -322,3 +322,73 @@ func TestCircuit_FailureWindowAgesOutFailures(t *testing.T) {
 		t.Errorf("after window expiry + 1 failure: state=%v fails=%d, want closed+1", state, fails)
 	}
 }
+
+// Half-open admits exactly one probe: a second caller arriving while the
+// probe is still outstanding is short-circuited.
+func TestCircuit_HalfOpenSecondCallerShortCircuits(t *testing.T) {
+	cb := newCircuitBreaker(CircuitConfig{
+		FailureThreshold: 1,
+		FailureWindow:    1 * time.Hour,
+		OpenDuration:     30 * time.Second,
+	})
+	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	cb.cfg.Now = func() time.Time { return now }
+
+	// Trip to open with a single failure.
+	_, gen := cb.allow()
+	cb.recordFailure(gen)
+	if state, _ := cb.snapshot(); state != circuitOpen {
+		t.Fatalf("breaker = %v, want open", state)
+	}
+
+	// After the open-duration elapses the first caller is promoted to the
+	// half-open probe and admitted.
+	now = now.Add(31 * time.Second)
+	if ok, _ := cb.allow(); !ok {
+		t.Fatal("first caller after open-duration should be admitted as the probe")
+	}
+	if state, _ := cb.snapshot(); state != circuitHalfOpen {
+		t.Fatalf("breaker = %v, want half-open", state)
+	}
+
+	// A second caller, with the probe still outstanding, must be denied.
+	if ok, _ := cb.allow(); ok {
+		t.Error("second caller during an outstanding probe should be denied")
+	}
+}
+
+// Outcomes carrying a stale generation token (e.g. a probe that resolves
+// after the breaker was already transitioned by another goroutine) are
+// discarded so they can't corrupt newer state.
+func TestCircuit_StaleGenerationOutcomesDiscarded(t *testing.T) {
+	cb := newCircuitBreaker(CircuitConfig{
+		FailureThreshold: 2,
+		FailureWindow:    1 * time.Hour,
+		OpenDuration:     1 * time.Hour,
+	})
+	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	cb.cfg.Now = func() time.Time { return now }
+
+	// Record one real failure under the live generation.
+	_, gen := cb.allow()
+	cb.recordFailure(gen)
+	if _, fails := cb.snapshot(); fails != 1 {
+		t.Fatalf("fails=%d, want 1 after one real failure", fails)
+	}
+
+	staleGen := gen + 99 // a generation token that never matches the live seed
+
+	// A stale failure must be discarded — otherwise it would cross the
+	// threshold and trip the breaker.
+	cb.recordFailure(staleGen)
+	if state, fails := cb.snapshot(); state != circuitClosed || fails != 1 {
+		t.Errorf("stale failure leaked: state=%v fails=%d, want closed+1", state, fails)
+	}
+
+	// A stale success must be discarded — otherwise it would clear the
+	// real in-window failure.
+	cb.recordSuccess(staleGen)
+	if _, fails := cb.snapshot(); fails != 1 {
+		t.Errorf("stale success cleared real failures: fails=%d, want 1", fails)
+	}
+}
