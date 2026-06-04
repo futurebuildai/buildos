@@ -1,5 +1,14 @@
 # ADR-001: Vision Alignment — Decisions on the 16 Open Questions
 
+> **⚠️ PARTIALLY SUPERSEDED by the 2026-06-01 standalone pivot** ([ESCALATION_LOG.md](./ESCALATION_LOG.md) ESC-001).
+> Decisions that defined interfaces to The Brain are now moot: **D4** (wire-protocol
+> cutover `iss="fb-brain"`→URI) — BuildOS mints its own `iss="buildos"`/`aud="buildos"`
+> RS256 JWTs, no cutover needed; **D5** (Maestro contract) — replaced by the native
+> Anthropic client (`internal/ai`); **D6/D7** (Hub credential vault, A2A) — replaced by
+> the native encrypted BYOK vault (`internal/cryptobox`); A2A/Brain surfaces removed.
+> Non-Brain decisions (single-tenant fork, CPM, currency, branding) stand. Kept as a
+> decision record. Current model: [../../CLAUDE.md](../../CLAUDE.md), [API_CONTRACT.md](./API_CONTRACT.md).
+
 **Status:** PARTIALLY ACCEPTED — see per-decision status below; remaining items still PROPOSED.
 **Date:** 2026-04-29
 **Author:** Claude (executing the L8 review the owner requested)

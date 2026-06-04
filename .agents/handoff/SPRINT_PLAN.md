@@ -1,5 +1,12 @@
 # Sprint Plan
 
+> **⚠️ SUPERSEDED (pre-pivot, 2026-04-02 / rev. 2026-04-29).** The cross-system
+> dependency map (Brain-side blockers on S0 OIDC/JWKS and S4 A2A) was eliminated by
+> the **2026-06-01 standalone pivot** ([ESCALATION_LOG.md](./ESCALATION_LOG.md) ESC-001):
+> JWT validation is native (`internal/auth`), and Brain/A2A surfaces were removed. No
+> cross-system blockers remain. Kept as a historical sprint record. **Current backlog:**
+> [NEXT_STEPS.md](./NEXT_STEPS.md); **per-session state:** [../../HANDOFF.md](../../HANDOFF.md).
+
 **System:** BuildOS (System of Execution)
 **Pipeline Stage:** 08 - Implementation Plan
 **Date:** 2026-04-02 (revised 2026-04-29 per [ADR-001-vision-alignment.md](./ADR-001-vision-alignment.md) D16)

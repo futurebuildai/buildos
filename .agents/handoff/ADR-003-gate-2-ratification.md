@@ -1,5 +1,10 @@
 # ADR-003: Gate 2 Ratification — LocalBlue auto-flow + partial A2A schema lock
 
+> **⚠️ SUPERSEDED by the 2026-06-01 standalone pivot** ([ESCALATION_LOG.md](./ESCALATION_LOG.md) ESC-001).
+> The A2A receiver scope (ADR-001 D7) and the Brain-mediated LocalBlue inbound flow
+> ratified here were removed when Brain/A2A surfaces were deleted (migration 013).
+> Kept as a decision record of what was ratified at Gate 2. Current model: [../../CLAUDE.md](../../CLAUDE.md).
+
 **Status:** ACCEPTED — owner-confirmed 2026-05-06.
 **Date:** 2026-05-06
 **Author:** Claude (codifying owner direction from Gate 2 review session)

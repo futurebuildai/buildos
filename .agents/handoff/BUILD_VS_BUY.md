@@ -1,5 +1,12 @@
 # Build vs Buy Analysis
 
+> **⚠️ HISTORICAL (pre-pivot, 2026-04-02).** Evaluated build-vs-buy for OIDC, AI,
+> credential vault, A2A, and billing under the assumption that "The Brain" was a
+> buy/reuse option. The **2026-06-01 standalone pivot** ([ESCALATION_LOG.md](./ESCALATION_LOG.md)
+> ESC-001) decided to **BUILD all natively** (native auth, native Anthropic client,
+> encrypted BYOK vault). Kept as the record of the analysis that informed that call.
+> Current model: [../../CLAUDE.md](../../CLAUDE.md).
+
 **Date:** 2026-04-02
 **Pipeline Stage:** 03 - Solution Design
 **Status:** COMPLETE

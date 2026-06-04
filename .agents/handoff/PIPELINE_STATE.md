@@ -1,5 +1,12 @@
 # Pipeline State
 
+> **⚠️ HISTORICAL (pre-pivot, 2026-04-02).** Antigravity pipeline-stage tracker; the
+> stage checkpoints remain valid but some dependency text (e.g., Walking Skeleton
+> "JWT auth from The Brain") reflects pre-pivot assumptions removed by the
+> **2026-06-01 standalone pivot** ([ESCALATION_LOG.md](./ESCALATION_LOG.md) ESC-001) —
+> auth/AI/vault are now native. **Current execution state:** [NEXT_STEPS.md](./NEXT_STEPS.md)
+> and [../../HANDOFF.md](../../HANDOFF.md).
+
 **Date:** 2026-04-02
 **System:** BuildOS -- 2030-Ready AI-Native Revamp
 **Orchestrator:** Antigravity Pipeline (Stages 00-04)

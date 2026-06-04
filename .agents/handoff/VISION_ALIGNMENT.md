@@ -1,5 +1,13 @@
 # Vision Alignment — BuildOS in the FutureBuild Ecosystem
 
+> **⚠️ PARTIALLY SUPERSEDED (pre-pivot, 2026-04-29).** Describes The Brain as the
+> provider of identity, AI, vault, A2A, and billing. The **2026-06-01 standalone
+> pivot** ([ESCALATION_LOG.md](./ESCALATION_LOG.md) ESC-001) made all of these
+> native and in-app. Domain framing (personas, jobs, feature set, milestones)
+> remains valid; the Brain/hub-and-spoke infrastructure assumptions are obsolete.
+> Current model: [ADR-002](./ADR-002-single-tenant-fork-model.md),
+> [../../CLAUDE.md](../../CLAUDE.md), [API_CONTRACT.md](./API_CONTRACT.md) (rev. 2026-06-01).
+
 **Status:** DRAFT — captures my current understanding for owner sign-off before further build-out.
 **Last updated:** 2026-04-29
 **Supersedes for-naming:** `VISION_BRIEF.md` (kept; legacy product names still appear there).

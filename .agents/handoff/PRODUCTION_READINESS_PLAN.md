@@ -1,5 +1,14 @@
 # Production Readiness Plan — BuildOS + The Brain
 
+> **⚠️ SUPERSEDED (pre-pivot, 2026-04-30).** Written when launch assumed an external
+> "The Brain" service. The **2026-06-01 standalone pivot** (see
+> [ESCALATION_LOG.md](./ESCALATION_LOG.md) ESC-001) removed all Brain surfaces —
+> auth, AI, vault, A2A, billing — in favor of native in-app implementations.
+> The phase A–H structure remains a useful planning template, but the critical
+> path changed (no Brain integration). **Current backlog:**
+> [NEXT_STEPS.md](./NEXT_STEPS.md); **current architecture:** [../../CLAUDE.md](../../CLAUDE.md)
+> and [API_CONTRACT.md](./API_CONTRACT.md) (rev. 2026-06-01).
+
 **Status:** DRAFT — owner sign-off pending
 **Date:** 2026-04-30
 **Author:** Claude (executing the L8 review the owner requested)
