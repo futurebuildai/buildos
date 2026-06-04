@@ -190,6 +190,53 @@ func TestResendMailerNon2xxError(t *testing.T) {
 	}
 }
 
+// TestResendMailerDefaultClientSendsThroughOtelTransport exercises the
+// default http.Client path: when no WithHTTPClient is supplied,
+// NewResendMailer wraps http.DefaultTransport with otelhttp and a custom
+// span-name formatter. Sending through that client against a live
+// httptest server invokes the formatter closure (resend.go:82-84).
+func TestResendMailerDefaultClientSendsThroughOtelTransport(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"email_def"}`))
+	}))
+	defer srv.Close()
+
+	// No WithHTTPClient: the default otelhttp-wrapped client is used, so
+	// the span-name formatter runs on the outbound request.
+	m := NewResendMailer(stubResolver{key: "re_k"}, "a@b.com", "BuildOS",
+		WithBaseURL(srv.URL))
+
+	if err := m.Send(context.Background(), "org-1", Message{To: "x@y.com", Subject: "s"}); err != nil {
+		t.Fatalf("Send via default client: %v", err)
+	}
+}
+
+// TestResendMailerTransportError covers the httpClient.Do error leg
+// (resend.go:137-140): a request to a server that has been closed fails
+// at the transport level before any status check.
+func TestResendMailerTransportError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	baseURL := srv.URL
+	srv.Close() // connections now refused
+
+	m := NewResendMailer(stubResolver{key: "re_k"}, "a@b.com", "BuildOS",
+		WithBaseURL(baseURL), WithHTTPClient(&http.Client{}))
+
+	err := m.Send(context.Background(), "org-1", Message{To: "x@y.com", Subject: "s"})
+	if err == nil {
+		t.Fatal("expected a transport error sending to a closed server")
+	}
+	if !strings.Contains(err.Error(), "send transport") {
+		t.Fatalf("err = %v, want a send transport error", err)
+	}
+	// A transport error must never be mistaken for a typed SendError.
+	var se *SendError
+	if errors.As(err, &se) {
+		t.Fatalf("transport error should not be a *SendError, got %v", err)
+	}
+}
+
 func TestResendMailerResolverError(t *testing.T) {
 	m := NewResendMailer(stubResolver{err: errors.New("vault down")}, "a@b.com", "BuildOS")
 	err := m.Send(context.Background(), "org-1", Message{To: "x@y.com", Subject: "s"})
