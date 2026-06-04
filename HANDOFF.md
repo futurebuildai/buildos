@@ -30,7 +30,7 @@ Companion docs:
 
 ## Last shipped (most recent → older)
 
-- **2026-06-04** [`0276fd2` — local, unpushed] **Flutter `FeedCard`/`FeedCardAction` model coverage — `models/feed_card.dart` 0% → 100% (21/21, test-only, zero production change). Fourth `mobile/` cluster — the one cheap unit win that closes the field app's unit-coverage sweep.** Pure model parse, no rig. **`mobile/test/feed_card_test.dart`** (4 tests): a full card with nested `actions` (asserts every field + the `FeedCardAction` list mapping), the absent-field **defaults** (`priority`→`normal`, `status`→`active`, null `actions`→`const []`, null `project_id`/`created_at`), `FeedCardAction.fromJson`'s empty-string defaults, and every `priorityRank` switch arm (`critical`=0 / `urgent`=1 / `normal`=2 / **wildcard**=3, the last hit via both `low` and an unknown value). Verify green: `dart format` (no change), `flutter analyze` clean, `flutter test` (51 pass / 6 backend-gated skips). **Go-side `make audit` not rerun — Dart-only.** **This closes the practical unit-coverage frontier for `mobile/`:** every core service (`sync_service`/`api_client`/`token_store`/`auth_service`) and every wire model (`user`/`field_sync`/`feed_card`/`project_task`/`outbox_action`) is now at or near 100%. **What's LEFT needs heavier rigs** (see ▶ NEXT): `connectivity_service.dart` (0% — `Connectivity` not subclassable, ~8 trivial lines), `app_providers.dart` (6.8% — Riverpod wiring, needs a `ProviderContainer`), the screens (`sync_status_screen.dart` 2.9% etc. — need `testWidgets` pumps), and `app_database.dart` (~56% ceiling — Drift column decls shadowed at runtime). Then the deferred live-backend airplane-mode E2E.
+- **2026-06-04** [`0276fd2` → `origin/main`] **Flutter `FeedCard`/`FeedCardAction` model coverage — `models/feed_card.dart` 0% → 100% (21/21, test-only, zero production change). Fourth `mobile/` cluster — the one cheap unit win that closes the field app's unit-coverage sweep.** Pure model parse, no rig. **`mobile/test/feed_card_test.dart`** (4 tests): a full card with nested `actions` (asserts every field + the `FeedCardAction` list mapping), the absent-field **defaults** (`priority`→`normal`, `status`→`active`, null `actions`→`const []`, null `project_id`/`created_at`), `FeedCardAction.fromJson`'s empty-string defaults, and every `priorityRank` switch arm (`critical`=0 / `urgent`=1 / `normal`=2 / **wildcard**=3, the last hit via both `low` and an unknown value). Verify green: `dart format` (no change), `flutter analyze` clean, `flutter test` (51 pass / 6 backend-gated skips). **Go-side `make audit` not rerun — Dart-only.** **This closes the practical unit-coverage frontier for `mobile/`:** every core service (`sync_service`/`api_client`/`token_store`/`auth_service`) and every wire model (`user`/`field_sync`/`feed_card`/`project_task`/`outbox_action`) is now at or near 100%. **What's LEFT needs heavier rigs** (see ▶ NEXT): `connectivity_service.dart` (0% — `Connectivity` not subclassable, ~8 trivial lines), `app_providers.dart` (6.8% — Riverpod wiring, needs a `ProviderContainer`), the screens (`sync_status_screen.dart` 2.9% etc. — need `testWidgets` pumps), and `app_database.dart` (~56% ceiling — Drift column decls shadowed at runtime). Then the deferred live-backend airplane-mode E2E.
 
 - **2026-06-04** [`9674a8e` → `origin/main`] **Flutter field app auth/session triad coverage — `token_store.dart` 4% → 100%, `auth_service.dart` 0% → 100%, `models/user.dart` (TokenPair/User) 0% → 100% (test-only, zero production change). Third `mobile/` cluster — the secure-store seam.** The sweep flagged the entire auth/session layer near-0%: `TokenStore` (Keychain/Keystore persistence), `AuthService` (login/logout/cachedUser/hasSession), and the `User`/`TokenPair` wire models. Closed all three WITHOUT a mock package OR a transitive platform-interface import: an in-memory **`_MemSecureStorage extends FlutterSecureStorage`** overrides only the three methods `TokenStore` touches (`read`/`write`/`deleteAll`) — the high-level class is a direct dep and exports its own option types, so no Keychain/Keystore platform channel and no `flutter_secure_storage_platform_interface` import is needed (which would trip `depend_on_referenced_packages`). **`mobile/test/token_store_test.dart`** (11 tests): the `save` round-trip (access/refresh/user), `updateTokens` rotation (access+refresh+expiry bumped, cached user left intact), the `accessExpiry` stamp + its null-before-save leg, `cachedUser`'s empty/valid/**malformed-json-catch** legs (seeds a corrupt blob at the `fb_user` wire key), `hasSession` true/false, `clear`, and the `?? const FlutterSecureStorage()` default-constructor branch. **`mobile/test/auth_service_test.dart`** (6 tests) drives a scripted `_FakeApi extends ApiClient` over the **real** `TokenStore` (so `User.toJson`/`fromJson` + `TokenPair.fromJson` all execute): `login` posts creds + persists the pair + returns the user, `logout` revokes server-side (carries the refresh token) then clears, the **no-refresh-token** path skips the server call but still clears, and a **thrown revoke** is swallowed while the local clear still runs; plus `cachedUser`/`hasSession`. All three files now report **zero** uncovered lines (user 22/22, auth_service 16/16, token_store 25/25). Verify green: `dart format` clean, `flutter analyze` clean (No issues found), `flutter test` (47 pass / 6 backend-gated skips). **Go-side `make audit` not rerun — Dart-only, no Go files touched.** **`app_database.dart` audited and left at its practical ceiling (~56%):** the bulk of its uncovered lines (14-72) are Drift **table column declarations** — generator input that the generated `_$AppDatabase` shadows with its own column overrides at runtime, so they're never invoked; line 80 (`.forTesting()`) is marginal and 166-170 (`_open()`) needs the `path_provider` platform plugin. **Next `mobile/` candidates from the sweep (lowest first):** `connectivity_service.dart` (0% — `Connectivity` is factory-constructed, not subclassable; low value), `app_providers.dart` (6.8% — Riverpod provider wiring), `sync_status_screen.dart` (2.9% — needs a widget/golden pump), `feed_card.dart` (0% — model `fromJson`); then the backend-dependent `integration_test` airplane-mode E2E (deferred — needs a live fork).
 
@@ -413,27 +413,23 @@ to its ceiling. Current state of the map:
   `json.Marshal` of plain structs, valid-URL `NewRequest`, length-subsumed crypto
   errors, non-injectable package-global `rand.Reader`). `internal/worker`'s real
   coverage is behind the `integration` tag.
-- **Flutter `mobile/` core — services now all 100%.** `sync_service.dart`,
-  `api_client.dart`, `token_store.dart`, `auth_service.dart`, and the
-  `models/user.dart` (TokenPair/User) + `models/field_sync.dart` wire models are
-  fully covered. `app_database.dart` is at its practical ceiling (~56% — the rest
-  are Drift column declarations shadowed by generated overrides at runtime).
-- **What's LEFT in `mobile/` is lower-value and needs heavier rigs** (lowest
-  coverage first): `connectivity_service.dart` (0% — `Connectivity` is
-  factory-constructed, not subclassable; ~8 trivial delegation lines),
-  `app_providers.dart` (6.8% — Riverpod provider wiring, needs a ProviderContainer
-  harness), `sync_status_screen.dart` (2.9%) + the other screens (need
-  `testWidgets` pumps), `models/feed_card.dart` (0% — a straightforward `fromJson`,
-  the one cheap win left). The l10n/`app_localizations_*.dart` files are generated.
+- **Flutter `mobile/` unit frontier — CLOSED.** Every core service
+  (`sync_service.dart`, `api_client.dart`, `token_store.dart`, `auth_service.dart`)
+  and every wire model (`models/user.dart`, `field_sync.dart`, `feed_card.dart`,
+  `project_task.dart`, `outbox_action.dart`) is at or near 100%. `app_database.dart`
+  is at its practical ceiling (~56% — the rest are Drift column declarations shadowed
+  by generated overrides at runtime). The l10n/`app_localizations_*.dart` files are
+  generated. **No cheap unit wins remain** — what's left needs heavier rigs.
 
 **Candidate directions for a fresh session (not yet picked):**
-1. **The one cheap coverage win:** `mobile/test/` for `feed_card.dart` `fromJson`
-   (pure model parse, no rig). Then declare the unit-coverage sweep done.
-2. **Widget/screen coverage** via `testWidgets` + Riverpod `ProviderScope`
-   overrides (Tasks/Daily Log/Sync Status screens) — real value but needs a pump
-   harness; pairs with the existing golden tests (`mobile/test/*_golden_test.dart`,
-   opt-in `--tags golden`, already green).
-3. **Deepen the live E2E journeys** (the older ▶ item): the backend-dependent
+1. **Widget/screen coverage** via `testWidgets` + Riverpod `ProviderScope`
+   overrides (Tasks/Daily Log/Sync Status screens, `sync_status_screen.dart` 2.9%)
+   and `app_providers.dart` (6.8% — needs a `ProviderContainer` harness). Real value
+   but needs a pump harness; pairs with the existing golden tests
+   (`mobile/test/*_golden_test.dart`, opt-in `--tags golden`, already green).
+   (`connectivity_service.dart` at 0% is ~8 trivial delegation lines over a
+   factory-constructed `Connectivity` that isn't subclassable — skip; low value.)
+2. **Deepen the live E2E journeys** (the older ▶ item): the backend-dependent
    harness is DONE (`scripts/e2e-backend.sh` + `e2e`/`e2e-mobile` CI lanes). Web
    covers claim→wizard→portfolio, recalc→CPM cascade-diff, BYOK→AI-on. The Flutter
    `e2e-mobile` lane covers airplane-mode → queue → reconnect → drain + 409
@@ -441,9 +437,12 @@ to its ceiling. Current state of the map:
    (`fb_sync_chip_golden_test.dart`, `sync_status_screen_golden_test.dart`).
    Entry points: `web/tests/e2e/`, `mobile/test/live/sync_live_test.dart`,
    `scripts/e2e-backend.sh`, `.github/workflows/ci.yml`.
-4. **OpenAPI spec generation + drift detection** (NEXT_STEPS #9) — needs a codegen
+3. **OpenAPI spec generation + drift detection** (NEXT_STEPS #9) — needs a codegen
    dep (`swag`/`oapi-codegen`) added to `.agents/TECH_STACK.md` first, so flag for
    owner sign-off before landing.
+4. **POST-BETA fault-injection pass** (NEXT_STEPS, deferred per owner) — the only
+   way to lift the Go `internal/store`/`internal/ai` non-deterministic error-wrap
+   ceilings; pre-cancelled-context technique. Lower priority than feature/flow work.
 
 Post-pivot backlog (the items below are complete; kept as a record):
 
