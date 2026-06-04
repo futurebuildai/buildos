@@ -39,14 +39,27 @@ permit transitions).
 
 ## Tier 1b — current coverage frontier (active)
 
-Test-coverage hardening toward production readiness. Recent (2026-06-02):
-`internal/api` handler + router-RBAC suites (→ 84.6%, no 0%-funcs left),
-`internal/service` pure-helper units (→ 16.5%), and `internal/store`
-native-auth + vault integration tests (→ 62.8%). **Next:** DB-backed service
-mutations (behind the `integration` tag — clone the store-test `testdb.NewPool`
-pattern up into `service/*_integration_test.go`) and the partial `internal/api`
-branches (`readinessHandler` DB-down leg, `CreateInvoice`/`DailyBriefing`
-error paths).
+Test-coverage hardening toward production readiness. **Status (2026-06-04): the
+deterministic-guard / reachable-error frontiers are now CLOSED across the board**
+— every leg a test can hit without fault injection or a heavy rig has been
+covered. Map:
+- **Go backend — at deterministic ceilings.** `internal/api` 98.4% (handler +
+  router-RBAC guard frontier closed), `internal/service` guard frontier closed,
+  `internal/store` 86.0% (list/reader sweep at ceiling — see below), `internal/ai`
+  96.3%, `internal/mailer` 95.8%, `internal/cryptobox` 88.9%. Remaining zero-blocks
+  are unreachable defensive guards (`json.Marshal` of plain structs, valid-URL
+  `NewRequest`, length-subsumed crypto errors, non-injectable `rand.Reader`) or
+  non-deterministic `fmt.Errorf("query/scan …: %w")` wraps — both are the deferred
+  **POST-BETA fault-injection** territory documented below.
+- **Flutter `mobile/` core — services all 100%.** `sync_service.dart`,
+  `api_client.dart`, `token_store.dart`, `auth_service.dart`, and the
+  `models/user.dart` + `models/field_sync.dart` wire models are fully covered.
+  `app_database.dart` is at its practical ceiling (~56% — the rest are Drift column
+  declarations shadowed by generated overrides at runtime).
+- **Next (lower-value, needs heavier rigs):** `mobile/` widget/screen coverage via
+  `testWidgets` + Riverpod `ProviderScope` overrides; the one cheap unit win left is
+  `models/feed_card.dart` `fromJson`. See HANDOFF.md ▶ NEXT for the full candidate
+  list and the live-E2E / OpenAPI alternatives.
 
 #### Store-layer status (2026-06-03): list/reader frontier at deterministic ceiling
 
@@ -162,10 +175,14 @@ TS-strict, Vanilla CSS, dark-only) and the Flutter field app in
   (FIFO exponential-backoff drain, server-wins), dio 401-refresh, field
   screens, FCM wake-hint, EN/ES i18n.
 
-**Remaining (carryover):** backend-dependent E2E harness — web journeys
-(login→setup→portfolio, recalc→cascade, BYOK→AI-on) + Flutter
-`integration_test` (airplane-mode → queue → reconnect → drain) + golden
-tests. Deferred from the backend-free CI sweeps.
+**Status (2026-06-04): mostly shipped.** The backend-dependent E2E harness is DONE
+(`scripts/e2e-backend.sh` + the `e2e` and `e2e-mobile` CI lanes): web drives
+claim→wizard→portfolio + recalc→cascade + BYOK→AI-on; the Flutter `e2e-mobile` lane
+drives airplane-mode → queue → reconnect → drain + 409 idempotency replay. The
+offline/sync **golden tests are shipped** (`mobile/test/fb_sync_chip_golden_test.dart`,
+`sync_status_screen_golden_test.dart`, opt-in `--tags golden`). **Remaining:**
+widening the live journeys (Flutter-side widget/screen unit coverage; deeper E2E
+flows) — tracked in HANDOFF.md ▶ NEXT.
 
 ### 9. OpenAPI spec generation + drift detection
 **Why:** Contract today lives in `.agents/handoff/API_CONTRACT.md`
