@@ -173,6 +173,25 @@ func TestFeedAction_NotFound404(t *testing.T) {
 	}
 }
 
+// parseUUIDFromURL runs before callerOrgIDFromClaims, so a VALID cardID plus an
+// unparseable caller org claim reaches the org-claim 401 guard before the
+// service is ever invoked (mirrors TestRecommendScheduleAdjustments_InvalidOrgClaim401).
+func TestFeedAction_InvalidOrgClaim401(t *testing.T) {
+	cardID := uuid.New()
+	svc := &fakeFeedService{}
+	h := NewFeedHandler(svc)
+	r := feedReq(t, "POST", "/api/v1/feed/"+cardID.String()+"/action", "not-a-uuid",
+		map[string]string{"cardID": cardID.String()}, `{"action_type":"approve"}`)
+	w := httptest.NewRecorder()
+	h.Action(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d, want 401", w.Code)
+	}
+	if svc.gotCardID != uuid.Nil {
+		t.Errorf("service should not be called on a bad org claim, got cardID=%s", svc.gotCardID)
+	}
+}
+
 // ---------- POST /feed/{cardID}/dismiss ----------
 
 func TestFeedDismiss_OK(t *testing.T) {
@@ -212,6 +231,24 @@ func TestFeedDismiss_ServiceErr500(t *testing.T) {
 	h.Dismiss(w, r)
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status=%d, want 500", w.Code)
+	}
+}
+
+// Valid cardID + unparseable caller org claim reaches the org-claim 401 guard
+// (parseUUIDFromURL runs first) before DismissCard is invoked.
+func TestFeedDismiss_InvalidOrgClaim401(t *testing.T) {
+	cardID := uuid.New()
+	svc := &fakeFeedService{}
+	h := NewFeedHandler(svc)
+	r := feedReq(t, "POST", "/api/v1/feed/"+cardID.String()+"/dismiss", "not-a-uuid",
+		map[string]string{"cardID": cardID.String()}, "")
+	w := httptest.NewRecorder()
+	h.Dismiss(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d, want 401", w.Code)
+	}
+	if svc.gotCardID != uuid.Nil {
+		t.Errorf("service should not be called on a bad org claim, got cardID=%s", svc.gotCardID)
 	}
 }
 

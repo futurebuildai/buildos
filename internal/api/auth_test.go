@@ -313,6 +313,22 @@ func TestRequestPasswordReset_BadJSON(t *testing.T) {
 	}
 }
 
+// A non-sentinel error from RequestPasswordReset must not leak internals — it
+// maps through writeAuthError's default branch to 500. (The handler still never
+// reveals whether the email matched a user; this leg is the infra-failure path,
+// distinct from the always-202 no-enumeration success path.)
+func TestRequestPasswordReset_ServiceErrorMapsTo500(t *testing.T) {
+	h := NewAuthHandler(&fakeAuthService{err: errors.New("mailer transport down")})
+	w := httptest.NewRecorder()
+	h.RequestPasswordReset(w, jsonReq("/api/v1/auth/password-reset/request", `{"email":"owner@acme.test"}`))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d, want 500", w.Code)
+	}
+	if code := decodeErrCode(t, w); code != "INTERNAL_ERROR" {
+		t.Errorf("code=%q, want INTERNAL_ERROR", code)
+	}
+}
+
 // ---------- POST /auth/password-reset/confirm ----------
 
 func TestResetPassword_OK(t *testing.T) {
