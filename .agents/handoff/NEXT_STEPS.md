@@ -11,6 +11,57 @@ of 2026-05-01.
 
 ---
 
+## Tier 0 — ▶ ACTIVE: agentic-OS roadmap (north star = [/VISION.md](../../VISION.md))
+
+The product direction is now the **agentic OS**: a deterministic CPM core wrapped by an isolated,
+configurable AI harness (`internal/agentic`). [/VISION.md](../../VISION.md) is canonical and supersedes
+the pre-pivot `.agents/` specs for direction. The dependency-ordered phases below sit **above** the old
+Tier-1..3 enterprise backlog; pick from here.
+
+### P1 — Phase 1: `internal/agentic` substrate + a real `delay_cascade` (ACTIVE — in flight)
+**Goal:** stand up the isolated harness (orchestrator + ports + in-code registry — DB-backed registry is
+Phase 3) and turn the dead `delay_cascade` worker into a real AI-reasoned cross-module cascade:
+schedule slip → load procurement/crew/budget context → AI reasons → apply (feed cards + audit) in ONE
+tx → surface.
+**Hard isolation:** `internal/agentic` is a leaf — imports only stdlib + `github.com/google/uuid` +
+`log/slog`; declares ports; adapters in `internal/service` implement them; `internal/physics` /
+`internal/currency` never import it. New gate `make lint-isolation` / `scripts/check-isolation.sh`.
+**Entry points:**
+- `internal/agentic/` (new leaf package: ports + orchestrator + in-code registry).
+- `internal/worker/jobs.go` — `DelayCascadeWorker.Work` (`:253`, the stub) and `DelayCascadeArgs`
+  (`:79`, add `OrgID` json `org_id`). Registered at `internal/worker/registry.go:47`.
+- `internal/service/schedule.go` — enqueue site (`~:159`, `callerOrgID` in scope) populates `OrgID`;
+  add the `internal/service` adapter(s) implementing the agentic ports.
+- `cmd/worker/main.go` — wire vault/AI (modeled on `cmd/server/main.go ~:145-156`).
+- Templates: `ai.Client.callTool` (`internal/ai/client.go ~:400`) + the `procurement_recommend` task
+  (`internal/ai/tasks.go`); canonical load→AI→apply-in-one-tx→audit is
+  `service.AgentsService.RecommendScheduleAdjustments` (`internal/service/agents.go ~:305`); feed cards
+  `FeedCardsStore.CreateFeedCard` (`internal/store/feed_cards.go ~:39`); audit `AuditRecorder`
+  (`internal/service/audit.go ~:44`).
+- `scripts/check-isolation.sh` + `Makefile` (`lint-isolation` target).
+**No schema migration in Phase 1** — reuse `feed_cards` + `audit_log`. **No new Go deps, no new store SQL.**
+**Verify:** integration test (ephemeral PG) proving a slip → AI-reasoned cross-module cascade as
+actionable feed cards; `make audit` + bench gates + the new isolation gate green.
+
+### P2 — Phase 2: the four harness roles on the substrate (NEXT chunk)
+Dependency-ordered, each its own PR-sized chunk:
+1. **Ingestion** — wire the orphaned `InvoiceExtract` (`internal/ai`) → persist an `invoices` row +
+   emit a review feed card (first pipeline). Then field/photo/text intake.
+2. **Experience** — conversational assistant over the ERP via the harness tool layer.
+3. **Foresight** — cross-module risk/recommendation agents (procurement criticality, schedule risk,
+   budget burn) surfaced as feed cards.
+
+### P3 — Phase 3: configurability + integration/MCP layer
+DB-backed agent/connector registry, admin config surface (enable + tune agents/integrations post-deploy,
+no redeploy), MCP connector seam, vault-backed credential UI.
+
+### P4 — Phase 4: production-readiness for handoff
+Close Flutter field-app gaps (check-in/schedule/equipment), harden operator + field + harness workflows
+end-to-end, onboarding/deploy polish, security review, load/smoke. (Runs partly in parallel with P1–P3;
+absorbs the deprioritized Flutter widget/screen + live-E2E items from the old Tier-1b/Tier-3 lists.)
+
+---
+
 ## Tier 1 — ✅ ALL SHIPPED (verified 2026-06-02)
 
 All three original Tier-1 items are already implemented in the tree. Entries
@@ -222,7 +273,7 @@ running in staging.
 
 ---
 
-## Tier 0 — carryovers
+## Carryovers (infra)
 
 ### `.github/workflows/{ci,release}.yml` push
 The YAML is correct (built + tested in an earlier session). The

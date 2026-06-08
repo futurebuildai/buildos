@@ -9,7 +9,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/futurebuildai/buildos/internal/agentic"
+	"github.com/futurebuildai/buildos/internal/ai"
 	"github.com/futurebuildai/buildos/internal/config"
+	"github.com/futurebuildai/buildos/internal/cryptobox"
 	"github.com/futurebuildai/buildos/internal/obs"
 	"github.com/futurebuildai/buildos/internal/service"
 	"github.com/futurebuildai/buildos/internal/store"
@@ -62,6 +67,12 @@ func run(logger *slog.Logger) error {
 
 	logger.Info("database connected for worker", "max_conns", cfg.DBPoolMax)
 
+	// Real audit service for worker mutations that warrant a trail.
+	// Used by the delay-cascade workspace below so every cascade feed
+	// card lands an audit row. (Budget rollups / procurement sweeps keep
+	// their no-op recorders — see the comments at their construction.)
+	auditService := service.NewAuditService(store.NewAuditStore(), logger)
+
 	// Stores + services for workers that need service-layer access.
 	// CorporateRollupWorker writes via the budget service; rollups are
 	// system-actor mutations (no human caller), so we pass a no-op
@@ -93,10 +104,60 @@ func run(logger *slog.Logger) error {
 	// sentinels but are never invoked from this binary.
 	procurementService := service.NewProcurementService(pool, procurementStore, nil, nil, service.NewNoopAuditRecorder())
 
+	// ----------------------------------------------------------------
+	// Delay-cascade orchestrator wiring. When VAULT_MASTER_KEY is set we
+	// build the encrypted BYOK vault -> native AI client (per-org
+	// Anthropic key resolution), then the deterministic CascadeWorkspace
+	// over the stores. The workspace has no per-org state and is built
+	// once; the reasoner bakes in the org id (the AI key resolves
+	// per-org), so the orchestrator must be built per job invocation
+	// from args.OrgID — that happens in cascadeOrchestratorFactory.Run.
+	//
+	// When the vault is unconfigured, aiClient stays nil:
+	// NewCascadeReasoner(nil, …).PlanCascade soft-fails with
+	// ErrReasonerUnavailable, which the orchestrator swallows. The worker
+	// still boots and delay_cascade is a logged no-op.
+	// ----------------------------------------------------------------
+	var aiClient *ai.Client
+	if cfg.VaultMasterKey != "" {
+		masterKey, err := cryptobox.ParseMasterKey(cfg.VaultMasterKey)
+		if err != nil {
+			return fmt.Errorf("parsing vault master key: %w", err)
+		}
+		cipher, err := cryptobox.NewCipher(masterKey, cfg.VaultKeyVersion)
+		if err != nil {
+			return fmt.Errorf("building vault cipher: %w", err)
+		}
+		vaultService := service.NewVaultService(pool, store.NewIntegrationCredentialStore(), cipher, auditService, logger, nil)
+		aiClient, err = ai.NewClient(ai.Config{KeyResolver: vaultService})
+		if err != nil {
+			return fmt.Errorf("building ai client: %w", err)
+		}
+		logger.Info("vault enabled for worker", "key_version", cfg.VaultKeyVersion)
+	} else {
+		logger.Warn("VAULT_MASTER_KEY not set — delay_cascade AI reasoning disabled (logged no-op)")
+	}
+
+	cascadeWorkspace := service.NewCascadeWorkspace(
+		pool,
+		store.NewScheduleStore(),
+		procurementStore,
+		financialsStore,
+		store.NewProjectStore(),
+		store.NewFeedCardsStore(),
+		auditService,
+	)
+	cascadeOrchestrator := &cascadeOrchestratorFactory{
+		aiClient:  aiClient,
+		workspace: cascadeWorkspace,
+		logger:    logger,
+	}
+
 	registry, err := worker.NewRegistry(pool, logger, worker.Dependencies{
 		BudgetRunner:          budgetService,
 		NotificationDeliverer: notifService,
 		ProcurementChecker:    procurementService,
+		CascadeOrchestrator:   cascadeOrchestrator,
 	})
 	if err != nil {
 		return fmt.Errorf("creating worker registry: %w", err)
@@ -142,4 +203,36 @@ func run(logger *slog.Logger) error {
 
 	logger.Info("worker stopped gracefully")
 	return nil
+}
+
+// cascadeOrchestratorFactory satisfies worker.CascadeOrchestrator. The AI key
+// resolves per-org (via ai.ContextWithOrgID inside the reasoner), and the
+// reasoner bakes the org id in at construction — so a fresh per-org reasoner +
+// orchestrator must be built on every job invocation from in.OrgID. The
+// workspace carries no per-org state and is reused across invocations.
+type cascadeOrchestratorFactory struct {
+	aiClient  *ai.Client // may be nil when the vault is unconfigured
+	workspace *service.CascadeWorkspace
+	logger    *slog.Logger
+}
+
+// RunDelayCascade builds the per-org orchestrator and runs the flow. When
+// aiClient is nil we pass an untyped-nil reasoner client (not a typed nil
+// *ai.Client) so the reasoner's nil check fires and PlanCascade soft-fails with
+// agentic.ErrReasonerUnavailable instead of dereferencing a nil pointer.
+func (f *cascadeOrchestratorFactory) RunDelayCascade(ctx context.Context, in agentic.DelayCascadeInput) (agentic.CascadeResult, error) {
+	reasoner := f.newReasoner(in.OrgID)
+	orch := agentic.NewOrchestrator(reasoner, f.workspace, f.logger)
+	return orch.RunDelayCascade(ctx, in)
+}
+
+// newReasoner constructs the per-org reasoner, guarding the typed-nil interface
+// hazard: NewCascadeReasoner takes an interface, so a nil *ai.Client would
+// become a non-nil interface wrapping a nil pointer. When the vault is
+// unconfigured we pass nil explicitly to keep the reasoner's soft-fail path.
+func (f *cascadeOrchestratorFactory) newReasoner(orgID uuid.UUID) agentic.Reasoner {
+	if f.aiClient == nil {
+		return service.NewCascadeReasoner(nil, orgID)
+	}
+	return service.NewCascadeReasoner(f.aiClient, orgID)
 }

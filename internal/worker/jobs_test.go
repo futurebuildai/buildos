@@ -10,6 +10,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
+
+	"github.com/futurebuildai/buildos/internal/agentic"
 )
 
 // TestJobArgsKind pins the River job-kind strings. The kind is persisted in
@@ -87,6 +89,9 @@ func TestWorkerConstructors_PanicOnNilDependency(t *testing.T) {
 	t.Run("FieldNotificationRetryWorker", func(t *testing.T) {
 		assertPanics(t, func() { NewFieldNotificationRetryWorker(nil) })
 	})
+	t.Run("DelayCascadeWorker", func(t *testing.T) {
+		assertPanics(t, func() { NewDelayCascadeWorker(nil) })
+	})
 }
 
 func assertPanics(t *testing.T, fn func()) {
@@ -136,6 +141,19 @@ func (f *fakeDeliverer) DeliverNotification(_ context.Context, attempt int, args
 	f.gotAttempt = attempt
 	f.gotArgs = args
 	return f.err
+}
+
+type fakeCascadeOrchestrator struct {
+	res    agentic.CascadeResult
+	err    error
+	gotIn  agentic.DelayCascadeInput
+	called bool
+}
+
+func (f *fakeCascadeOrchestrator) RunDelayCascade(_ context.Context, in agentic.DelayCascadeInput) (agentic.CascadeResult, error) {
+	f.called = true
+	f.gotIn = in
+	return f.res, f.err
 }
 
 func TestProcurementCheckWorker_Work(t *testing.T) {
@@ -207,6 +225,29 @@ func TestFieldNotificationRetryWorker_Work(t *testing.T) {
 	})
 }
 
+func TestDelayCascadeWorker_Work(t *testing.T) {
+	t.Run("delegates org+project and succeeds", func(t *testing.T) {
+		orgID, projectID := uuid.New(), uuid.New()
+		fo := &fakeCascadeOrchestrator{res: agentic.CascadeResult{Impacts: 3, CardsCreated: 3}}
+		w := NewDelayCascadeWorker(fo)
+		job := &river.Job[DelayCascadeArgs]{Args: DelayCascadeArgs{OrgID: orgID, ProjectID: projectID}}
+		if err := w.Work(context.Background(), job); err != nil {
+			t.Fatalf("Work() = %v, want nil", err)
+		}
+		if !fo.called || fo.gotIn.OrgID != orgID || fo.gotIn.ProjectID != projectID {
+			t.Errorf("orchestrator got called=%v in=%+v, want true with org=%s project=%s", fo.called, fo.gotIn, orgID, projectID)
+		}
+	})
+	t.Run("wraps orchestrator error", func(t *testing.T) {
+		sentinel := errors.New("load context failed")
+		w := NewDelayCascadeWorker(&fakeCascadeOrchestrator{err: sentinel})
+		job := &river.Job[DelayCascadeArgs]{Args: DelayCascadeArgs{OrgID: uuid.New(), ProjectID: uuid.New()}}
+		if err := w.Work(context.Background(), job); !errors.Is(err, sentinel) {
+			t.Errorf("Work() = %v, want wrapped %v", err, sentinel)
+		}
+	})
+}
+
 // TestPlaceholderWorkers_Work covers the not-yet-implemented workers that log
 // and return nil — they must never error, since River would otherwise retry a
 // no-op forever.
@@ -227,9 +268,6 @@ func TestPlaceholderWorkers_Work(t *testing.T) {
 		}},
 		{"maintenance_reminders", func() error {
 			return (&MaintenanceRemindersWorker{}).Work(ctx, &river.Job[MaintenanceRemindersArgs]{})
-		}},
-		{"delay_cascade", func() error {
-			return (&DelayCascadeWorker{}).Work(ctx, &river.Job[DelayCascadeArgs]{Args: DelayCascadeArgs{ProjectID: uuid.New()}})
 		}},
 		{"pipeline_analytics", func() error {
 			return (&PipelineAnalyticsWorker{}).Work(ctx, &river.Job[PipelineAnalyticsArgs]{})

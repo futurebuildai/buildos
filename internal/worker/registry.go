@@ -27,6 +27,7 @@ type Dependencies struct {
 	BudgetRunner          BudgetRunner          // CorporateRollupWorker
 	NotificationDeliverer NotificationDeliverer // FieldNotificationRetryWorker
 	ProcurementChecker    ProcurementChecker    // ProcurementCheckWorker
+	CascadeOrchestrator   CascadeOrchestrator   // DelayCascadeWorker
 }
 
 // NewRegistry creates a River worker registry with all job workers registered.
@@ -44,7 +45,7 @@ func NewRegistry(pool *pgxpool.Pool, logger *slog.Logger, deps Dependencies) (*R
 	river.AddWorker(workers, &CertificationAlertsWorker{})
 	river.AddWorker(workers, &MaintenanceRemindersWorker{})
 	river.AddWorker(workers, NewFieldNotificationRetryWorker(deps.NotificationDeliverer))
-	river.AddWorker(workers, &DelayCascadeWorker{})
+	river.AddWorker(workers, NewDelayCascadeWorker(deps.CascadeOrchestrator))
 	river.AddWorker(workers, &PipelineAnalyticsWorker{})
 	river.AddWorker(workers, &PermitIssuedTransitionWorker{})
 

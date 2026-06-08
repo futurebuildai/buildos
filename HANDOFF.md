@@ -245,6 +245,31 @@ govulncheck clean. PRs #9 onward also have CI green at merge time
 
 ## In flight
 
+**▶ PHASE 1 — BUILT & VERIFIED; awaiting `/code-review ultra` → merge.** First loop of the
+agentic-OS roadmap. North star is [/VISION.md](./VISION.md) (agentic OS = deterministic CPM core
+wrapped by an isolated, configurable AI harness; supersedes the pre-pivot `.agents/` specs for
+product direction). Built via an ultracode workflow; authoritative gates re-run locally. Lives on
+branch **`phase1-agentic-delay-cascade`** (NOT yet on `origin/main` — pending ultrareview):
+- **`internal/agentic`** — isolated **leaf** package (`Reasoner` + `CascadeWorkspace` ports,
+  `Orchestrator`, in-code `Registry`; DB-backed registry deferred to Phase 3). Imports only stdlib +
+  `github.com/google/uuid` + `log/slog`; adapters in `internal/service` implement the ports.
+- **`internal/ai`** — `DelayCascadeReason` typed tool-call task (rides `callTool`; inherits the
+  `ErrUnconfigured` soft-fail).
+- **`internal/service/agentic.go`** — `CascadeReasoner` (fuzzy: AI judgment only) + `CascadeWorkspace`
+  (deterministic: reads engine facts, renders the plan). `ApplyCascade` writes feed cards + audit in
+  ONE tx; `ai.ErrUnconfigured` → `agentic.ErrReasonerUnavailable` → orchestrator no-ops (River won't retry).
+- **Wiring** — `DelayCascadeArgs.OrgID` populated at the `schedule.go` enqueue site; real
+  `DelayCascadeWorker`; vault→ai→orchestrator in `cmd/worker/main.go` (typed-nil `*ai.Client` guarded:
+  untyped-nil reasoner when no vault, so a key-less fork logs a no-op instead of dereferencing nil).
+- **Isolation gate** — `scripts/check-isolation.sh` / `make lint-isolation`, wired into `make audit`.
+- **Tests** — 3-case integration test (`internal/service/agentic_integration_test.go`: multi-module apply,
+  no-critical-path no-op, reasoner-unavailable soft-fail) + agentic/ai/worker unit tests.
+- **Docs** — `VISION.md` (north star), this HANDOFF, `NEXT_STEPS.md`, `CLAUDE.md`,
+  `.agents/handoff/PHASES_2-4_ULTRALOOP_PLAN.md` (downstream ultra-loop plan).
+- **Gates GREEN:** `make audit` ALL PASSED (lint-migrations + regression + **lint-isolation** + unit +
+  test-prod + bench **185µs/488µs**); `make test-integration` exit 0 (service incl. cascade / store / worker).
+  **Next:** owner runs `/code-review ultra` on the branch → triage findings → merge to `origin/main`.
+
 **Standalone pivot — DONE and merged.** Native-stack code, Wave 2 deletion,
 docs sweep, and projects CRUD all landed in `dc78aa7` (direct push to
 `origin/main`, owner-approved, no PR). `buildos-kelbrook` deployment torn
@@ -402,10 +427,25 @@ Known follow-up surfaced by PR #9 (not blocking, queued):
 
 ## Next up (prioritized — pick from the top)
 
-**▶ NEXT: the test-coverage initiative is at diminishing returns — pick a new
-direction.** The multi-session Tier-1b coverage sweep (see the "Last shipped"
-cluster below) has driven every deterministic-guard / reachable-error frontier
-to its ceiling. Current state of the map:
+**▶ NEXT (after the active Phase 1 chunk): Phase 2 — fill out the four harness roles
+on the `internal/agentic` substrate.** Direction is now set by [/VISION.md](./VISION.md)
+(the agentic-OS roadmap). With Phase 1 (harness substrate + real `delay_cascade`) the
+active in-flight chunk, the next chunk is **Phase 2**, in dependency order:
+1. **Ingestion** — wire the orphaned `InvoiceExtract` (`internal/ai`) to persist into an
+   `invoices` row + emit a review feed card (first ingestion pipeline). Then field/photo/text intake.
+2. **Experience** — a conversational assistant over the ERP via the harness tool layer.
+3. **Foresight** — cross-module risk/recommendation agents (procurement criticality, schedule risk,
+   budget burn) surfaced as feed cards.
+Each is its own PR-sized chunk; run the ultraplan → ultracode → local gates → ultrareview loop per chunk
+(VISION.md ▶ "Working process"). Phase 3 (DB-backed agent/connector registry + post-deploy config + MCP
+seam) and Phase 4 (production-readiness / Flutter field-app gaps / security review) follow.
+
+---
+
+**Superseded direction — the test-coverage initiative (kept as record).** The multi-session
+Tier-1b coverage sweep (see the "Last shipped" cluster below) drove every deterministic-guard /
+reachable-error frontier to its ceiling; it is **no longer the active direction** (replaced by the
+agentic-OS roadmap above). Current state of that map, for reference:
 - **Go backend — all at deterministic ceilings.** `internal/api` (98.4%) and
   `internal/service` guard frontiers are CLOSED; `internal/ai` (96.3%),
   `internal/mailer` (95.8%), `internal/cryptobox` (88.9%) egress packages are each
@@ -421,7 +461,7 @@ to its ceiling. Current state of the map:
   by generated overrides at runtime). The l10n/`app_localizations_*.dart` files are
   generated. **No cheap unit wins remain** — what's left needs heavier rigs.
 
-**Candidate directions for a fresh session (not yet picked):**
+**Lower-priority candidates (deprioritized behind the Phase 1→4 agentic roadmap; some feed Phase 4):**
 1. **Widget/screen coverage** via `testWidgets` + Riverpod `ProviderScope`
    overrides (Tasks/Daily Log/Sync Status screens, `sync_status_screen.dart` 2.9%)
    and `app_providers.dart` (6.8% — needs a `ProviderContainer` harness). Real value

@@ -519,6 +519,78 @@ func TestUpdateSchedule_RoundTrip(t *testing.T) {
 	}
 }
 
+// ---- DelayCascadeReason ------------------------------------------------
+
+func TestDelayCascadeReason_ValidatesSlippedTasks(t *testing.T) {
+	c, cleanup := newTaskTestClient(t, func(http.ResponseWriter, *http.Request) {
+		t.Error("server should not be called for empty slipped tasks")
+	})
+	defer cleanup()
+	if _, err := c.DelayCascadeReason(context.Background(), DelayCascadeReasonRequest{ProjectName: "Maple St"}); err == nil {
+		t.Fatal("expected error for empty slipped tasks")
+	}
+}
+
+func TestDelayCascadeReason_RoundTrip(t *testing.T) {
+	c, cleanup := newTaskTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		assertCommonHeaders(t, r)
+		req := decodeMessagesReq(t, r)
+		if req.Model != "claude-opus-4-6" {
+			t.Errorf("model = %q, want opus", req.Model)
+		}
+		if req.ToolChoice == nil || req.ToolChoice.Type != "tool" || req.ToolChoice.Name != "assess_delay_cascade" {
+			t.Errorf("tool_choice = %+v", req.ToolChoice)
+		}
+		if len(req.Tools) != 1 || req.Tools[0].Name != "assess_delay_cascade" {
+			t.Errorf("tools = %+v", req.Tools)
+		}
+		writeToolUse(t, w, "assess_delay_cascade", map[string]any{
+			"impacts": []CascadeImpact{
+				{
+					Module:            "procurement",
+					Severity:          "critical",
+					Title:             "Window order at risk",
+					Body:              "Framing slip pushes the must-order date past the lead-time window.",
+					RecommendedAction: "Expedite the window PO today.",
+				},
+				{
+					Module:            "crew",
+					Severity:          "high",
+					Title:             "Drywall crew idle risk",
+					Body:              "Downstream tasks slip; the booked crew may arrive before work is ready.",
+					RecommendedAction: "Reschedule the drywall crew by three days.",
+				},
+			},
+		})
+	})
+	defer cleanup()
+
+	resp, err := c.DelayCascadeReason(context.Background(), DelayCascadeReasonRequest{
+		ProjectName: "Maple St Custom",
+		SlippedTasks: []DelayCascadeSlippedTask{
+			{WBS: "3.1", Name: "Framing", EarlyFinish: "2026-06-20", LateFinish: "2026-06-20", FloatDays: 0, IsCritical: true},
+		},
+		Procurement: []DelayCascadeProcurement{
+			{Description: "Vinyl windows", Status: "pending", LeadTimeDays: 21, MustOrderBy: "2026-06-15"},
+		},
+		Budget: []DelayCascadeBudget{
+			{WBS: "3.1", EstimatedCents: 1_200_000, CommittedCents: 800_000, ActualCents: 250_000, CurrencyCode: "USD"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DelayCascadeReason: %v", err)
+	}
+	if len(resp.Impacts) != 2 {
+		t.Fatalf("impacts len = %d, want 2", len(resp.Impacts))
+	}
+	if resp.Impacts[0].Module != "procurement" || resp.Impacts[0].Severity != "critical" {
+		t.Errorf("impacts[0] = %+v", resp.Impacts[0])
+	}
+	if resp.Impacts[1].Module != "crew" || resp.Impacts[1].RecommendedAction == "" {
+		t.Errorf("impacts[1] = %+v", resp.Impacts[1])
+	}
+}
+
 // ---- error propagation -------------------------------------------------
 
 func TestTask_HTTPErrorPropagates(t *testing.T) {
@@ -747,6 +819,12 @@ func TestTask_CallToolErrorPropagates(t *testing.T) {
 			})
 			return err
 		}},
+		{"DelayCascadeReason", func() error {
+			_, err := c.DelayCascadeReason(ctx, DelayCascadeReasonRequest{
+				SlippedTasks: []DelayCascadeSlippedTask{{WBS: "1.1", Name: "Footings", IsCritical: true}},
+			})
+			return err
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -806,6 +884,12 @@ func TestTask_DecodeToolOutputError(t *testing.T) {
 			_, err := c.UpdateSchedule(ctx, UpdateScheduleRequest{
 				ProjectID: uuid.New(),
 				Tasks:     []ScheduleTaskSnapshot{{TaskID: uuid.New()}},
+			})
+			return err
+		}},
+		{"DelayCascadeReason", func() error {
+			_, err := c.DelayCascadeReason(ctx, DelayCascadeReasonRequest{
+				SlippedTasks: []DelayCascadeSlippedTask{{WBS: "1.1", Name: "Footings", IsCritical: true}},
 			})
 			return err
 		}},

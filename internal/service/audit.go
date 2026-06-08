@@ -30,6 +30,7 @@ const (
 	AuditResourceSchedule                  = "schedule"
 	AuditResourceAIRun                     = "ai_run"
 	AuditResourceProcurementRecommendation = "procurement_recommendation"
+	AuditResourceCascade                   = "cascade"
 )
 
 // AuditRecorder is the consumer-side interface every mutating service

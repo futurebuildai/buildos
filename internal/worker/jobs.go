@@ -9,6 +9,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/riverqueue/river"
+
+	"github.com/futurebuildai/buildos/internal/agentic"
 )
 
 // BudgetRunner is the dependency surface CorporateRollupWorker needs from
@@ -77,6 +79,7 @@ type NotificationDeliverer interface {
 }
 
 type DelayCascadeArgs struct {
+	OrgID     uuid.UUID `json:"org_id"`
 	ProjectID uuid.UUID `json:"project_id"`
 }
 
@@ -246,12 +249,56 @@ func (w *FieldNotificationRetryWorker) NextRetry(job *river.Job[FieldNotificatio
 	return time.Now().Add(delays[idx])
 }
 
+// CascadeOrchestrator is the dependency surface DelayCascadeWorker needs from
+// the agentic layer. Defined here (consumer side) so the worker depends only on
+// the orchestrator's port, not the concrete service-layer wiring. Satisfied by
+// *agentic.Orchestrator.
+type CascadeOrchestrator interface {
+	RunDelayCascade(ctx context.Context, in agentic.DelayCascadeInput) (agentic.CascadeResult, error)
+}
+
+// DelayCascadeWorker turns a schedule slip into an AI-reasoned cross-module
+// cascade: it hands the org+project to the orchestrator, which loads the
+// engine-computed procurement/crew/budget context, asks the model to reason
+// over the impacts, and applies the advisory plan (feed cards + audit) in one
+// tx. A missing AI key soft-fails inside the orchestrator (no error), so the
+// worker logs the summary and returns nil; River retries only on real I/O / tx
+// failures.
 type DelayCascadeWorker struct {
 	river.WorkerDefaults[DelayCascadeArgs]
+	Orchestrator CascadeOrchestrator
+}
+
+// NewDelayCascadeWorker panics if orchestrator is nil — wiring errors should
+// fail at startup, not at the first scheduled tick.
+func NewDelayCascadeWorker(o CascadeOrchestrator) *DelayCascadeWorker {
+	if o == nil {
+		panic("worker: DelayCascadeWorker requires non-nil CascadeOrchestrator")
+	}
+	return &DelayCascadeWorker{Orchestrator: o}
 }
 
 func (w *DelayCascadeWorker) Work(ctx context.Context, job *river.Job[DelayCascadeArgs]) error {
-	slog.InfoContext(ctx, "delay_cascade: not yet implemented", "project_id", job.Args.ProjectID)
+	started := time.Now()
+	res, err := w.Orchestrator.RunDelayCascade(ctx, agentic.DelayCascadeInput{
+		OrgID:     job.Args.OrgID,
+		ProjectID: job.Args.ProjectID,
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "delay_cascade failed",
+			"org_id", job.Args.OrgID,
+			"project_id", job.Args.ProjectID,
+			"error", err,
+		)
+		return fmt.Errorf("delay_cascade: %w", err)
+	}
+	slog.InfoContext(ctx, "delay_cascade completed",
+		"org_id", job.Args.OrgID,
+		"project_id", job.Args.ProjectID,
+		"impacts", res.Impacts,
+		"cards_created", res.CardsCreated,
+		"duration_ms", time.Since(started).Milliseconds(),
+	)
 	return nil
 }
 

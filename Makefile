@@ -1,4 +1,4 @@
-.PHONY: build build-server build-worker build-migrate build-prod build-fork-init fork-init test test-integration test-prod lint lint-migrations lint-migrations-test migrate migrate-down db-up db-down audit bench-physics e2e-backend backup-db restore-db backup-db-test docker-build docker-run clean
+.PHONY: build build-server build-worker build-migrate build-prod build-fork-init fork-init test test-integration test-prod lint lint-migrations lint-migrations-test lint-isolation migrate migrate-down db-up db-down audit bench-physics e2e-backend backup-db restore-db backup-db-test docker-build docker-run clean
 
 # Default DATABASE_URL for local dev (docker-compose db on port 5433)
 DATABASE_URL ?= postgres://fb_user:fb_pass@localhost:5433/futurebuild_os?sslmode=disable
@@ -71,6 +71,11 @@ lint-migrations:
 lint-migrations-test:
 	bash scripts/lint-migrations.test.sh
 
+# Enforces that the deterministic core (internal/physics, internal/currency)
+# never depends on the AI harness package (internal/agentic), which is a leaf.
+lint-isolation:
+	bash scripts/check-isolation.sh
+
 ## Database
 db-up:
 	docker compose up -d db
@@ -92,7 +97,7 @@ bench-physics:
 
 ## Audit (lint + migration lint + test + prod-mode test + physics benchmarks
 ## + backup/restore retention+guard regression)
-audit: lint-migrations lint-migrations-test test test-prod bench-physics backup-db-test
+audit: lint-migrations lint-migrations-test lint-isolation test test-prod bench-physics backup-db-test
 	@echo "Audit: ALL PASSED"
 
 ## Backup / DR — per-fork Postgres backup with retention + restore guard.

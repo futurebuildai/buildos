@@ -157,6 +157,7 @@ func (s *ScheduleService) RecalculateSchedule(ctx context.Context, projectID, ca
 		if len(criticalPath) > 0 {
 			cpmResult.CriticalPathChanged = true
 			_, err := s.riverClient.InsertTx(ctx, tx, &worker.DelayCascadeArgs{
+				OrgID:     callerOrgID,
 				ProjectID: projectID,
 			}, nil)
 			if err != nil {

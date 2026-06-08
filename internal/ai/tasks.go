@@ -19,7 +19,8 @@ import (
 //   - DailyBriefing, IntentClassify → FastModel (cheap classification /
 //     prose).
 //   - InvoiceExtract, ProcurementRecommend, TribunalReview,
-//     UpdateSchedule → Model (Opus; heavier reasoning).
+//     UpdateSchedule, DelayCascadeReason → Model (Opus; heavier
+//     reasoning).
 //
 // Each method returns ErrUnconfigured when no Anthropic key is available
 // for the org (via the KeyResolver). The org id is read from the context
@@ -457,6 +458,125 @@ func (c *Client) UpdateSchedule(ctx context.Context, req UpdateScheduleRequest) 
 	var out UpdateScheduleResponse
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, fmt.Errorf("ai.UpdateSchedule: decode tool output: %w", err)
+	}
+	return &out, nil
+}
+
+// ---- delay_cascade -----------------------------------------------------
+
+// DelayCascadeSlippedTask is one schedule task whose dates moved after a
+// CPM recompute. EarlyFinish / LateFinish are wire-form date strings
+// (the caller decides the layout; typically YYYY-MM-DD). FloatDays is the
+// remaining total float in whole days; a critical task has float 0.
+type DelayCascadeSlippedTask struct {
+	WBS         string `json:"wbs"`
+	Name        string `json:"name"`
+	EarlyFinish string `json:"early_finish"`
+	LateFinish  string `json:"late_finish"`
+	FloatDays   int    `json:"float_days"`
+	IsCritical  bool   `json:"is_critical"`
+}
+
+// DelayCascadeProcurement is one procurement line in the slipped project's
+// orbit. LeadTimeDays + MustOrderBy give the model the ordering pressure;
+// MustOrderBy is a wire-form date string (may be empty when unknown).
+type DelayCascadeProcurement struct {
+	Description string `json:"description"`
+	Status      string `json:"status"`
+	LeadTimeDays int   `json:"lead_time_days,omitempty"`
+	MustOrderBy  string `json:"must_order_by,omitempty"`
+}
+
+// DelayCascadeBudget is one cost-coded budget line. All monetary values
+// are integer cents paired with CurrencyCode per the Composite Currency
+// Pattern — never floats.
+type DelayCascadeBudget struct {
+	WBS            string `json:"wbs"`
+	EstimatedCents int64  `json:"estimated_cents"`
+	CommittedCents int64  `json:"committed_cents"`
+	ActualCents    int64  `json:"actual_cents"`
+	CurrencyCode   string `json:"currency_code"`
+}
+
+// DelayCascadeReasonRequest is the input for cross-module delay-cascade
+// reasoning. The CPM engine has already recomputed the schedule and
+// identified the slipped tasks; the model reasons about the downstream
+// blast radius across procurement, crew, and budget. It never recomputes
+// the schedule or the money — those stay with the deterministic engine.
+type DelayCascadeReasonRequest struct {
+	ProjectName  string                    `json:"project_name"`
+	SlippedTasks []DelayCascadeSlippedTask `json:"slipped_tasks"`
+	Procurement  []DelayCascadeProcurement `json:"procurement,omitempty"`
+	Budget       []DelayCascadeBudget      `json:"budget,omitempty"`
+}
+
+// CascadeImpact is one downstream impact the model surfaces. Module is
+// one of "schedule", "procurement", "crew", "budget". Severity is one of
+// "critical", "high", "normal", "low". Title/Body render as a feed card;
+// RecommendedAction is the suggested human next step.
+type CascadeImpact struct {
+	Module            string `json:"module"`
+	Severity          string `json:"severity"`
+	Title             string `json:"title"`
+	Body              string `json:"body"`
+	RecommendedAction string `json:"recommended_action"`
+}
+
+// DelayCascadeReasonResponse carries the ranked cross-module impacts.
+type DelayCascadeReasonResponse struct {
+	Impacts []CascadeImpact `json:"impacts"`
+}
+
+const delayCascadeSystem = `You assess the cross-module blast radius of a schedule slip on a residential construction project. ` +
+	`The CPM engine has already recomputed the schedule and identified the slipped tasks; you do NOT recompute schedule dates or any monetary totals. ` +
+	`Reason about downstream impacts across four modules: "schedule", "procurement", "crew", and "budget". ` +
+	`For each impact return the module, a severity of exactly one of "critical", "high", "normal", or "low", a short title, a concise body, and a recommended human next step. ` +
+	`Prioritize critical-path slips and procurement lines whose ordering window the slip puts at risk. Surface only material impacts — do not invent ones that aren't supported by the context.`
+
+var delayCascadeSchema = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "impacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "module": {"type": "string", "enum": ["schedule", "procurement", "crew", "budget"]},
+          "severity": {"type": "string", "enum": ["critical", "high", "normal", "low"]},
+          "title": {"type": "string"},
+          "body": {"type": "string"},
+          "recommended_action": {"type": "string"}
+        },
+        "required": ["module", "severity", "title", "body", "recommended_action"]
+      }
+    }
+  },
+  "required": ["impacts"]
+}`)
+
+// DelayCascadeReason assesses the cross-module impact of a schedule slip.
+// Tool call, uses Model (Opus). Inherits ErrUnconfigured from callTool
+// when no Anthropic key is configured for the org.
+func (c *Client) DelayCascadeReason(ctx context.Context, req DelayCascadeReasonRequest) (*DelayCascadeReasonResponse, error) {
+	if len(req.SlippedTasks) == 0 {
+		return nil, fmt.Errorf("ai.DelayCascadeReason: at least one slipped task is required")
+	}
+
+	prompt, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("ai.DelayCascadeReason: marshal prompt: %w", err)
+	}
+
+	raw, err := c.callTool(ctx, "delay_cascade", c.model, delayCascadeSystem,
+		[]contentBlock{textBlock("Assess the cross-module impact of this schedule slip:\n" + string(prompt))},
+		"assess_delay_cascade", delayCascadeSchema)
+	if err != nil {
+		return nil, fmt.Errorf("ai.DelayCascadeReason: %w", err)
+	}
+
+	var out DelayCascadeReasonResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("ai.DelayCascadeReason: decode tool output: %w", err)
 	}
 	return &out, nil
 }
