@@ -255,6 +255,16 @@ func TestAgenticOrchestrator_RunDelayCascade_AppliesMultiModulePlan(t *testing.T
 	if len(reasoner.lastCtx.Procurement) != 2 {
 		t.Errorf("reasoner saw %d procurement lines, want 2", len(reasoner.lastCtx.Procurement))
 	}
+	// The WBS join key must survive into the reasoner context (bug_009):
+	// without it the model can't correlate a procurement line to a slipped
+	// task / budget line.
+	procWBS := map[string]bool{}
+	for _, p := range reasoner.lastCtx.Procurement {
+		procWBS[p.WBS] = true
+	}
+	if !procWBS["2.0"] || !procWBS["3.0"] {
+		t.Errorf("procurement WBS codes = %v, want 2.0 and 3.0 present", procWBS)
+	}
 	if len(reasoner.lastCtx.Budget) != 2 {
 		t.Errorf("reasoner saw %d budget lines, want 2", len(reasoner.lastCtx.Budget))
 	}

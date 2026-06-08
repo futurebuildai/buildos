@@ -189,6 +189,49 @@ func TestScheduleService_Recalculate_PersistsComputesAndEnqueues(t *testing.T) {
 	}
 }
 
+// TestScheduleService_Recalculate_NoChangeDoesNotReEnqueue proves the bug_002
+// fix: a second recalc that leaves the critical-path SET unchanged must NOT
+// re-enqueue a delay cascade — otherwise every routine recalc would cost an
+// Opus call + a feed-card stream. The first recalc establishes the critical
+// path (the set goes from empty → the chain, so it fires once); the identical
+// second recalc leaves the same tasks critical, so CriticalPathChanged is
+// false and no new delay_cascade job lands.
+func TestScheduleService_Recalculate_NoChangeDoesNotReEnqueue(t *testing.T) {
+	svc, fx := newScheduleService(t)
+	ctx := context.Background()
+
+	a := seedSchedTask(t, svc.pool, fx.projectID, "1.0", "Foundation", 5)
+	b := seedSchedTask(t, svc.pool, fx.projectID, "2.0", "Framing", 3)
+	c := seedSchedTask(t, svc.pool, fx.projectID, "3.0", "Roofing", 2)
+	seedSchedDep(t, svc.pool, fx.projectID, a, b)
+	seedSchedDep(t, svc.pool, fx.projectID, b, c)
+
+	// First recalc: the critical set goes from empty → the chain. Fires once.
+	first, _, err := svc.RecalculateSchedule(ctx, fx.projectID, fx.orgID, "owner-sub")
+	if err != nil {
+		t.Fatalf("first RecalculateSchedule: %v", err)
+	}
+	if !first.CriticalPathChanged {
+		t.Error("first recalc: CriticalPathChanged = false, want true (critical path established)")
+	}
+	if got := delayCascadeJobCount(t, svc); got != 1 {
+		t.Fatalf("after first recalc: delay_cascade jobs = %d, want 1", got)
+	}
+
+	// Second recalc, identical inputs: the same tasks stay critical, so the
+	// set is unchanged and no cascade should fire.
+	second, _, err := svc.RecalculateSchedule(ctx, fx.projectID, fx.orgID, "owner-sub")
+	if err != nil {
+		t.Fatalf("second RecalculateSchedule: %v", err)
+	}
+	if second.CriticalPathChanged {
+		t.Error("second recalc: CriticalPathChanged = true, want false (critical set unchanged)")
+	}
+	if got := delayCascadeJobCount(t, svc); got != 1 {
+		t.Errorf("after unchanged second recalc: delay_cascade jobs = %d, want 1 (no re-enqueue)", got)
+	}
+}
+
 // TestScheduleService_Recalculate_CrossTenantHidden proves the org guard on the
 // mutating recalc path: a foreign org recalculating another org's project gets
 // ErrNotFound (existence not leaked), and nothing is written — no audit row,

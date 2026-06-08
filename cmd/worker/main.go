@@ -226,13 +226,11 @@ func (f *cascadeOrchestratorFactory) RunDelayCascade(ctx context.Context, in age
 	return orch.RunDelayCascade(ctx, in)
 }
 
-// newReasoner constructs the per-org reasoner, guarding the typed-nil interface
-// hazard: NewCascadeReasoner takes an interface, so a nil *ai.Client would
-// become a non-nil interface wrapping a nil pointer. When the vault is
-// unconfigured we pass nil explicitly to keep the reasoner's soft-fail path.
+// newReasoner constructs the per-org reasoner. NewCascadeReasoner takes the
+// concrete *ai.Client and handles a nil client internally (PlanCascade then
+// soft-fails with ErrReasonerUnavailable), so a key-less / vault-unconfigured
+// worker passes its nil aiClient straight through — no typed-nil interface
+// hazard to guard at the call site.
 func (f *cascadeOrchestratorFactory) newReasoner(orgID uuid.UUID) agentic.Reasoner {
-	if f.aiClient == nil {
-		return service.NewCascadeReasoner(nil, orgID)
-	}
 	return service.NewCascadeReasoner(f.aiClient, orgID)
 }

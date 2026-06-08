@@ -153,14 +153,41 @@ func (s *ScheduleService) RecalculateSchedule(ctx context.Context, projectID, ca
 			}),
 		})
 
-		// 5. Enqueue delay cascade if critical path changed (SAME TRANSACTION)
-		if len(criticalPath) > 0 {
-			cpmResult.CriticalPathChanged = true
-			_, err := s.riverClient.InsertTx(ctx, tx, &worker.DelayCascadeArgs{
+		// 5. Enqueue a delay cascade ONLY when the critical-path SET actually
+		//    changed (SAME TRANSACTION). A recalc that leaves the same tasks
+		//    critical — e.g. a duration tweak on a task that has float — must
+		//    not fan out an AI-reasoned cascade: that would cost an Opus call
+		//    plus a feed-card stream on every routine recalc. Compare the prior
+		//    critical set (the loaded `tasks`, pre-overwrite) against the
+		//    freshly computed set.
+		priorCritical := make(map[uuid.UUID]bool, len(tasks))
+		priorCount := 0
+		for _, t := range tasks {
+			if t.IsCritical {
+				priorCritical[t.ID] = true
+				priorCount++
+			}
+		}
+		newCount := 0
+		criticalChanged := false
+		for id, sr := range scheduleResults {
+			if sr.IsCritical {
+				newCount++
+				if !priorCritical[id] {
+					criticalChanged = true
+				}
+			}
+		}
+		if newCount != priorCount {
+			criticalChanged = true
+		}
+		cpmResult.CriticalPathChanged = criticalChanged
+
+		if criticalChanged {
+			if _, err := s.riverClient.InsertTx(ctx, tx, &worker.DelayCascadeArgs{
 				OrgID:     callerOrgID,
 				ProjectID: projectID,
-			}, nil)
-			if err != nil {
+			}, nil); err != nil {
 				return fmt.Errorf("enqueue delay cascade: %w", err)
 			}
 		}

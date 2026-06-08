@@ -27,9 +27,12 @@ type CascadeSlippedTask struct {
 }
 
 // CascadeProcurement is one procurement line in the slipped project's orbit.
-// LeadTimeDays + MustOrderBy give the reasoner the ordering pressure;
-// MustOrderBy is a wire-form date string (may be empty when unknown).
+// WBS is the cost-code join key that ties the line to a slipped task / budget
+// line so the reasoner can correlate them (slipped tasks and budget lines also
+// carry WBS). LeadTimeDays + MustOrderBy give the reasoner the ordering
+// pressure; MustOrderBy is a wire-form date string (may be empty when unknown).
 type CascadeProcurement struct {
+	WBS          string `json:"wbs"`
 	Description  string `json:"description"`
 	Status       string `json:"status"`
 	LeadTimeDays int    `json:"lead_time_days,omitempty"`

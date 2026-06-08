@@ -292,13 +292,20 @@ func (w *DelayCascadeWorker) Work(ctx context.Context, job *river.Job[DelayCasca
 		)
 		return fmt.Errorf("delay_cascade: %w", err)
 	}
-	slog.InfoContext(ctx, "delay_cascade completed",
-		"org_id", job.Args.OrgID,
-		"project_id", job.Args.ProjectID,
-		"impacts", res.Impacts,
-		"cards_created", res.CardsCreated,
-		"duration_ms", time.Since(started).Milliseconds(),
-	)
+	// Only the applied path logs a worker-level "completed" line. The
+	// zero-result outcomes (no critical-path slip, empty plan, or a reasoner
+	// soft-fail) are already logged at the right level inside the
+	// orchestrator; emitting an INFO "completed" here too would contradict the
+	// WARN soft-fail line and make the no-op legs indistinguishable in triage.
+	if res.CardsCreated > 0 || res.Impacts > 0 {
+		slog.InfoContext(ctx, "delay_cascade completed",
+			"org_id", job.Args.OrgID,
+			"project_id", job.Args.ProjectID,
+			"impacts", res.Impacts,
+			"cards_created", res.CardsCreated,
+			"duration_ms", time.Since(started).Milliseconds(),
+		)
+	}
 	return nil
 }
 

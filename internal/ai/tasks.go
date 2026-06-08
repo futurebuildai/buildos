@@ -478,12 +478,15 @@ type DelayCascadeSlippedTask struct {
 }
 
 // DelayCascadeProcurement is one procurement line in the slipped project's
-// orbit. LeadTimeDays + MustOrderBy give the model the ordering pressure;
-// MustOrderBy is a wire-form date string (may be empty when unknown).
+// orbit. WBS is the cost-code key that lets the model correlate the line to a
+// slipped task / budget line. LeadTimeDays + MustOrderBy give the model the
+// ordering pressure; MustOrderBy is a wire-form date string (may be empty when
+// unknown).
 type DelayCascadeProcurement struct {
-	Description string `json:"description"`
-	Status      string `json:"status"`
-	LeadTimeDays int   `json:"lead_time_days,omitempty"`
+	WBS          string `json:"wbs"`
+	Description  string `json:"description"`
+	Status       string `json:"status"`
+	LeadTimeDays int    `json:"lead_time_days,omitempty"`
 	MustOrderBy  string `json:"must_order_by,omitempty"`
 }
 

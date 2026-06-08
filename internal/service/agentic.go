@@ -30,7 +30,7 @@ import (
 // cards + audit. Neither leg ever mutates the schedule or the money;
 // the CPM physics engine stays authoritative.
 
-// cascadeWeekdayDateLayout is the wire-form date the cascade context
+// cascadeWireDateLayout is the wire-form date the cascade context
 // ships to the model — YYYY-MM-DD, matching the layout the other AI
 // tasks use for engine-computed dates.
 const cascadeWireDateLayout = "2006-01-02"
@@ -57,14 +57,24 @@ type CascadeReasoner struct {
 	orgID uuid.UUID
 }
 
-// NewCascadeReasoner wires the reasoner to the AI client. orgID is the
-// org whose Anthropic key resolves the call; it is stamped into the
-// context the AI client reads (ai.ContextWithOrgID). A nil ai client is
-// allowed — PlanCascade then returns agentic.ErrReasonerUnavailable so
-// the orchestrator soft-fails (a worker built without AI wiring still
-// runs the deterministic legs and no-ops the reasoning).
-func NewCascadeReasoner(client cascadeReasonerAI, orgID uuid.UUID) *CascadeReasoner {
-	return &CascadeReasoner{ai: client, orgID: orgID}
+// NewCascadeReasoner wires the reasoner to the native AI client. orgID is the
+// org whose Anthropic key resolves the call; it is stamped into the context
+// the AI client reads (ai.ContextWithOrgID). It takes the concrete *ai.Client
+// (not the cascadeReasonerAI interface) precisely to dodge the typed-nil
+// interface hazard: a nil *ai.Client is handled here — the internal reasoner
+// client is left unset, and PlanCascade then returns
+// agentic.ErrReasonerUnavailable so the orchestrator soft-fails (a worker
+// built without AI wiring still runs the deterministic legs and no-ops the
+// reasoning).
+func NewCascadeReasoner(client *ai.Client, orgID uuid.UUID) *CascadeReasoner {
+	r := &CascadeReasoner{orgID: orgID}
+	// Assign only a non-nil client. Storing a nil *ai.Client straight into the
+	// cascadeReasonerAI interface field would make r.ai a non-nil interface
+	// wrapping a nil pointer, defeating the `r.ai == nil` guard in PlanCascade.
+	if client != nil {
+		r.ai = client
+	}
+	return r
 }
 
 // PlanCascade satisfies agentic.Reasoner. Maps the agentic context to the
@@ -95,6 +105,7 @@ func (r *CascadeReasoner) PlanCascade(ctx context.Context, c agentic.CascadeCont
 	}
 	for _, p := range c.Procurement {
 		req.Procurement = append(req.Procurement, ai.DelayCascadeProcurement{
+			WBS:          p.WBS,
 			Description:  p.Description,
 			Status:       p.Status,
 			LeadTimeDays: p.LeadTimeDays,
@@ -231,6 +242,7 @@ func (w *CascadeWorkspace) LoadCascadeContext(ctx context.Context, orgID, projec
 		}
 		for _, it := range items {
 			out.Procurement = append(out.Procurement, agentic.CascadeProcurement{
+				WBS:          it.WBSCode,
 				Description:  it.Name,
 				Status:       it.Status,
 				LeadTimeDays: it.LeadTimeDays,

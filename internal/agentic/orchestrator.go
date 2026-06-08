@@ -16,15 +16,21 @@ var ErrReasonerUnavailable = errors.New("agentic: reasoner unavailable")
 
 // Orchestrator runs cross-module agentic flows over the Reasoner (judgment)
 // and CascadeWorkspace (data/effects) ports. It holds no engine, no store, and
-// no AI client — only the two ports plus a logger.
+// no AI client — only the two ports, the capability registry, and a logger.
 type Orchestrator struct {
 	reasoner  Reasoner
 	workspace CascadeWorkspace
+	registry  *Registry
 	logger    *slog.Logger
 }
 
 // NewOrchestrator constructs an Orchestrator from the two ports and a logger.
 // A nil logger is replaced with slog.Default() so callers need not guard it.
+// The capability registry is seeded in-code (NewRegistry); RunDelayCascade
+// consults it before dispatch, so a capability that isn't registered is
+// refused. Phase 3 swaps the in-code registry for a DB-backed, per-deployment
+// configurable one — at which point this same gate disables a capability
+// without any code change.
 func NewOrchestrator(reasoner Reasoner, workspace CascadeWorkspace, logger *slog.Logger) *Orchestrator {
 	if logger == nil {
 		logger = slog.Default()
@@ -32,21 +38,23 @@ func NewOrchestrator(reasoner Reasoner, workspace CascadeWorkspace, logger *slog
 	return &Orchestrator{
 		reasoner:  reasoner,
 		workspace: workspace,
+		registry:  NewRegistry(),
 		logger:    logger,
 	}
 }
 
 // RunDelayCascade executes the delay-cascade flow:
 //
-//  1. Load the engine-computed context for the slipped project.
-//  2. If the context carries no critical slipped tasks (a non-critical slip
+//  1. Confirm the delay_cascade capability is registered (enabled).
+//  2. Load the engine-computed context for the slipped project.
+//  3. If the context carries no critical slipped tasks (a non-critical slip
 //     that absorbs into float), log and return a zero result, nil — nothing to
 //     surface.
-//  3. Ask the Reasoner to plan the cross-module impacts. If the reasoner is
+//  4. Ask the Reasoner to plan the cross-module impacts. If the reasoner is
 //     unavailable (ErrReasonerUnavailable — e.g. no AI key), soft-fail: log
 //     and return a zero result, nil. AI is advisory; its absence must not
 //     fail the job.
-//  4. Apply the plan (feed cards + audit) via the Workspace in one tx and log
+//  5. Apply the plan (feed cards + audit) via the Workspace in one tx and log
 //     a summary.
 //
 // Hard failures from Load and Apply (real I/O / tx errors) are returned as
@@ -58,6 +66,14 @@ func (o *Orchestrator) RunDelayCascade(ctx context.Context, in DelayCascadeInput
 		slog.String("org_id", in.OrgID.String()),
 		slog.String("project_id", in.ProjectID.String()),
 	)
+
+	if _, ok := o.registry.Lookup(DelayCascade); !ok {
+		// The capability isn't registered/enabled. In Phase 1 the in-code
+		// registry always seeds delay_cascade so this never trips; the gate
+		// is the seam Phase 3's configurable registry uses to disable a
+		// capability per deployment without a code change.
+		return CascadeResult{}, fmt.Errorf("agentic: capability %q not registered", DelayCascade)
+	}
 
 	cc, err := o.workspace.LoadCascadeContext(ctx, in.OrgID, in.ProjectID)
 	if err != nil {

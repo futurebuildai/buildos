@@ -249,3 +249,23 @@ func TestNewOrchestrator_NilLoggerDefaults(t *testing.T) {
 		t.Fatal("expected a non-nil logger after NewOrchestrator(nil)")
 	}
 }
+
+func TestRunDelayCascade_UnregisteredCapability_Errors(t *testing.T) {
+	in := DelayCascadeInput{OrgID: uuid.New(), ProjectID: uuid.New()}
+	ws := &fakeWorkspace{loadCtx: criticalContext()}
+	rsn := &fakeReasoner{}
+
+	o := NewOrchestrator(rsn, ws, nil)
+	// Simulate a deployment where the capability is disabled (the seam Phase 3
+	// drives via the configurable registry).
+	o.registry = &Registry{descriptors: map[Capability]Descriptor{}}
+
+	_, err := o.RunDelayCascade(context.Background(), in)
+	if err == nil {
+		t.Fatal("expected an error when the capability is not registered")
+	}
+	// The gate must short-circuit before any load / reasoning happens.
+	if ws.loadCall != 0 || rsn.calls != 0 {
+		t.Fatalf("must not load/reason when capability is unregistered; load=%d reason=%d", ws.loadCall, rsn.calls)
+	}
+}
