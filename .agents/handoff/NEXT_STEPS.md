@@ -18,7 +18,7 @@ configurable AI harness (`internal/agentic`). [/VISION.md](../../VISION.md) is c
 the pre-pivot `.agents/` specs for direction. The dependency-ordered phases below sit **above** the old
 Tier-1..3 enterprise backlog; pick from here.
 
-### P1 — Phase 1: `internal/agentic` substrate + a real `delay_cascade` (ACTIVE — in flight)
+### P1 — Phase 1: `internal/agentic` substrate + a real `delay_cascade` (✅ DONE — landed `8e11f15` on local `main`, not pushed; ultrareview 7/7 fixed)
 **Goal:** stand up the isolated harness (orchestrator + ports + in-code registry — DB-backed registry is
 Phase 3) and turn the dead `delay_cascade` worker into a real AI-reasoned cross-module cascade:
 schedule slip → load procurement/crew/budget context → AI reasons → apply (feed cards + audit) in ONE
@@ -43,7 +43,7 @@ tx → surface.
 **Verify:** integration test (ephemeral PG) proving a slip → AI-reasoned cross-module cascade as
 actionable feed cards; `make audit` + bench gates + the new isolation gate green.
 
-### P2 — Phase 2: the four harness roles on the substrate (NEXT chunk)
+### P2 — Phase 2: the four harness roles on the substrate (▶ ACTIVE — next chunk; start with 2a Ingestion)
 Dependency-ordered, each its own PR-sized chunk:
 1. **Ingestion** — wire the orphaned `InvoiceExtract` (`internal/ai`) → persist an `invoices` row +
    emit a review feed card (first pipeline). Then field/photo/text intake.
