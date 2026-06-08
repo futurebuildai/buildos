@@ -151,14 +151,49 @@ type CreateInvoiceInput struct {
 	CurrencyCode  string
 	WBSCode       *string
 	DueDate       *time.Time
+	// Source tags the invoice provenance ("manual" | "ai_ingest"). nil →
+	// the store resolves it to the column DEFAULT 'manual'. The manual
+	// CreateInvoice path leaves it nil; the AI ingestion path passes
+	// ptr("ai_ingest").
+	Source *string
 }
 
 // CreateInvoice records a new invoice for a project, scoped to the
 // caller's org. Validates currency code and that the project belongs
 // to the org. Returns the persisted invoice.
 //
-// callerUserSub is recorded on the audit row.
+// callerUserSub is recorded on the audit row. The body delegates to
+// createInvoiceTx so the manual path and the AI ingestion path share one
+// money-validation chokepoint (§7.5(a)).
 func (s *BudgetService) CreateInvoice(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, in CreateInvoiceInput) (models.Invoice, error) {
+	var inv models.Invoice
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		created, err := s.createInvoiceTx(ctx, tx, callerOrgID, callerUserSub, in)
+		if err != nil {
+			return err
+		}
+		inv = created
+		return nil
+	})
+	if err != nil {
+		return models.Invoice{}, mapStoreError(err)
+	}
+	return inv, nil
+}
+
+// createInvoiceTx is the single money-validation chokepoint for invoice
+// creation. It re-applies the three invariants (currency in {USD,CAD},
+// vendor non-empty, amount > 0), verifies the project belongs to the
+// caller's org, writes the invoice via the store, and records the audit
+// row — all on the caller-supplied tx. Both the public CreateInvoice
+// (which opens its own tx) and IngestionService.IngestInvoiceFromDocument
+// (which passes its existing write tx) route through here so no caller can
+// bypass the invariants (§7.5(a)).
+//
+// Validation errors return ErrInvalidInput BEFORE any row or audit is
+// written, so a rejected create leaves no state. The tx ownership stays
+// with the caller (this never commits or rolls back).
+func (s *BudgetService) createInvoiceTx(ctx context.Context, tx pgx.Tx, callerOrgID uuid.UUID, callerUserSub string, in CreateInvoiceInput) (models.Invoice, error) {
 	if err := currency.Validate(in.CurrencyCode); err != nil {
 		return models.Invoice{}, fmt.Errorf("%w: currency_code: %v", ErrInvalidInput, err)
 	}
@@ -169,46 +204,39 @@ func (s *BudgetService) CreateInvoice(ctx context.Context, callerOrgID uuid.UUID
 		return models.Invoice{}, fmt.Errorf("%w: amount_cents must be positive", ErrInvalidInput)
 	}
 
-	var inv models.Invoice
-	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		if err := store.VerifyProjectInOrg(ctx, tx, in.ProjectID, callerOrgID); err != nil {
-			return err
-		}
-		created, err := s.store.CreateInvoice(ctx, tx, store.CreateInvoiceParams{
-			ProjectID:     in.ProjectID,
-			OrgID:         callerOrgID,
-			VendorName:    in.VendorName,
-			InvoiceNumber: in.InvoiceNumber,
-			AmountCents:   in.AmountCents,
-			CurrencyCode:  in.CurrencyCode,
-			WBSCode:       in.WBSCode,
-			DueDate:       in.DueDate,
-		})
-		if err != nil {
-			return err
-		}
-		inv = created
-		s.audit.Record(ctx, tx, AuditEntry{
-			OrgID:        callerOrgID,
-			UserSub:      callerUserSub,
-			Action:       "invoice.created",
-			ResourceType: AuditResourceInvoice,
-			ResourceID:   created.ID,
-			After:        marshalAudit(created),
-			Metadata: marshalAudit(map[string]any{
-				"project_id":   in.ProjectID,
-				"vendor_name":  in.VendorName,
-				"amount_cents": in.AmountCents,
-				"currency":     in.CurrencyCode,
-				"wbs_code":     in.WBSCode,
-			}),
-		})
-		return nil
+	if err := store.VerifyProjectInOrg(ctx, tx, in.ProjectID, callerOrgID); err != nil {
+		return models.Invoice{}, err
+	}
+	created, err := s.store.CreateInvoice(ctx, tx, store.CreateInvoiceParams{
+		ProjectID:     in.ProjectID,
+		OrgID:         callerOrgID,
+		VendorName:    in.VendorName,
+		InvoiceNumber: in.InvoiceNumber,
+		AmountCents:   in.AmountCents,
+		CurrencyCode:  in.CurrencyCode,
+		WBSCode:       in.WBSCode,
+		DueDate:       in.DueDate,
+		Source:        in.Source, // nil → store resolves to 'manual'
 	})
 	if err != nil {
-		return models.Invoice{}, mapStoreError(err)
+		return models.Invoice{}, err
 	}
-	return inv, nil
+	s.audit.Record(ctx, tx, AuditEntry{
+		OrgID:        callerOrgID,
+		UserSub:      callerUserSub,
+		Action:       "invoice.created",
+		ResourceType: AuditResourceInvoice,
+		ResourceID:   created.ID,
+		After:        marshalAudit(created),
+		Metadata: marshalAudit(map[string]any{
+			"project_id":   in.ProjectID,
+			"vendor_name":  in.VendorName,
+			"amount_cents": in.AmountCents,
+			"currency":     in.CurrencyCode,
+			"wbs_code":     in.WBSCode,
+		}),
+	})
+	return created, nil
 }
 
 // UpdateInvoiceInput is the service-layer input for updating an invoice.

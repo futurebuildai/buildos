@@ -191,6 +191,13 @@ func run(logger *slog.Logger) error {
 	fieldService := service.NewFieldService(pool, fieldStore, feedCardsStore, auditService)
 	agentsService := service.NewAgentsService(pool, fieldStore, feedCardsStore, scheduleStore, scheduleService, aiBriefer, aiAdjuster, auditService)
 
+	// Invoice ingestion (Phase 2a). NewIngestionService is typed-nil-safe:
+	// a nil aiClient (vault/AI unconfigured) leaves the internal extractor
+	// seam nil so the pipeline soft-fails with ai.ErrUnconfigured (503)
+	// rather than panicking. Reuses budgetService.createInvoiceTx as the
+	// single money-validation chokepoint.
+	ingestionService := service.NewIngestionService(pool, aiClient, budgetService, store.NewInvoiceIngestionStore(), feedCardsStore, auditService)
+
 	// Onboarding wizard (MB-7). The same *service.SetupService
 	// satisfies both api.SetupServicer (wizard handlers) and
 	// middleware.OnboardingChecker (SetupGate). Wiring it here flips
@@ -288,6 +295,7 @@ func run(logger *slog.Logger) error {
 		IntegrationsService: integrationsSvc,
 		Metrics:             metrics,
 		AgentsService:       agentsService,
+		IngestionService:    ingestionService,
 		SetupService:        setupService,
 		SentryEnabled:       sentryOK,
 		RateLimiter:         middleware.NewIPRateLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst),

@@ -45,6 +45,7 @@ type RouterConfig struct {
 	SetupService        SetupServicer        // optional — when nil, /setup/* routes don't mount AND SetupGate is skipped
 	IntegrationsService IntegrationsServicer // optional — when nil, /integrations/* routes don't mount (vault disabled)
 	AgentsService       AgentsServicer       // optional — when nil, /agents/* routes don't mount
+	IngestionService    InvoiceIngestor      // optional — when nil, the /invoices/ingest route doesn't mount (AI unconfigured)
 	Metrics             MetricsRecorder      // optional — when nil, /metrics doesn't mount and HTTP middleware is skipped
 	SentryEnabled       bool                 // when true, the Sentry HTTP middleware is mounted to capture panics
 	RateLimiter         *mw.IPRateLimiter    // optional — when nil, no rate limiting is applied
@@ -139,6 +140,10 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	var agents *AgentsHandler
 	if cfg.AgentsService != nil {
 		agents = NewAgentsHandler(cfg.AgentsService)
+	}
+	var ingest *IngestHandler
+	if cfg.IngestionService != nil {
+		ingest = NewIngestHandler(cfg.IngestionService)
 	}
 	var setup *SetupHandler
 	if cfg.SetupService != nil {
@@ -254,6 +259,12 @@ func NewRouter(cfg RouterConfig) http.Handler {
 					r.Use(mw.RequireRole(mw.RoleOwner, mw.RoleAdmin))
 					r.Post("/", financials.CreateInvoice)
 					r.Put("/{invoiceID}", financials.UpdateInvoice)
+					// AI invoice ingestion (Phase 2a). Mounts only when
+					// the IngestionService is wired — matches the
+					// conditional-handler pattern used for agents.
+					if ingest != nil {
+						r.Post("/ingest", ingest.IngestInvoice)
+					}
 				})
 
 				// Procurement — owner, admin: full; superintendent: read + request review

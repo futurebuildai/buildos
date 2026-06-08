@@ -295,6 +295,10 @@ type CreateInvoiceParams struct {
 	CurrencyCode  string
 	WBSCode       *string
 	DueDate       *time.Time
+	// Source is the invoice provenance: "manual" | "ai_ingest". Nil leaves the
+	// column at its DEFAULT 'manual' (migration 014), so the manual-entry path
+	// passes nil and the ingestion path passes ptr("ai_ingest").
+	Source *string
 }
 
 // CreateInvoice inserts a new invoice and returns the persisted row.
@@ -304,13 +308,13 @@ func (s *FinancialsStore) CreateInvoice(ctx context.Context, tx pgx.Tx, p Create
 	err := tx.QueryRow(ctx, `
 		INSERT INTO invoices (
 			project_id, org_id, vendor_name, invoice_number,
-			amount_cents, currency_code, wbs_code, due_date
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			amount_cents, currency_code, wbs_code, due_date, source
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, 'manual'))
 		RETURNING id, project_id, org_id, vendor_name, invoice_number,
 		          amount_cents, currency_code, wbs_code, status,
 		          due_date, paid_date, created_at`,
 		p.ProjectID, p.OrgID, p.VendorName, p.InvoiceNumber,
-		p.AmountCents, p.CurrencyCode, p.WBSCode, p.DueDate,
+		p.AmountCents, p.CurrencyCode, p.WBSCode, p.DueDate, p.Source,
 	).Scan(
 		&inv.ID, &inv.ProjectID, &inv.OrgID, &inv.VendorName, &inv.InvoiceNumber,
 		&inv.AmountCents, &inv.CurrencyCode, &inv.WBSCode, &inv.Status,
