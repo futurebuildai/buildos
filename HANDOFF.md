@@ -30,6 +30,8 @@ Companion docs:
 
 ## Last shipped (most recent → older)
 
+- **2026-06-09** [`f28e8b9` (build) + `11f108d` (review fixes) → local `main`, **MERGED (fast-forward), NOT pushed**] **Phase 3c — the admin config web UI. Operator (admin+) `web/` Lit screens that configure the agentic harness from the UI, not curl ("Claude for Small Business inside the ERP") — the web half of the VISION Phase-3 "agents enabled + tuned post-deploy" deliverable. NO backend/Go changes.** Two new admin+ (`gate {roles:['owner','admin']}`, **NOT** plan-gated — the ESC-002 `plan_tier=""` kill-switch must reach admins) routes in the "Manage" nav group, wiring the existing backend admin surfaces: **`/settings/agents`** (`fb-agents-page`, icon `sliders`) enable/disable + tune `delay_cascade`/`foresight`/`experience` via `GET/PUT/DELETE /api/v1/admin/agents` — foresight gets a two-field threshold form (`schedule_float_days`/`budget_burn_percent`), the enable toggle **resends the server-confirmed `savedConfig` snapshot** so the full-document PUT never silently resets tuning, `await load()` in `finally` resyncs the switch from server truth, and an AI-dependency row/banner names the Anthropic-key requirement (owner-only deep link, no admin dead-end); **`/settings/connectors`** (`fb-connectors-page`, icon `command`) toggle the built-in `reference` + create/enable/configure/**refresh**/credential/delete **MCP** instances via `/api/v1/admin/connectors` — the one new molecule **`fb-connector-card`** branches on `kind` (never the name), renders all MCP affordances even when disabled, and manages the optional bearer **in-place** via the existing vault (`connector:<name>`, admin+ — no dead-end to the owner-only integrations page). New `api/endpoints/admin.ts` + `models.ts` wire types + `errors.ts` (`CAPABILITY_DISABLED`) + router/nav/pages-barrel wiring. **Built via the ultra-loop:** a **9-agent design-critique** workflow caught ~18 correctness/a11y risks pre-build (foresight string-coercion + savedConfig, switch resync, explicit error-code branching, `is_active` cred filter, `.submit()` DOM-clear, the happy-dom render footgun) — **0 owner escalations**; a **64-agent max-effort local `/code-review`** (9 finder angles → verify → sweep) then found **15 findings (6 distinct, 0 false positives), ALL FIXED** in `11f108d` + 6 regression tests — top (HIGH): the Edit-endpoint flow shared the Add PUT and hardcoded `enabled:true`, silently re-enabling a disabled MCP + firing an unwanted refresh (now threads the connector's real enabled state); plus focus-restoration `.focus()` no-ops on custom-element hosts (inner-reach + `delegatesFocus` on `fb-connector-card`), stale Add-MCP name on reopen, foresight field errors not landing `aria-invalid`, non-400 modal error behind the backdrop, stale notice after enable→502. **The cloud `/code-review ultra` FAILED (infra: 30-min session timeout, no findings) — not retried; the branch had already passed the 64-agent local max review with all findings fixed.** **Gates green** (`cd web`): typecheck · **231 vitest** · build · eslint+prettier · **Playwright a11y 9/9** + a new authenticated axe sweep `tests/live/admin-config.live.spec.ts` (runs under the live backend harness). Spec: [.agents/handoff/PHASE_3C_ADMIN_UI.md](.agents/handoff/PHASE_3C_ADMIN_UI.md). **Push to `origin/main` when ready** (local `main` is 2 commits ahead of `origin/main`).
+
 - **2026-06-08** [`c1ad182` (build) + `f7a6e4e` (review fixes) + `608948c` (docs) → `main`, **MERGED (fast-forward) + PUSHED to origin**] **Phase 3b-i — Integration layer: the connector framework + tool seam (default-OFF, ZERO network I/O). The foundation 3b-ii's MCP client plugs into.** 3b was SPLIT (owner-approved after a 4-lens design critique found a single chunk under-secured/under-scoped): this is the framework + a trivial in-process built-in connector; 3b-ii (the MCP-over-HTTP client + SSRF egress hardening) is next. **The agentic tool layer already generalizes** (`agentic.Tool/ToolSpec/ToolExecutor` carry no I/O assumptions) so **NO leaf type change** — a connector tool is just a `Tool` whose executor does connector work. New package **`internal/connectors`** sits `agentic ← connectors ← service` (imports ONLY `internal/agentic`; new isolation **Check 3** enforces it + Check 3b keeps core ⊬ connectors). Ships: the `Connector` interface + `Caller` + namespacing/charset helpers + the in-process read-only **`reference`** connector (glossary + supported-currencies; soft-fails bad args as `IsError`); **`connectors_config`** table (migration **017**, `enabled DEFAULT false` — **DEFAULT-OFF**, the opposite of 3a's agents_config) + store + **`ConnectorService`** (two faces: admin CRUD + `ToolsFor` merge); **`/api/v1/admin/connectors`** (GET/PUT/DELETE, admin-gated, **off** the pro tree, SetupGate, audited `connector.config.*`, 404-on-unknown). `buildRegistry` merges enabled connector tools AFTER internal tools, **namespaced** (`conn__<connector>__<tool>`) + **MinRole-floored at admin**, via a new non-panicking `AssistantRegistry.TryAdd`; the connector leg is **FAIL-CLOSED** (any error / nil source ⇒ zero connector tools, chat never breaks) and behind a `connectorToolSource` interface (typed-nil-guarded). **Security posture** (from the critique): default-OFF per org, admin-floored, **Experience-only** (the worker never builds `AssistantService`), collisions structurally impossible. **Review:** max-effort local `/code-review` (48-agent workflow) found **0 critical/high** → fixes in `f7a6e4e` (hardened the invocation seam for 3b-ii: executor **panic → soft IsError** recovery + nil-executor/empty-name skip in `ToolsFor`; audit now records config; shared `validateConfigObject` helper + source constants); declined the deliberately-decoupled request-DTO sharing. **Gates green:** `make audit` ALL PASSED (isolation 1+2+**3**, migration-017 lint, test+test-prod, bench) + `govulncheck` clean (default+prod) + full `make test-integration` exit 0 (0 FAIL; incl. new connectors/service/store tests). **3b-ii owner decisions recorded** (spec §9): full MCP Streamable HTTP (SSE+sessions); private-IP **denylist-only** egress; hand-rolled (**no new dep**). Spec: [.agents/handoff/PHASE_3B_CONNECTOR_FRAMEWORK.md](.agents/handoff/PHASE_3B_CONNECTOR_FRAMEWORK.md).
 
 - **2026-06-08** [`58500ec` (build) + `2eac6ce` (review fixes) + `27e2986` (docs) → `main`, **MERGED (fast-forward) + PUSHED to origin**] **Phase 3a — Configurability: the DB-backed agent config registry. Operators now enable/disable AND tune the agentic capabilities (`delay_cascade`, `foresight`, `experience`) per org, post-deploy, NO redeploy — the VISION Phase-3 "agents enabled and tuned post-deploy via admin config" deliverable (agent half).** Splits the STATIC in-code catalog (`agentic.Registry` — what the binary can run) from the DYNAMIC per-org config (new leaf port `agentic.ConfigResolver` → `CapabilityConfig{Enabled, Config json.RawMessage}`; adapter `service.AgentConfigService` reads `agents_config`, no-row ⇒ enabled-with-catalog-default → **no migration seeding**). `Descriptor` gains `DefaultEnabled`/`DefaultConfig` (foresight default `{schedule_float_days:2,budget_burn_percent:80}` is the SINGLE source of truth — service consts deleted). **Gate placement by trigger boundary:** cascade resolves inside `RunDelayCascade` (one job=one flow); experience inside `Converse` (orgID threaded; `ErrCapabilityDisabled` → **403 `CAPABILITY_DISABLED`**); foresight at the **sweep's per-org boundary** (memoized — ONE resolve/org/sweep, disabled-org short-circuit, resolve-error fails the sweep RETRYABLY not the per-project log+continue bucket). **The one real tune-proof:** foresight thresholds now flow per-org — `ForesightWorkspace.LoadForesightContext` takes a typed leaf `ForesightTuning` (breaking port change; defensive total-parse, garbage⇒defaults); a `{budget_burn_percent:50}` override surfaces a 60%-burn line the 80% default wouldn't (integration-proven). Admin API `/api/v1/admin/agents` (GET list-effective / PUT full-upsert / DELETE idempotent-reset) — **off** the pro-tier `/api/v1/agents` tree (kill-switch reachable regardless of plan tier), behind Auth+SetupGate+`RequireMinRole(admin)`, audit `agent.config.updated`/`agent.config.reset`, 404-on-unknown-capability (catalog is the existence authority), 400-on-bad-config. **Migration 016** (`agents_config`: org_id FK CASCADE, `UNIQUE(org_id,capability)` for ON CONFLICT, JSONB tuning — NEVER secrets, plain index +lock-ok). Fail-mode: config read error = HARD (retry/5xx), never soft-fail. **Isolation HELD** — `internal/agentic` gained ZERO new imports (the leaf-pure `ConfigResolver` fake lives in `agentic/*_test.go`; `make lint-isolation` Check 1+2 green). **Built via the design-critique loop:** an adversarial 4-lens design workflow hardened ~13 decisions pre-build (constructor blast-radius, default-config SoT, sweep fan-out, foresight port change, DELETE idempotency, etc.). **Gates green:** `make audit` ALL PASSED (isolation 1+2, migration-016 lint, bench 138µs/406µs, test+test-prod) + `govulncheck` clean (default+prod) + full `make test-integration` exit 0 (all packages ok, 0 FAIL — incl. new agent_config store/service + foresight tuning-flow + sweep memo tests). **Surfaced + filed [ESC-002](.agents/handoff/ESCALATION_LOG.md#esc-002):** all self-minted tokens carry `plan_tier=""` so `RequirePlanTier(pro)` 402-walls the Experience HTTP endpoint for every real caller (inherited, post-Brain-stale; does NOT block 3a — cascade/foresight are unguarded worker flows, the admin surface is admin-gated). **Review:** a max-effort local `/code-review` (23-agent workflow: 9 finder angles → verify → sweep) found **0 critical/high** across the 2.7k-line diff → **3 fixes in `2eac6ce`** (foresight write-validation now rejects explicit `<=0` thresholds so reported config == executed config; deduped `resolveEnabled` into one leaf helper `resolveCapabilityConfig`; single `TrimSpace`); 4 findings declined as pre-existing/intentional (NewRegistry per-construction idiom, idempotent defensive WithDefaults). **Gates green:** `make audit` ALL PASSED (isolation 1+2, migration-016 lint, bench 138µs/406µs, test+test-prod) + `govulncheck` clean (default+prod) + full `make test-integration` exit 0 (0 FAIL) — re-run green after the review fixes. Spec: [.agents/handoff/PHASE_3A_CONFIG_REGISTRY.md](.agents/handoff/PHASE_3A_CONFIG_REGISTRY.md). **Next chunk: 3b — integration/MCP connector seam.** Watch CI for `govulncheck`/`lint-go` (live-vuln-DB flips can red the job on a new CVE with no code change).
@@ -257,40 +259,12 @@ govulncheck clean. PRs #9 onward also have CI green at merge time
 
 ## In flight
 
-**Phase 3c — the admin config web UI — is BUILT + REVIEWED on branch `feat/phase-3c-admin-ui` (committed,
-NOT pushed/merged). A max-effort local `/code-review` (64-agent workflow: 9 finder angles → verify → sweep)
-found 15 findings (6 distinct, 0 false positives) — ALL FIXED in a follow-up commit + 6 regression tests.
-Top finding (HIGH): the Edit-endpoint flow shared the Add PUT and hardcoded `enabled:true`, silently
-re-enabling a deliberately-disabled MCP + firing an unwanted refresh — now threads the connector's real
-enabled state. Also fixed: focus-restoration `.focus()` no-ops on custom-element hosts (inner-reach +
-`delegatesFocus` on `fb-connector-card`), stale Add-MCP name on reopen, foresight field errors not landing
-`aria-invalid` (per-field `fb-field.error`), non-400 modal error rendering behind the backdrop, and a stale
-notice after enable→502. Local web gates re-green (typecheck · 231 vitest · build · eslint+prettier ·
-playwright a11y 9/9). Awaiting owner `/code-review ultra` (optional) → merge.** Two new admin+ (`{roles:['owner','admin']}`, **NOT** plan-gated —
-ESC-002 kill-switch must reach admins) Lit screens under the "Manage" nav group wire the existing backend
-admin surfaces from the UI, not curl ("Claude for Small Business inside the ERP"):
-- **`/settings/agents`** (`fb-agents-page`, icon `sliders`) — enable/disable + tune the 3 catalog capabilities
-  (`delay_cascade`, `foresight`, `experience`) via `GET/PUT/DELETE /api/v1/admin/agents`. foresight gets a
-  two-field threshold form (`schedule_float_days` / `budget_burn_percent`); the enable toggle resends the
-  **server-confirmed `savedConfig` snapshot** so full-document PUT semantics never silently reset tuning;
-  `await load()` in `finally` resyncs the switch from server truth; an AI-dependency row/banner names the
-  Anthropic-key requirement (owner-only deep link, no admin dead-end).
-- **`/settings/connectors`** (`fb-connectors-page`, icon `command`) — toggle the built-in `reference`
-  connector + create/enable/configure/**refresh**/credential/delete **MCP** instances via
-  `GET/PUT/POST refresh/DELETE /api/v1/admin/connectors`; the card branches on `kind` (never the name),
-  renders all MCP affordances even when disabled, and manages the optional bearer **in-place** via the
-  existing vault (`connector:<name>`, admin+) — no dead-end to the owner-only integrations page. Enabling an
-  MCP auto-refreshes; 502 → persistent card error + Edit-endpoint recovery.
-- **One new molecule** (`fb-connector-card`) + new `api/endpoints/admin.ts` + `models.ts`/`errors.ts`
-  (`CAPABILITY_DISABLED`) + router/nav/pages-barrel wiring. **Design** hardened by a 9-agent critique
-  workflow (caught ~18 correctness/a11y risks pre-build — foresight string-coercion + savedConfig, switch
-  resync, explicit error-code branching, `is_active` cred filter, `.submit()` DOM-clear, happy-dom render
-  footgun) — **0 owner escalations**. **Gates:** `cd web && typecheck · 225 vitest · build · eslint+prettier
-  · playwright a11y 9/9` ALL GREEN. New authenticated axe sweep `tests/live/admin-config.live.spec.ts`
-  (runs under the live backend harness). One real fix during gates: `renderMcps` wrapped its bare
-  `${conditional}` in a static `<section>`/`<div>` (happy-dom silently dropped the cards grid in unit tests;
-  unaffected in a real browser). Spec: [.agents/handoff/PHASE_3C_ADMIN_UI.md](.agents/handoff/PHASE_3C_ADMIN_UI.md).
-  **No backend/Go changes** — `make audit` not required.
+**Phase 3c — the admin config web UI — is COMPLETE: merged (fast-forward) into local `main` (HEAD
+`11f108d`), built + reviewed via the full ultra-loop (9-agent design critique → 10-agent build → 64-agent
+max review, all findings fixed). See the top "Last shipped" entry for the full record. NOT yet pushed —
+local `main` is 2 commits ahead of `origin/main` (`b7f5e11`); push when ready. The cloud `/code-review ultra`
+failed on an infra 30-min timeout (no findings) and was not retried. This completes Phase 3 (3a config
+registry + 3b connector seam + 3c admin UI). NEXT: Phase 4 (production-readiness).**
 
 ---
 
@@ -484,9 +458,14 @@ Known follow-up surfaced by PR #9 (not blocking, queued):
 
 ## Next up (prioritized — pick from the top)
 
-**▶ NEXT: Phase 3 — configurability + integration/MCP layer. Chunk 3a (config registry) is BUILT and
-awaiting ultrareview (see "In flight"); 3b and 3c follow.** Per [PHASES_2-4_ULTRALOOP_PLAN.md](.agents/handoff/PHASES_2-4_ULTRALOOP_PLAN.md)
-§"Phase 3", in dependency order:
+**▶ NEXT: Phase 4 — production-readiness for the real-builder handoff. Phase 3 (configurability +
+integration/MCP layer) is COMPLETE: 3a + 3b + 3c all merged.** Phase 4 = close Flutter field-app gaps
+(check-in/schedule/equipment), harden operator + field + harness workflows end-to-end, onboarding/deploy
+polish, a security review, load/smoke. **First housekeeping:** push local `main` (2 commits ahead of
+`origin/main` from the 3c merge) to origin when ready. **Quick win still open:** decide
+[ESC-002](.agents/handoff/ESCALATION_LOG.md#esc-002) (the `plan_tier=""` 402-wall on `/api/v1/agents/*`) —
+populate `plan_tier` at mint or drop the now-billing-less pro gate; this unblocks the Experience chat the
+3c agents govern. — Phase 3 record (done, in dependency order; full detail in "Last shipped"):
 1. **3a · Config registry — DONE (merged + pushed, HEAD `e471d77`).**
 2. **3b · Integration/MCP seam — SPLIT (owner-approved).**
    - **3b-i · connector framework — DONE on branch `feat/phase-3b-connector-framework`, reviewed clean,
@@ -497,18 +476,11 @@ awaiting ultrareview (see "In flight"); 3b and 3c follow.** Per [PHASES_2-4_ULTR
      clean, no SSRF bypass).** Hand-rolled MCP Streamable-HTTP client + SSRF denylist guard + per-(org,
      endpoint) breaker + `connector_tools` cache + the `mcp` connector type + admin refresh endpoint. Spec:
      [PHASE_3B_II_MCP_CONNECTOR.md](.agents/handoff/PHASE_3B_II_MCP_CONNECTOR.md).
-3. **3c · Admin config UI — BUILT on `feat/phase-3c-admin-ui`, gates green, awaiting owner review.** `web/`
-   Lit screens (`/settings/agents`, `/settings/connectors`) managing agents + connectors + the
-   `connector:<name>` vault credential in-place; admin+ (not plan-gated); create/enable/configure/refresh an
-   MCP instance. A11y + design-system conformant. Spec + full detail:
-   [PHASE_3C_ADMIN_UI.md](.agents/handoff/PHASE_3C_ADMIN_UI.md). **Owner action:** run `/code-review max`
-   (± `ultra`) on the branch → triage → merge (Claude has not committed/pushed/merged).
-Each is its own PR-sized chunk; run ultraplan → ultracode → local gates (`make audit` + `govulncheck` +
-`make test-integration`) → `/code-review ultra` + a local backstop review per chunk (VISION.md ▶ "Working
-process"). **Quick win available now:** decide [ESC-002](.agents/handoff/ESCALATION_LOG.md#esc-002) (the
-`plan_tier` 402-wall) — a small, separate change (populate `plan_tier` at mint, or drop the now-billing-less
-pro gate) that unblocks the Experience HTTP endpoint end-to-end. Phase 4 (production-readiness / Flutter
-field-app gaps / security review) follows Phase 3.
+3. **3c · Admin config UI — DONE (merged → local `main`, HEAD `11f108d`; NOT pushed).** `web/` Lit screens
+   (`/settings/agents`, `/settings/connectors`) managing agents + connectors + the `connector:<name>` vault
+   credential in-place; admin+ (not plan-gated); create/enable/configure/refresh an MCP instance. A11y +
+   design-system conformant. 9-agent design critique → 64-agent max review (6 findings fixed). Cloud
+   `/code-review ultra` timed out (infra, no findings). Spec: [PHASE_3C_ADMIN_UI.md](.agents/handoff/PHASE_3C_ADMIN_UI.md).
 
 ---
 

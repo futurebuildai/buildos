@@ -1,6 +1,6 @@
 # Phase 3c — Admin Config Web UI (agents + connectors)
 
-**Status:** BUILT on `feat/phase-3c-admin-ui` — all local web gates green (typecheck · 225 vitest · build · eslint+prettier · Playwright a11y 9/9). Awaiting owner review (`/code-review max` ± `ultra`) → merge.
+**Status:** DONE — merged (fast-forward) into local `main` (HEAD `11f108d`; not yet pushed). Built via the ultra-loop: 9-agent design critique → 10-agent build → 64-agent max-effort `/code-review` (15 findings → 6 distinct, all fixed + 6 regression tests). Cloud `/code-review ultra` failed on an infra timeout (no findings). Gates green: typecheck · 231 vitest · build · eslint+prettier · Playwright a11y 9/9.
 **Owner of this doc:** Claude Code. **North star:** [VISION.md](../../VISION.md) ("agents enabled and tuned post-deploy via admin config" — the UI half). **Contracts:** [API_CONTRACT.md](API_CONTRACT.md) §13b (agents), §13c (connectors), §13 (vault). **Frontend bindings:** [frontend/](frontend/) FRONTEND_ARCHITECTURE / DESIGN_SYSTEM_COMPONENTS / UX_AUTH_ONBOARDING / UX_CORE_SCREENS.
 
 This spec was hardened by a 9-agent design-critique workflow (2 alternative IAs + 6 adversarial lenses → synthesis). Every wire shape below was read from the live Go structs, not the doc examples.
