@@ -78,8 +78,8 @@ Dependency-ordered, each its own PR-sized chunk:
 DB-backed agent/connector registry, admin config surface (enable + tune agents/integrations post-deploy,
 no redeploy), MCP connector seam, vault-backed credential UI. In dependency order 3a → 3b → 3c:
 
-- **3a · Config registry (✅ BUILT on branch `feat/phase-3a-config-registry`, gates green, awaiting owner
-  ultrareview — NOT merged).** `agents_config` table (migration 016) + leaf `agentic.ConfigResolver` port +
+- **3a · Config registry (✅ DONE — merged + pushed to `origin/main`, HEAD `27e2986`; max-effort review
+  clean, 3 fixes applied).** `agents_config` table (migration 016) + leaf `agentic.ConfigResolver` port +
   `service.AgentConfigService` (admin CRUD + resolver) + `/api/v1/admin/agents` admin API. Per-org
   enable/disable for all three capabilities + foresight threshold tuning, post-deploy. Spec:
   [PHASE_3A_CONFIG_REGISTRY.md](./PHASE_3A_CONFIG_REGISTRY.md). **Entry points for the resolver/gate seam:**
