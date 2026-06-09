@@ -32,7 +32,7 @@ type ProcurementMetric struct {
 	Description        string `json:"description"`
 	Status             string `json:"status"`
 	DaysUntilMustOrder int    `json:"days_until_must_order"` // (must_order_date - today) in whole days; <=0 = overdue
-	Breached           bool   `json:"-"`                      // deterministic gate flag (Status WARNING/CRITICAL)
+	Breached           bool   `json:"-"`                     // deterministic gate flag (Status WARNING/CRITICAL)
 }
 
 // ScheduleMetric: one low-float / critical task. RemainingFloatDays is read
@@ -141,7 +141,9 @@ type ForesightWorkspace interface {
 	LoadForesightContext(ctx context.Context, in ForesightInput) (ForesightContext, error)
 	// ApplyForesight renders the plan into DEDUPED feed cards + audit in one
 	// write tx. A 23505 unique-violation on a card is a clean skip, not an error.
-	ApplyForesight(ctx context.Context, in ForesightInput, plan ForesightPlan) (ForesightResult, error)
+	// The ForesightContext is passed so each card's audit row can carry the
+	// deterministic breach metric that triggered the risk (the plan has none).
+	ApplyForesight(ctx context.Context, in ForesightInput, c ForesightContext, plan ForesightPlan) (ForesightResult, error)
 }
 
 // ForesightOrchestrator runs the foresight flow over its own port pair. It is a
@@ -238,7 +240,7 @@ func (o *ForesightOrchestrator) RunForesight(ctx context.Context, in ForesightIn
 		return ForesightResult{}, nil
 	}
 
-	res, err := o.workspace.ApplyForesight(ctx, in, plan)
+	res, err := o.workspace.ApplyForesight(ctx, in, fc, plan)
 	if err != nil {
 		return ForesightResult{}, fmt.Errorf("agentic: apply foresight: %w", err)
 	}

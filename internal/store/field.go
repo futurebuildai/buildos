@@ -267,3 +267,12 @@ func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == pgerrcode.UniqueViolation
 }
+
+// isUniqueViolationOnConstraint reports whether err is a unique_violation (23505)
+// raised specifically by the named constraint/index (Postgres reports a unique
+// index's name in ConstraintName). Use it when a table has — or may later gain —
+// more than one UNIQUE constraint and the caller must react to only one of them.
+func isUniqueViolationOnConstraint(err error, name string) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == pgerrcode.UniqueViolation && pgErr.ConstraintName == name
+}

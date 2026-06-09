@@ -418,7 +418,7 @@ func TestForesight_NoBreach_NoAICall_NoCard(t *testing.T) {
 	//   - task with comfortable float (> 2) and not critical.
 	//   - budget line at 20% burn (< 80%).
 	seedForesightProcurement(t, fx.pool, fx.projectID, fx.orgID, "Windows", "1.0", "OK", 14)
-	seedForesightTask(t, fx.pool, fx.projectID, "1.0", "Landscaping", 10, 0, false) // float 10, non-critical
+	seedForesightTask(t, fx.pool, fx.projectID, "1.0", "Landscaping", 10, 0, false)     // float 10, non-critical
 	seedForesightBudget(t, fx.pool, fx.projectID, "1.0", "USD", 500000, 100000, 100000) // 20% burn
 
 	reasoner := &fakeForesightReasoner{plan: budgetBurnPlan("1.0")}

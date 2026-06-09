@@ -81,6 +81,7 @@ func (s *ForesightSweepService) RunForesightSweep(ctx context.Context) error {
 	var (
 		afterID       uuid.UUID // uuid.Nil starts; every real uuid sorts after nil
 		projectsSeen  int
+		risksFound    int
 		cardsCreated  int
 		cardsSkipped  int
 		projectErrors int
@@ -124,6 +125,7 @@ func (s *ForesightSweepService) RunForesightSweep(ctx context.Context) error {
 					slog.Any("error", runErr))
 				continue
 			}
+			risksFound += res.Risks
 			cardsCreated += res.CardsCreated
 			cardsSkipped += res.CardsSkipped
 		}
@@ -136,6 +138,7 @@ func (s *ForesightSweepService) RunForesightSweep(ctx context.Context) error {
 
 	log.InfoContext(ctx, "foresight sweep completed",
 		slog.Int("projects", projectsSeen),
+		slog.Int("risks", risksFound),
 		slog.Int("cards_created", cardsCreated),
 		slog.Int("cards_skipped", cardsSkipped),
 		slog.Int("project_errors", projectErrors))

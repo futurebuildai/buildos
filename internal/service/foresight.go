@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -404,9 +405,25 @@ type foresightReviewActionPayload struct {
 //     resource_id = projectID).
 //
 // Card + audit commit or roll back together — same guarantee as ApplyCascade.
-func (w *ForesightWorkspace) ApplyForesight(ctx context.Context, in agentic.ForesightInput, plan agentic.ForesightPlan) (agentic.ForesightResult, error) {
+func (w *ForesightWorkspace) ApplyForesight(ctx context.Context, in agentic.ForesightInput, c agentic.ForesightContext, plan agentic.ForesightPlan) (agentic.ForesightResult, error) {
 	var result agentic.ForesightResult
 	result.Risks = len(plan.Risks)
+
+	// Index the deterministic metrics by WBS per dimension so each risk's audit
+	// row carries the breach value that triggered it (spec §4) — the context is
+	// the only place these numbers exist (the AI plan carries no metric fields).
+	procByWBS := make(map[string]agentic.ProcurementMetric, len(c.Procurement))
+	for _, m := range c.Procurement {
+		procByWBS[m.WBS] = m
+	}
+	schedByWBS := make(map[string]agentic.ScheduleMetric, len(c.Schedule))
+	for _, m := range c.Schedule {
+		schedByWBS[m.WBS] = m
+	}
+	budgetByWBS := make(map[string]agentic.BudgetMetric, len(c.Budget))
+	for _, m := range c.Budget {
+		budgetByWBS[m.WBS] = m
+	}
 
 	err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		pid := in.ProjectID
@@ -462,18 +479,37 @@ func (w *ForesightWorkspace) ApplyForesight(ctx context.Context, in agentic.Fore
 				return fmt.Errorf("create foresight feed card: %w", err)
 			}
 
+			meta := map[string]any{
+				"risk_type":    risk.RiskType,
+				"subject_code": subject,
+				"severity":     risk.Severity,
+				"title":        risk.Title,
+				"card_id":      card.ID,
+			}
+			// Attach the deterministic breach metric that triggered this risk
+			// (spec §4) so post-incident analysis can read the exact value, not
+			// just infer it from the title prose.
+			switch risk.RiskType {
+			case "procurement_criticality":
+				if m, ok := procByWBS[subject]; ok {
+					meta["days_until_must_order"] = m.DaysUntilMustOrder
+					meta["procurement_status"] = m.Status
+				}
+			case "schedule_slip":
+				if m, ok := schedByWBS[subject]; ok {
+					meta["remaining_float_days"] = m.RemainingFloatDays
+				}
+			case "budget_burn":
+				if m, ok := budgetByWBS[subject]; ok {
+					meta["burn_percent"] = m.BurnPercent
+				}
+			}
 			w.audit.Record(ctx, tx, AuditEntry{
 				OrgID:        in.OrgID,
 				Action:       "agentic.foresight.risk_surfaced",
 				ResourceType: AuditResourceForesight,
 				ResourceID:   in.ProjectID,
-				Metadata: marshalAudit(map[string]any{
-					"risk_type":    risk.RiskType,
-					"subject_code": subject,
-					"severity":     risk.Severity,
-					"title":        risk.Title,
-					"card_id":      card.ID,
-				}),
+				Metadata:     marshalAudit(meta),
 			})
 			result.CardsCreated++
 		}
@@ -494,6 +530,12 @@ func (w *ForesightWorkspace) ApplyForesight(ctx context.Context, in agentic.Fore
 func foresightBurnPercent(actualCents, estimatedCents int64) int {
 	if estimatedCents == 0 {
 		return -1
+	}
+	// Defensive overflow guard: actual*100 overflows int64 only at ~$922T
+	// (9.2e16 cents) — impossible for a real project, but divide-first on that
+	// absurd input rather than silently wrapping to a negative percent.
+	if actualCents > math.MaxInt64/100 {
+		return int(actualCents/estimatedCents) * 100
 	}
 	return int(actualCents * 100 / estimatedCents)
 }

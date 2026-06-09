@@ -75,12 +75,12 @@ func (s *FeedCardsStore) CreateFeedCard(ctx context.Context, tx pgx.Tx, p Create
 		&card.Status, &card.ActionedAt, &card.ExpiresAt, &card.CreatedAt,
 	)
 	if err != nil {
-		// A 23505 here can only be the foresight dedup partial unique index
-		// (the only UNIQUE constraint involving feed_cards inserts) — a
-		// concurrent sweep already carded this (project, card_type, subject).
-		// Surface the typed sentinel so ApplyForesight treats it as a clean
-		// skip, not a hard error / retry storm.
-		if isUniqueViolation(err) {
+		// A 23505 on the foresight dedup partial unique index means a concurrent
+		// sweep already carded this (project, card_type, subject). Scope the
+		// sentinel to that specific index BY NAME so a future second UNIQUE
+		// constraint on feed_cards (or a non-foresight caller) is never
+		// mis-mapped — anything else falls through to the generic error.
+		if isUniqueViolationOnConstraint(err, "idx_feed_risk_dedup") {
 			return models.FeedCard{}, ErrDuplicateActiveRiskCard
 		}
 		return models.FeedCard{}, fmt.Errorf("insert feed_card: %w", err)
