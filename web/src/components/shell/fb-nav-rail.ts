@@ -77,10 +77,12 @@ const NAV_MODEL: NavGroupDef[] = [
         gate: { minRole: 'superintendent' },
       },
       {
+        // Role-gated only — NOT plan-gated (ESC-002: the pro gate was dropped;
+        // mirrors the route gate in router.ts).
         label: 'AI Assistant',
         href: '/command/assistant',
         icon: 'sparkles',
-        gate: { minRole: 'superintendent', requiresPro: true },
+        gate: { minRole: 'superintendent' },
       },
     ],
   },

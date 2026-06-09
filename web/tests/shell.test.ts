@@ -52,18 +52,21 @@ describe('fb-nav-rail', () => {
     expect(labels).not.toContain('Activity'); // owner/admin only
   });
 
-  it('gates the pro-only AI Assistant by plan tier', async () => {
+  it('shows the AI Assistant for superintendent+ regardless of plan tier (ESC-002)', async () => {
+    // ESC-002 dropped the pro gate; the AI Assistant is role-gated only, so a
+    // real token (plan_tier="" / "free") still reaches it at superintendent+.
     const free = await mount<FbNavRail>('<fb-nav-rail></fb-nav-rail>');
-    free.userRole = 'admin';
+    free.userRole = 'superintendent';
     free.plan = 'free';
     await free.updateComplete;
-    expect(navLabels(free)).not.toContain('AI Assistant');
+    expect(navLabels(free)).toContain('AI Assistant');
 
-    const pro = await mount<FbNavRail>('<fb-nav-rail></fb-nav-rail>');
-    pro.userRole = 'admin';
-    pro.plan = 'pro';
-    await pro.updateComplete;
-    expect(navLabels(pro)).toContain('AI Assistant');
+    // Still hidden below the role floor (the role gate stays).
+    const field = await mount<FbNavRail>('<fb-nav-rail></fb-nav-rail>');
+    field.userRole = 'field_worker';
+    field.plan = 'free';
+    await field.updateComplete;
+    expect(navLabels(field)).not.toContain('AI Assistant');
   });
 
   it('marks the active route and bubbles navigate', async () => {

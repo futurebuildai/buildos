@@ -139,7 +139,12 @@ export const routes: RouteDef[] = [
     path: '/command/assistant',
     tag: 'fb-assistant-page',
     shell: 'org',
-    gate: { minRole: 'superintendent', requiresPro: true },
+    // Role-gated only — NOT plan-gated. ESC-002 dropped the backend pro gate on
+    // /api/v1/agents/chat (post-pivot billing is gone; every real token carries
+    // plan_tier=""), and FRONTEND_ARCHITECTURE OQ-9 says treat plan_tier as
+    // removed. A requiresPro here would client-side-wall the flagship AI surface
+    // for every real user — the UX mirror of the 402-wall ESC-002 removed.
+    gate: { minRole: 'superintendent' },
     title: 'AI Assistant',
   },
 

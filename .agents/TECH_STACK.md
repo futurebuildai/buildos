@@ -34,7 +34,7 @@ This file is the single source of truth for the project's technology choices. Al
 
 - **Style:** REST
 - **Spec Format:** OpenAPI 3.1
-- **Auth Model:** Native email/password. BuildOS owns identity end-to-end — argon2id password hashing, its own RS256 JWT issuer/verifier (`JWT_PRIVATE_KEY_PEM`/`JWT_PUBLIC_KEY_PEM`, `iss=buildos`, `aud=buildos`), server-revocable opaque refresh tokens, and bootstrap-token first-owner claim. No external OIDC provider. Local RBAC (`owner` > `admin` > `superintendent` > `field_worker`) plus `plan_tier` gating for AI endpoints.
+- **Auth Model:** Native email/password. BuildOS owns identity end-to-end — argon2id password hashing, its own RS256 JWT issuer/verifier (`JWT_PRIVATE_KEY_PEM`/`JWT_PUBLIC_KEY_PEM`, `iss=buildos`, `aud=buildos`), server-revocable opaque refresh tokens, and bootstrap-token first-owner claim. No external OIDC provider. Local RBAC (`owner` > `admin` > `superintendent` > `field_worker`). AI endpoints are role-gated only — the `plan_tier` gate was removed post-pivot (ESC-002), since standalone forks have no billing tiers (the `plan_tier` claim is retained, dormant, for a possible future tiering model).
 
 ## Infrastructure & Deployment
 

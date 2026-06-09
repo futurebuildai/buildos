@@ -19,8 +19,8 @@ type AgentsServicer interface {
 	RecommendScheduleAdjustments(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, projectID uuid.UUID) (service.ScheduleAdjustmentSet, error)
 }
 
-// AgentsHandler exposes BuildOS's AI-agent endpoints. Each handler is
-// gated on a minimum plan tier at the route level.
+// AgentsHandler exposes BuildOS's AI-agent endpoints. Access is role-gated
+// at the route level (the pro plan-tier gate was removed in ESC-002).
 type AgentsHandler struct {
 	svc AgentsServicer
 }
@@ -36,7 +36,8 @@ func NewAgentsHandler(svc AgentsServicer) *AgentsHandler {
 //
 // POST /api/v1/agents/daily-briefing
 //
-// Plan gate: pro tier or higher (applied at the route in router.go).
+// Auth: any authenticated role (the caller's own briefing; the mobile app
+// calls it on launch). The pro plan-tier gate was removed in ESC-002.
 func (h *AgentsHandler) DailyBriefing(w http.ResponseWriter, r *http.Request) {
 	claims := mw.MustClaimsFromContext(r.Context())
 	orgID, err := uuid.Parse(claims.OrgID)
@@ -63,9 +64,8 @@ func (h *AgentsHandler) DailyBriefing(w http.ResponseWriter, r *http.Request) {
 // POST /api/v1/projects/{projectID}/schedule/recommend-adjustments
 //
 // Role gate: superintendent or higher (CPM-affecting; matches the
-// gate on /schedule/recalculate). Plan-tier gate: pro tier or higher
-// (AI consumes the org's metered Anthropic key). Both applied at the
-// route in router.go.
+// gate on /schedule/recalculate), applied at the route in router.go.
+// (The pro plan-tier gate was removed in ESC-002.)
 //
 // Errors:
 //
