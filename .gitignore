@@ -1,5 +1,7 @@
 # Binaries
 bin/
+/server
+/worker
 *.exe
 *.exe~
 *.dll
