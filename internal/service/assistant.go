@@ -349,7 +349,7 @@ func (p chatPlanner) Plan(ctx context.Context, sys string, in agentic.ChatInput,
 		System:   sys,
 		Messages: mapChatMessages(in.Messages),
 		Tools:    mapToolSpecs(reg.Specs()),
-		Invoker:  registryInvoker{reg: reg},
+		Invoker:  registryInvoker{reg: reg, logger: p.logger},
 		Bounds:   mapLoopBounds(b),
 	})
 	if err != nil {
@@ -372,7 +372,10 @@ func (p chatPlanner) Plan(ctx context.Context, sys string, in agentic.ChatInput,
 // to the registry's caller-bound executor and runs it. An unknown tool name or
 // an executor error becomes a soft IsError result fed back to the model — it
 // NEVER aborts the loop (the model self-corrects in prose).
-type registryInvoker struct{ reg *agentic.AssistantRegistry }
+type registryInvoker struct {
+	reg    *agentic.AssistantRegistry
+	logger *slog.Logger
+}
 
 func (i registryInvoker) Invoke(ctx context.Context, name string, input json.RawMessage) (string, bool, error) {
 	exec, ok := i.reg.Executor(name)
@@ -389,8 +392,29 @@ func (i registryInvoker) Invoke(ctx context.Context, name string, input json.Raw
 		})
 		return string(b), true, nil
 	}
-	res, err := exec.Execute(ctx, input)
-	if err != nil {
+	return i.runExecutor(ctx, name, exec, input)
+}
+
+// runExecutor runs one tool executor and turns ANY failure — a returned error OR
+// a panic — into a soft IsError result, upholding the loop contract that a tool
+// failure never aborts the loop / 500s the chat. The panic guard matters for the
+// connector seam (Phase 3b): a third-party/connector executor (3b-ii MCP) that
+// panics must self-correct in prose, not crash the request. A panic is captured
+// (logged) so it is never silently swallowed.
+func (i registryInvoker) runExecutor(ctx context.Context, name string, exec agentic.ToolExecutor, input json.RawMessage) (content string, isError bool, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if i.logger != nil {
+				i.logger.ErrorContext(ctx, "tool executor panicked; recovered as soft error",
+					slog.String("tool", name), slog.Any("panic", r))
+			}
+			content = `{"error":"internal","detail":"tool execution failed"}`
+			isError = true
+			err = nil
+		}
+	}()
+	res, execErr := exec.Execute(ctx, input)
+	if execErr != nil {
 		// Executors are written to return soft IsError results, not Go errors;
 		// a returned error is an unexpected internal failure. Treat as a soft
 		// error result so the loop keeps running.

@@ -1,7 +1,6 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -23,6 +22,12 @@ import (
 const (
 	auditActionConnectorConfigUpdated = "connector.config.updated"
 	auditActionConnectorConfigReset   = "connector.config.reset"
+)
+
+// Effective-config source discriminators surfaced by ListEffective.
+const (
+	connectorSourceDefault  = "default"  // no override row (disabled)
+	connectorSourceOverride = "override" // an explicit per-org row
 )
 
 // ConnectorService is the integration connector registry (Phase 3b). Two faces
@@ -126,12 +131,12 @@ func (s *ConnectorService) ListEffective(ctx context.Context, orgID uuid.UUID) (
 			Description: c.Description(),
 			Enabled:     false, // DEFAULT-OFF
 			Config:      json.RawMessage("{}"),
-			Source:      "default",
+			Source:      connectorSourceDefault,
 		}
 		if row, ok := byName[name]; ok {
 			eff.Enabled = row.Enabled
-			eff.Config = normalizeConfigJSON(row.Config)
-			eff.Source = "override"
+			eff.Config = defaultConfigJSON(row.Config)
+			eff.Source = connectorSourceOverride
 			eff.UpdatedBy = row.UpdatedBy
 			ts := row.UpdatedAt
 			eff.UpdatedAt = &ts
@@ -175,7 +180,7 @@ func (s *ConnectorService) Set(ctx context.Context, in SetConnectorInput) (model
 			Action:       auditActionConnectorConfigUpdated,
 			ResourceType: AuditResourceConnectorConfig,
 			ResourceID:   row.ID,
-			Metadata:     marshalAudit(map[string]any{"connector": in.ConnectorName, "enabled": in.Enabled}),
+			Metadata:     marshalAudit(map[string]any{"connector": in.ConnectorName, "enabled": in.Enabled, "config": json.RawMessage(cfg)}),
 		})
 		return nil
 	})
@@ -261,6 +266,19 @@ func (s *ConnectorService) ToolsFor(ctx context.Context, c connectors.Caller) ([
 			continue
 		}
 		for _, t := range tools {
+			// Defense-in-depth for the connector seam (3b-ii external connectors):
+			// a tool with a nil executor or an empty/illegal name must never be
+			// mounted (it would panic on invocation / advertise a junk name).
+			if t.Executor == nil {
+				s.logger.WarnContext(ctx, "connector tool has a nil executor; dropping",
+					slog.String("connector", name), slog.String("tool", t.Spec.Name))
+				continue
+			}
+			if t.Spec.Name == "" {
+				s.logger.WarnContext(ctx, "connector tool has an empty name; dropping",
+					slog.String("connector", name))
+				continue
+			}
 			namespaced := connectors.NamespaceToolName(name, t.Spec.Name)
 			if !connectors.ValidToolName(namespaced) {
 				s.logger.WarnContext(ctx, "connector tool name invalid after namespacing; dropping",
@@ -287,27 +305,9 @@ func floorConnectorMinRole(declared string) string {
 	return declared
 }
 
-// validateConnectorConfig enforces that the config is a JSON OBJECT (or empty).
-// Returns the normalized raw bytes ("{}" for an empty/nil blob). 3b-i stores but
-// does not interpret connector config (forward-compat for 3b-ii).
+// validateConnectorConfig enforces that the config is a JSON OBJECT (or empty),
+// returning the normalized raw bytes. 3b-i stores but does not interpret connector
+// config (forward-compat for 3b-ii), so this is just the shared object check.
 func validateConnectorConfig(raw json.RawMessage) ([]byte, error) {
-	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) == 0 {
-		return []byte("{}"), nil
-	}
-	if !json.Valid(raw) {
-		return nil, fmt.Errorf("%w: config must be valid JSON", ErrInvalidInput)
-	}
-	if trimmed[0] != '{' {
-		return nil, fmt.Errorf("%w: config must be a JSON object", ErrInvalidInput)
-	}
-	return raw, nil
-}
-
-// normalizeConfigJSON returns a non-empty JSON object for a possibly-empty blob.
-func normalizeConfigJSON(raw json.RawMessage) json.RawMessage {
-	if len(bytes.TrimSpace(raw)) == 0 {
-		return json.RawMessage("{}")
-	}
-	return raw
+	return validateConfigObject(raw)
 }

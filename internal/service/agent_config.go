@@ -263,10 +263,11 @@ func (s *AgentConfigService) Resolve(ctx context.Context, orgID uuid.UUID, c age
 
 // ---- helpers -----------------------------------------------------------
 
-// validateAgentConfig enforces that the config is a JSON OBJECT and, for
-// capabilities with a typed shape (foresight), that its tuning fields are
-// well-formed. Returns the normalized raw bytes ("{}" for an empty/nil blob).
-func validateAgentConfig(capability string, raw json.RawMessage) ([]byte, error) {
+// validateConfigObject enforces that an admin config blob is a JSON OBJECT,
+// returning the normalized raw bytes ("{}" for an empty/nil blob). Shared by the
+// agent (validateAgentConfig) and connector (validateConnectorConfig) config
+// validators — the common prologue before any capability/connector-specific rules.
+func validateConfigObject(raw json.RawMessage) ([]byte, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
 		return []byte("{}"), nil
@@ -277,8 +278,21 @@ func validateAgentConfig(capability string, raw json.RawMessage) ([]byte, error)
 	if trimmed[0] != '{' {
 		return nil, fmt.Errorf("%w: config must be a JSON object", ErrInvalidInput)
 	}
+	return raw, nil
+}
 
-	if capability == agentic.Foresight.String() {
+// validateAgentConfig enforces that the config is a JSON OBJECT and, for
+// capabilities with a typed shape (foresight), that its tuning fields are
+// well-formed. Returns the normalized raw bytes ("{}" for an empty/nil blob).
+func validateAgentConfig(capability string, raw json.RawMessage) ([]byte, error) {
+	cfg, err := validateConfigObject(raw)
+	if err != nil {
+		return nil, err
+	}
+
+	// Capability-specific rules run only on a non-empty object (an empty/omitted
+	// config means "use defaults" and must not trip the foresight probe).
+	if capability == agentic.Foresight.String() && len(bytes.TrimSpace(raw)) > 0 {
 		// Reject any EXPLICIT non-positive threshold at write time. The runtime
 		// (agentic.ForesightTuning.WithDefaults) treats <=0 as "unset → use the
 		// documented default", so persisting an explicit 0 would be stored and
@@ -299,7 +313,7 @@ func validateAgentConfig(capability string, raw json.RawMessage) ([]byte, error)
 			return nil, fmt.Errorf("%w: budget_burn_percent must be a positive integer", ErrInvalidInput)
 		}
 	}
-	return raw, nil
+	return cfg, nil
 }
 
 // defaultConfigJSON normalizes a possibly-empty raw config to a non-empty JSON

@@ -37,6 +37,33 @@ func (noopExecutor) Execute(_ context.Context, _ json.RawMessage) (agentic.ToolR
 	return agentic.ToolResult{Content: "{}"}, nil
 }
 
+// panicExecutor models a buggy/hostile (e.g. future 3b-ii MCP) executor.
+type panicExecutor struct{}
+
+func (panicExecutor) Execute(_ context.Context, _ json.RawMessage) (agentic.ToolResult, error) {
+	panic("executor boom")
+}
+
+// A panicking tool executor must be recovered into a soft IsError result (the
+// loop contract: a tool failure never aborts the loop / 500s the chat), not
+// propagate as a panic. This hardens the connector seam for 3b-ii.
+func TestRegistryInvoker_ExecutorPanic_RecoversAsSoftError(t *testing.T) {
+	reg := agentic.NewAssistantRegistry()
+	reg.Add(agentic.Tool{Spec: agentic.ToolSpec{Name: "conn__x__boom"}, Executor: panicExecutor{}})
+	inv := registryInvoker{reg: reg, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+	content, isErr, err := inv.Invoke(context.Background(), "conn__x__boom", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("a panicking executor must NOT propagate a Go error: %v", err)
+	}
+	if !isErr {
+		t.Error("a panicking executor must surface as a soft IsError result")
+	}
+	if !strings.Contains(content, "error") {
+		t.Errorf("content = %q, want a soft error payload", content)
+	}
+}
+
 // ---- fake assistantAI ---------------------------------------------------
 
 // fakeAssistantAI is the test double for the bounded tool-use loop. It can
