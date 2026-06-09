@@ -257,9 +257,16 @@ govulncheck clean. PRs #9 onward also have CI green at merge time
 
 ## In flight
 
-**Phase 3c — the admin config web UI — is BUILT on branch `feat/phase-3c-admin-ui` (NOT committed/pushed
-until owner review; this branch is the ultracode deliverable). All local web gates green; awaiting owner
-`/code-review max` (± `ultra`) → merge.** Two new admin+ (`{roles:['owner','admin']}`, **NOT** plan-gated —
+**Phase 3c — the admin config web UI — is BUILT + REVIEWED on branch `feat/phase-3c-admin-ui` (committed,
+NOT pushed/merged). A max-effort local `/code-review` (64-agent workflow: 9 finder angles → verify → sweep)
+found 15 findings (6 distinct, 0 false positives) — ALL FIXED in a follow-up commit + 6 regression tests.
+Top finding (HIGH): the Edit-endpoint flow shared the Add PUT and hardcoded `enabled:true`, silently
+re-enabling a deliberately-disabled MCP + firing an unwanted refresh — now threads the connector's real
+enabled state. Also fixed: focus-restoration `.focus()` no-ops on custom-element hosts (inner-reach +
+`delegatesFocus` on `fb-connector-card`), stale Add-MCP name on reopen, foresight field errors not landing
+`aria-invalid` (per-field `fb-field.error`), non-400 modal error rendering behind the backdrop, and a stale
+notice after enable→502. Local web gates re-green (typecheck · 231 vitest · build · eslint+prettier ·
+playwright a11y 9/9). Awaiting owner `/code-review ultra` (optional) → merge.** Two new admin+ (`{roles:['owner','admin']}`, **NOT** plan-gated —
 ESC-002 kill-switch must reach admins) Lit screens under the "Manage" nav group wire the existing backend
 admin surfaces from the UI, not curl ("Claude for Small Business inside the ERP"):
 - **`/settings/agents`** (`fb-agents-page`, icon `sliders`) — enable/disable + tune the 3 catalog capabilities

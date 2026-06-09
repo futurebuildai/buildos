@@ -230,6 +230,15 @@ export class FbAgentsPage extends SignalWatcher(FBElement) {
   @state() private confirmReset: AgentCapability | null = null;
   /** Capability whose acted-on control should regain focus after a refetch. */
   private refocus: AgentCapability | null = null;
+  /**
+   * Per-field foresight errors (wire field → message), bound to each `fb-field`'s
+   * `error` prop so the offending input gets `aria-invalid` + `aria-describedby`.
+   * The fb-form summary (role=alert) announces; this lands the error ON the field.
+   */
+  @state() private foresightErrors: {
+    schedule_float_days?: string;
+    budget_burn_percent?: string;
+  } = {};
 
   override connectedCallback(): void {
     super.connectedCallback();
@@ -261,8 +270,11 @@ export class FbAgentsPage extends SignalWatcher(FBElement) {
     if (this.refocus && !this.loading) {
       const cap = this.refocus;
       this.refocus = null;
-      const sw = this.renderRoot.querySelector<HTMLElement>(`fb-switch[data-cap='${cap}']`);
-      sw?.focus();
+      // fb-switch has no focus delegation, so host.focus() is a no-op — reach the
+      // inner native control (mirrors focusNameOrEndpoint in fb-connectors-page).
+      const sw = this.renderRoot.querySelector(`fb-switch[data-cap='${cap}']`);
+      const inner = sw?.shadowRoot?.querySelector<HTMLElement>('input');
+      (inner ?? (sw as HTMLElement | null))?.focus();
     }
   }
 
@@ -328,19 +340,25 @@ export class FbAgentsPage extends SignalWatcher(FBElement) {
     // fb-form yields STRINGS. Coerce + client-validate Number.isInteger && >= 1
     // BEFORE any PUT; empty/NaN/0 → fb-form.setErrors keyed by the HUMAN LABEL.
     const fieldErrors: Record<string, string> = {};
+    const perField: { schedule_float_days?: string; budget_burn_percent?: string } = {};
     const float = Number(values['schedule_float_days']);
     const burn = Number(values['budget_burn_percent']);
+    const INT_MSG = 'Enter a whole number of 1 or more.';
     if (!Number.isInteger(float) || float < 1) {
-      fieldErrors[FORESIGHT_LABELS.schedule_float_days] = 'Enter a whole number of 1 or more.';
+      fieldErrors[FORESIGHT_LABELS.schedule_float_days] = INT_MSG;
+      perField.schedule_float_days = INT_MSG;
     }
     if (!Number.isInteger(burn) || burn < 1) {
-      fieldErrors[FORESIGHT_LABELS.budget_burn_percent] = 'Enter a whole number of 1 or more.';
+      fieldErrors[FORESIGHT_LABELS.budget_burn_percent] = INT_MSG;
+      perField.budget_burn_percent = INT_MSG;
     }
     if (Object.keys(fieldErrors).length > 0) {
       form?.setErrors(fieldErrors);
+      this.foresightErrors = perField; // also land aria-invalid on the inputs
       return;
     }
     form?.setErrors({});
+    this.foresightErrors = {};
 
     this.notice = null;
     this.setBusy(cap, true);
@@ -349,6 +367,7 @@ export class FbAgentsPage extends SignalWatcher(FBElement) {
       // config sent as an OBJECT (never JSON.stringify'd); keep enabled authoritative.
       const saved = await setAgent(cap, { enabled: current.enabled, config });
       const eff = readForesightConfig(saved.config);
+      this.foresightErrors = {};
       this.notice = {
         kind: 'ok',
         text: `Risk early-warning will now warn you at ${eff.budget_burn_percent}% budget and ${eff.schedule_float_days} days of slack.`,
@@ -358,20 +377,27 @@ export class FbAgentsPage extends SignalWatcher(FBElement) {
       if (err instanceof ApiError && err.code === ErrorCode.VALIDATION_ERROR) {
         // Map wire field → human label so aria-invalid lands on the right input.
         const mapped: Record<string, string> = {};
+        const perField: { schedule_float_days?: string; budget_burn_percent?: string } = {};
         for (const d of err.details) {
-          const label =
-            d.field === 'schedule_float_days'
-              ? FORESIGHT_LABELS.schedule_float_days
-              : d.field === 'budget_burn_percent'
-                ? FORESIGHT_LABELS.budget_burn_percent
-                : d.field;
-          mapped[label] = d.reason;
+          if (d.field === 'schedule_float_days') {
+            mapped[FORESIGHT_LABELS.schedule_float_days] = d.reason;
+            perField.schedule_float_days = d.reason;
+          } else if (d.field === 'budget_burn_percent') {
+            mapped[FORESIGHT_LABELS.budget_burn_percent] = d.reason;
+            perField.budget_burn_percent = d.reason;
+          } else {
+            mapped[d.field] = d.reason;
+          }
         }
         form?.setErrors(
           Object.keys(mapped).length > 0
             ? mapped
             : { [FORESIGHT_LABELS.budget_burn_percent]: 'Those thresholds were rejected.' },
         );
+        this.foresightErrors =
+          Object.keys(perField).length > 0
+            ? perField
+            : { budget_burn_percent: 'Those thresholds were rejected.' };
       } else {
         this.notice = { kind: 'err', text: 'Couldn’t save the warning thresholds.' };
       }
@@ -385,6 +411,7 @@ export class FbAgentsPage extends SignalWatcher(FBElement) {
   private async onReset(cap: AgentCapability): Promise<void> {
     if (this.busy.has(cap)) return;
     this.notice = null;
+    if (cap === 'foresight') this.foresightErrors = {};
     this.setBusy(cap, true);
     try {
       await resetAgent(cap);
@@ -455,6 +482,7 @@ export class FbAgentsPage extends SignalWatcher(FBElement) {
             <fb-field
               class="num"
               label=${FORESIGHT_LABELS.schedule_float_days}
+              error=${this.foresightErrors.schedule_float_days ?? ''}
               hint="Warn me when a task has this many days or fewer of slack left — lower warns sooner."
             >
               <fb-input
@@ -470,6 +498,7 @@ export class FbAgentsPage extends SignalWatcher(FBElement) {
             <fb-field
               class="num"
               label=${FORESIGHT_LABELS.budget_burn_percent}
+              error=${this.foresightErrors.budget_burn_percent ?? ''}
               hint="Warn me once a project has spent this share of its budget (e.g. 80 = at 80% spent)."
             >
               <fb-input

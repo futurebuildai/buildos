@@ -41,6 +41,9 @@ interface PageInternals {
   integrations: IntegrationCredential[];
   integrationsUnknown: boolean;
   modalOpen: boolean;
+  modalError: string;
+  editEnabled: boolean;
+  addName: string;
   notice: { kind: 'ok' | 'err'; text: string } | null;
   cardErrors: Map<string, string>;
   mcps: EffectiveConnector[];
@@ -53,7 +56,14 @@ interface PageInternals {
   onRequestDelete(name: string): void;
   onConfirmDelete(): Promise<void>;
   onModalSubmit(e: Event): Promise<void>;
+  onEditEndpoint(name: string, enabled: boolean, endpoint: string): void;
   openAdd(): void;
+  closeModal(): void;
+}
+
+/** Drive the modal's fb-form submit the way the page wires it. */
+function submitForm(el: HTMLElement, values: Record<string, string>): Promise<void> {
+  return internals(el).onModalSubmit(new CustomEvent('submit', { detail: { values } }));
 }
 
 function internals(el: HTMLElement): PageInternals {
@@ -537,6 +547,68 @@ describe('fb-connectors-page — delete', () => {
     await internals(el).onConfirmDelete();
     await settle(el);
     expect(internals(el).notice?.kind).toBe('ok');
+  });
+});
+
+// --------------------------- Edit endpoint (re-PUT) ---------------------------
+
+describe('fb-connectors-page — edit endpoint', () => {
+  it('editing a DISABLED MCP preserves enabled=false and does NOT auto-refresh', async () => {
+    vi.mocked(adminApi.listConnectors).mockResolvedValue([BUILTIN, MCP_DISABLED]); // enabled:false
+    const el = await mountPage();
+    // The page captures the connector's CURRENT enabled state when opening Edit.
+    internals(el).onEditEndpoint('estimator', false, 'https://old.example.com');
+    await submitForm(el, { endpoint: 'https://new.example.com' });
+    await settle(el);
+    // Full-document PUT must NOT force enabled:true (would silently re-enable).
+    expect(adminApi.setConnector).toHaveBeenCalledWith('estimator', {
+      enabled: false,
+      kind: 'mcp',
+      config: { endpoint: 'https://new.example.com' },
+    });
+    // A disabled connector is never dialed.
+    expect(adminApi.refreshConnector).not.toHaveBeenCalled();
+  });
+
+  it('editing an ENABLED MCP keeps enabled=true and re-refreshes', async () => {
+    vi.mocked(adminApi.listConnectors).mockResolvedValue([BUILTIN, MCP_NEVER]); // enabled:true
+    const el = await mountPage();
+    internals(el).onEditEndpoint('estimator', true, 'https://tools.example.com');
+    await submitForm(el, { endpoint: 'https://new.example.com' });
+    await settle(el);
+    expect(adminApi.setConnector).toHaveBeenCalledWith('estimator', {
+      enabled: true,
+      kind: 'mcp',
+      config: { endpoint: 'https://new.example.com' },
+    });
+    expect(adminApi.refreshConnector).toHaveBeenCalledWith('estimator');
+  });
+});
+
+// ------------------------- Modal hygiene (name / error) -------------------------
+
+describe('fb-connectors-page — modal hygiene', () => {
+  it('resets the Add Name field on reopen (no stale value)', async () => {
+    const el = await mountPage();
+    internals(el).openAdd();
+    internals(el).addName = 'estimator';
+    internals(el).closeModal();
+    internals(el).openAdd();
+    expect(internals(el).addName).toBe('');
+  });
+
+  it('surfaces a non-400 Add error INSIDE the modal (not a page notice behind the backdrop)', async () => {
+    vi.mocked(adminApi.setConnector).mockRejectedValueOnce(apiError(ErrorCode.UPSTREAM_ERROR, 502));
+    const el = await mountPage();
+    internals(el).openAdd();
+    await submitForm(el, { name: 'estimator', endpoint: 'https://tools.example.com' });
+    await settle(el);
+    // Modal stays open with a modal-level error; the page notice (which renders
+    // behind the modal backdrop) is NOT used for this.
+    expect(internals(el).modalOpen).toBe(true);
+    expect(internals(el).modalError.length).toBeGreaterThan(0);
+    expect(internals(el).notice).toBeNull();
+    expect(adminApi.refreshConnector).not.toHaveBeenCalled();
   });
 });
 

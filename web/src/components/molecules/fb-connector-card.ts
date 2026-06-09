@@ -41,6 +41,11 @@ export type CredState = 'set' | 'none' | 'unknown';
  */
 @customElement('fb-connector-card')
 export class FbConnectorCard extends FBElement {
+  // Delegate focus so the page can restore keyboard focus into this card after a
+  // refetch re-render (host.focus() → the card's first focusable control) without
+  // reaching across the shadow boundary. See fb-connectors-page.updated().
+  static override shadowRootOptions = { ...FBElement.shadowRootOptions, delegatesFocus: true };
+
   static override styles = [
     FBElement.styles,
     css`

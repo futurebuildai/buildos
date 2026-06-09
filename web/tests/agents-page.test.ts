@@ -282,6 +282,43 @@ describe('fb-agents-page — foresight Save coercion & validation', () => {
     // The other field's label is NOT keyed by this single-field error.
     expect(summary?.textContent).not.toContain('Budget spent warning (%)');
   });
+
+  it('binds a 400 error onto the offending fb-field (aria-invalid), not only the summary', async () => {
+    vi.mocked(adminApi.setAgent).mockRejectedValueOnce(
+      apiError(ErrorCode.VALIDATION_ERROR, 400, [
+        { field: 'budget_burn_percent', reason: 'must be a positive integer' },
+      ]),
+    );
+    const el = await mount('fb-agents-page');
+    await flush(el);
+    submitForesight(el, { schedule_float_days: '3', budget_burn_percent: '85' });
+    await flush(el);
+
+    // The budget field's fb-field carries the error (so its inner input gets
+    // aria-invalid + aria-describedby), and the float field does NOT.
+    const fields = sr(el).querySelectorAll<HTMLElement & { error?: string }>(
+      "fb-form[data-cap='foresight'] fb-field",
+    );
+    const errs = [...fields].map((f) => f.getAttribute('error') ?? '');
+    expect(errs.some((e) => e.includes('must be a positive integer'))).toBe(true);
+    // Exactly one field is flagged (the budget one), not both.
+    expect(errs.filter((e) => e.length > 0).length).toBe(1);
+  });
+
+  it('clears per-field errors after a subsequent successful save', async () => {
+    const el = await mount('fb-agents-page');
+    await flush(el);
+    // First: a client-side rejection flags both fields.
+    submitForesight(el, { schedule_float_days: '', budget_burn_percent: '' });
+    await flush(el);
+    let fields = sr(el).querySelectorAll("fb-form[data-cap='foresight'] fb-field");
+    expect([...fields].some((f) => (f.getAttribute('error') ?? '').length > 0)).toBe(true);
+    // Then: a valid save clears them.
+    submitForesight(el, { schedule_float_days: '3', budget_burn_percent: '85' });
+    await flush(el);
+    fields = sr(el).querySelectorAll("fb-form[data-cap='foresight'] fb-field");
+    expect([...fields].every((f) => (f.getAttribute('error') ?? '').length === 0)).toBe(true);
+  });
 });
 
 // ============================================================================

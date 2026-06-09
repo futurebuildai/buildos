@@ -98,6 +98,20 @@ export class FbConnectorsPage extends FBElement {
         background: color-mix(in srgb, var(--fb-safety-red) 10%, transparent);
         border: 1px solid var(--fb-safety-red);
       }
+      /* Same red treatment as .notice.err but lives INSIDE the modal flow (no
+         bottom margin — the .modal-form gap handles spacing). */
+      .modal-error {
+        display: flex;
+        align-items: center;
+        gap: var(--fb-spacing-xs);
+        margin: 0;
+        padding: var(--fb-spacing-sm) var(--fb-spacing-md);
+        font-size: var(--fb-text-body-sm);
+        color: var(--fb-safety-red);
+        background: color-mix(in srgb, var(--fb-safety-red) 10%, transparent);
+        border: 1px solid var(--fb-safety-red);
+        border-radius: var(--fb-radius-sm);
+      }
       .group-label {
         margin: var(--fb-spacing-lg) 0 var(--fb-spacing-sm);
         font-size: var(--fb-text-label-sm);
@@ -137,12 +151,20 @@ export class FbConnectorsPage extends FBElement {
   @state() private busy = new Set<string>();
   /** Per-connector persistent error copy (name → message), e.g. a refresh 502. */
   @state() private cardErrors = new Map<string, string>();
+  /** Card to refocus after a refetch re-renders the grid (keyboard focus, WCAG 2.4.3). */
+  private refocusCard: string | null = null;
 
   // ---- Add / Edit MCP modal ----
   @state() private modalOpen = false;
   /** When editing, the locked connector name; null when adding a new instance. */
   @state() private editName: string | null = null;
   @state() private editEndpoint = '';
+  /** Editing preserves the connector's CURRENT enabled state — never force it on. */
+  @state() private editEnabled = true;
+  /** Controlled value for the Add-flow Name field so it resets on reopen (not stale). */
+  @state() private addName = '';
+  /** Non-400 PUT failure shown INSIDE the modal (a page notice renders behind the backdrop). */
+  @state() private modalError = '';
   @state() private modalBusy = false;
 
   // ---- Delete confirm ----
@@ -155,6 +177,20 @@ export class FbConnectorsPage extends FBElement {
   override connectedCallback(): void {
     super.connectedCallback();
     void this.load();
+  }
+
+  override updated(): void {
+    // Restore focus to the acted-on card after a refetch re-renders the grid —
+    // otherwise inline card actions drop focus to <body> (WCAG 2.4.3).
+    // fb-connector-card delegates focus to its first control, so focusing the
+    // host host lands focus inside that card (not the page top / body).
+    if (this.refocusCard && !this.loading && !this.modalOpen) {
+      const name = this.refocusCard;
+      this.refocusCard = null;
+      this.renderRoot
+        .querySelector<HTMLElement>(`fb-connector-card[data-connector='${name}']`)
+        ?.focus?.();
+    }
   }
 
   /** Primary + secondary fetch. Connectors block the page; integrations degrade. */
@@ -259,6 +295,7 @@ export class FbConnectorsPage extends FBElement {
       this.notice = { kind: 'err', text: this.connectorErr(err, c.connector) };
     } finally {
       this.setBusy(c.connector, false);
+      this.refocusCard = c.connector;
       await this.load();
     }
     // After a successful enable of an MCP, auto-run tools/list (PUT doesn't).
@@ -268,6 +305,9 @@ export class FbConnectorsPage extends FBElement {
   /** Refresh tools (MCP). A 502 UPSTREAM_ERROR becomes a persistent card error. */
   private async onRefresh(name: string): Promise<void> {
     if (this.isBusy(name)) return;
+    // Clear any stale page notice (e.g. a green "Turned on" from the enable that
+    // triggered this auto-refresh) so it can't contradict a refresh card-error.
+    this.notice = null;
     this.setBusy(name, true);
     this.setCardError(name, null);
     try {
@@ -287,6 +327,7 @@ export class FbConnectorsPage extends FBElement {
       }
     } finally {
       this.setBusy(name, false);
+      this.refocusCard = name;
       await this.load();
     }
   }
@@ -310,6 +351,7 @@ export class FbConnectorsPage extends FBElement {
       // Wipe plaintext from the DOM (success AND error), then refresh last4.
       card.clearCredential();
       this.setBusy(name, false);
+      this.refocusCard = name;
       try {
         this.integrations = await listIntegrations();
         this.integrationsUnknown = false;
@@ -370,11 +412,17 @@ export class FbConnectorsPage extends FBElement {
     }
   }
 
-  /** Edit-endpoint affordance: re-PUT path. Reuse the modal, name locked. */
-  private onEditEndpoint(name: string, endpoint: string): void {
+  /**
+   * Edit-endpoint affordance: re-PUT path. Reuse the modal, name locked. Capture
+   * the connector's CURRENT enabled state so the full-document PUT preserves it —
+   * editing a disabled instance's address must NOT silently re-enable it.
+   */
+  private onEditEndpoint(name: string, enabled: boolean, endpoint: string): void {
     if (this.isBusy(name)) return;
     this.editName = name;
+    this.editEnabled = enabled;
     this.editEndpoint = endpoint;
+    this.modalError = '';
     this.modalOpen = true;
     this.modalForm?.setErrors({});
     void this.focusNameOrEndpoint();
@@ -384,7 +432,10 @@ export class FbConnectorsPage extends FBElement {
 
   private openAdd(): void {
     this.editName = null;
+    this.editEnabled = true; // a new instance is created enabled
+    this.addName = '';
     this.editEndpoint = '';
+    this.modalError = '';
     this.modalOpen = true;
     this.modalForm?.setErrors({});
     void this.focusNameOrEndpoint();
@@ -393,7 +444,10 @@ export class FbConnectorsPage extends FBElement {
   private closeModal(): void {
     this.modalOpen = false;
     this.editName = null;
+    this.editEnabled = true;
+    this.addName = '';
     this.editEndpoint = '';
+    this.modalError = '';
     this.modalForm?.setErrors({});
   }
 
@@ -422,10 +476,16 @@ export class FbConnectorsPage extends FBElement {
       return;
     }
 
+    // Editing preserves the connector's current enabled state; a new instance is
+    // created enabled. NEVER force enabled=true on edit (the full-document PUT
+    // would silently re-enable a deliberately-disabled connector).
+    const enabled = editing ? this.editEnabled : true;
+
     this.modalBusy = true;
+    this.modalError = '';
     this.modalForm?.setErrors({});
     try {
-      await setConnector(name, { enabled: true, kind: 'mcp', config: { endpoint } });
+      await setConnector(name, { enabled, kind: 'mcp', config: { endpoint } });
     } catch (err) {
       // 400 → stay in the modal, map details[] to the human labels.
       if (
@@ -439,18 +499,20 @@ export class FbConnectorsPage extends FBElement {
           [ENDPOINT_LABEL]: err.message || 'That didn’t work — check the address.',
         });
       } else {
-        this.notice = { kind: 'err', text: this.connectorErr(err, name) };
-        this.modalBusy = false;
-        return;
+        // Non-400 (502/500/network): surface INSIDE the modal — a page notice
+        // renders behind the modal backdrop and would be invisible.
+        this.modalError = this.connectorErr(err, name);
       }
       this.modalBusy = false;
       return;
     }
     this.modalBusy = false;
     this.closeModal();
-    // Reload FIRST so the new/updated card is in the DOM, THEN refresh its tools.
+    // Reload FIRST so the new/updated card is in the DOM, THEN (only when the
+    // connector is enabled) refresh its tools — never dial a disabled instance.
+    this.refocusCard = name;
     await this.load();
-    await this.onRefresh(name);
+    if (enabled) await this.onRefresh(name);
   }
 
   private mapDetails(details: { field: string; reason: string }[]): Record<string, string> {
@@ -488,7 +550,11 @@ export class FbConnectorsPage extends FBElement {
 
   private focusAddButton(): void {
     void this.updateComplete.then(() => {
-      this.renderRoot.querySelector<HTMLElement & { focus(): void }>('fb-button.add')?.focus?.();
+      // fb-button has no focus delegation, so host.focus() is a no-op — reach the
+      // inner native <button> (mirrors focusNameOrEndpoint).
+      const host = this.renderRoot.querySelector('fb-button.add');
+      const inner = host?.shadowRoot?.querySelector<HTMLElement>('button');
+      (inner ?? (host as HTMLElement | null))?.focus?.();
     });
   }
 
@@ -566,6 +632,7 @@ export class FbConnectorsPage extends FBElement {
         ${items.map(
           (c) =>
             html`<fb-connector-card
+              data-connector=${c.connector}
               .connector=${c}
               ?busy=${this.isBusy(c.connector)}
               @toggle=${(e: Event) =>
@@ -591,6 +658,7 @@ export class FbConnectorsPage extends FBElement {
           ${items.map((c) => {
             const refreshError = this.cardErrors.get(c.connector);
             return html`<fb-connector-card
+              data-connector=${c.connector}
               .connector=${c}
               cred-state=${this.credStateFor(c.connector)}
               cred-last4=${this.credLast4For(c.connector) ?? nothing}
@@ -608,6 +676,7 @@ export class FbConnectorsPage extends FBElement {
               @edit-endpoint=${(e: Event) =>
                 this.onEditEndpoint(
                   c.connector,
+                  c.enabled,
                   (e as CustomEvent<{ endpoint: string }>).detail.endpoint,
                 )}
               @delete=${() => this.onRequestDelete(c.connector)}
@@ -640,6 +709,11 @@ export class FbConnectorsPage extends FBElement {
         @close=${this.closeModal}
       >
         <fb-form class="modal-form" @submit=${(e: Event) => void this.onModalSubmit(e)}>
+          ${this.modalError
+            ? html`<p class="modal-error" role="alert">
+                <fb-icon name="alert-circle" size="16"></fb-icon>${this.modalError}
+              </p>`
+            : nothing}
           ${editing
             ? nothing
             : html`<fb-field
@@ -652,6 +726,9 @@ export class FbConnectorsPage extends FBElement {
                   placeholder="my-estimator"
                   autocomplete="off"
                   maxlength="41"
+                  .value=${this.addName}
+                  @input=${(e: Event) =>
+                    (this.addName = (e as CustomEvent<{ value: string }>).detail.value)}
                 ></fb-input>
               </fb-field>`}
           <fb-field
