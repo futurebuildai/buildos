@@ -108,16 +108,17 @@ no redeploy), MCP connector seam, vault-backed credential UI. In dependency orde
   fixed); cloud ultrareview timed out (infra). Spec: [PHASE_3C_ADMIN_UI.md](./PHASE_3C_ADMIN_UI.md).
   **This completes Phase 3 (3a + 3b + 3c). Next: Phase 4 (P4 below).**
 
-**[ESC-002](./ESCALATION_LOG.md#esc-002) — RESOLVED (Phase 4 chunk 1; owner chose Option 2, drop the gate).**
-Built on `feat/phase-4-esc-002-drop-pro-gate`, awaiting review. Removed `RequirePlanTier(pro)` from
-`/api/v1/agents/*` (kept role gates); the AI surface is reachable for real tokens again. Spec:
-[PHASE_4_ESC_002.md](./PHASE_4_ESC_002.md).
+**[ESC-002](./ESCALATION_LOG.md#esc-002) — RESOLVED + MERGED + PUSHED (Phase 4 chunk 1; owner chose Option 2,
+drop the gate; `origin/main` HEAD `8a1fcc3`).** Removed `RequirePlanTier(pro)` from `/api/v1/agents/*` (kept
+role gates) on the backend AND dropped the symmetric web-console `requiresPro` wall — the AI surface is
+reachable for real tokens again end-to-end. Spec: [PHASE_4_ESC_002.md](./PHASE_4_ESC_002.md).
 
 ### P4 — Phase 4: production-readiness for handoff
 A Phase-4 ultraplan (6-agent assessment, 2026-06-09) decomposed the phase + ordered the chunks (grounded in
 the actual code, which made the original "3 missing field screens" framing partly stale):
-1. **ESC-002 · drop the pro gate — BUILT, awaiting review (chunk 1).** Unblocks the `/api/v1/agents/*` AI
-   surface (402-walled for every real token); prerequisite for 4c load/security testing it. Spec above.
+1. **ESC-002 · drop the pro gate — DONE: merged + PUSHED to `origin/main` (HEAD `8a1fcc3`).** Unblocked the
+   `/api/v1/agents/*` AI surface end-to-end (backend + web console); prerequisite for 4c load/security
+   testing it. Spec: [PHASE_4_ESC_002.md](./PHASE_4_ESC_002.md).
 2. **4a · Flutter field — NEXT candidate.** schedule_screen already exists (read-only Gantt); crew check-in
    already works embedded in daily_log. Real gaps: extract a standalone **check-in** screen + the offline
    affordance pattern (chunk 4a-i, mobile-only, no backend change), then **equipment** (4a-ii, CROSS-STACK +

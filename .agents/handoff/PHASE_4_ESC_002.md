@@ -1,6 +1,6 @@
 # Phase 4 · chunk 1 — ESC-002: drop the vestigial `RequirePlanTier(pro)` gate
 
-**Status:** BUILT on `feat/phase-4-esc-002-drop-pro-gate` (committed, not pushed/merged). All local Go gates green. Awaiting owner review → merge.
+**Status:** DONE — merged (fast-forward) + PUSHED to `origin/main` (HEAD `8a1fcc3`). Built + reviewed via the ultra-loop (Phase-4 ultraplan → build → 43-agent max `/code-review`, 6 findings fixed). All gates green.
 **Resolves:** [ESC-002](./ESCALATION_LOG.md#esc-002) (owner chose **Option 2** — drop the gate). Phase 4 plan: [PHASES_2-4_ULTRALOOP_PLAN.md](./PHASES_2-4_ULTRALOOP_PLAN.md) §"Phase 4".
 
 ## Why (verified against code)
