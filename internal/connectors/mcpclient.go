@@ -308,11 +308,10 @@ func (c *MCPClient) post(ctx context.Context, body []byte) (*http.Response, erro
 		return nil, errMCPNonHTTPS
 	}
 	callCtx, cancel := context.WithTimeout(ctx, c.perCall)
-	// The caller owns the cancel via the returned body close path; we cancel on
-	// the body being drained. Simpler + safe: cancel after the call returns and
-	// the body is read. We attach cancel to the request context and call it in
-	// the readers via a wrapper. To keep it simple, cancel is deferred by the
-	// caller through a context that lives for the whole exchange.
+	// The per-call timeout context lives for the whole exchange. cancel fires when
+	// the response body is Closed (via the cancelOnClose wrapper below); both
+	// callers (request/notify) `defer httpResp.Body.Close()`, so it is always
+	// reached. On the early error paths below we call cancel() directly.
 	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, c.endpoint, bytes.NewReader(body))
 	if err != nil {
 		cancel()
@@ -373,6 +372,12 @@ func (c *MCPClient) readResponse(resp *http.Response, wantID int) (jsonrpcRespon
 	var msg jsonrpcResponse
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		return jsonrpcResponse{}, fmt.Errorf("%w: %v", errMCPBadMessage, err)
+	}
+	// Defense-in-depth (symmetry with the SSE path): a present-but-mismatched id
+	// is a malformed/confused response. (An absent id on a single-response body is
+	// tolerated for interop.)
+	if msg.ID != nil && *msg.ID != wantID {
+		return jsonrpcResponse{}, errMCPBadMessage
 	}
 	return msg, nil
 }

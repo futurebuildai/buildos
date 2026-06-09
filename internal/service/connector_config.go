@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -253,12 +254,32 @@ func (s *ConnectorService) Set(ctx context.Context, in SetConnectorInput) (model
 
 	var out models.ConnectorConfig
 	err = pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		// Invalidate stale cached tools when an MCP instance's endpoint changes —
+		// otherwise the model would be offered tools listed from the OLD server
+		// while every call routes to the NEW endpoint (a confused-deputy window).
+		clearCache := false
+		if kind == connectorKindMCP {
+			existing, gErr := s.store.GetByName(ctx, tx, in.OrgID, in.ConnectorName)
+			switch {
+			case gErr == nil:
+				clearCache = mcpEndpoint(existing.Config) != mcpEndpoint(cfg)
+			case errors.Is(gErr, store.ErrNotFound):
+				// new instance — no cache to clear
+			default:
+				return gErr
+			}
+		}
 		row, qErr := s.store.Upsert(ctx, tx, store.UpsertConnectorConfigParams{
 			OrgID: in.OrgID, ConnectorName: in.ConnectorName, Kind: kind,
 			Enabled: in.Enabled, Config: cfg, UpdatedBy: in.UserSub,
 		})
 		if qErr != nil {
 			return qErr
+		}
+		if clearCache {
+			if cErr := s.toolsStore.ReplaceForConnector(ctx, tx, in.OrgID, in.ConnectorName, nil); cErr != nil {
+				return cErr
+			}
 		}
 		out = row
 		s.audit.Record(ctx, tx, AuditEntry{
@@ -410,7 +431,14 @@ func (s *ConnectorService) ToolsFor(ctx context.Context, c connectors.Caller) ([
 		}
 		conn := s.connectorForRow(row, cache[row.ConnectorName])
 		if conn == nil {
-			continue // orphan builtin row / unknown kind
+			if row.Kind == connectorKindMCP {
+				// Enabled but not yet refreshed (or no endpoint) — surfaced to the
+				// admin via ListEffective's tools_count=0; log so the hot-path skip
+				// is diagnosable too.
+				s.logger.DebugContext(ctx, "enabled mcp connector skipped: no endpoint / tools not refreshed",
+					slog.String("connector", row.ConnectorName))
+			}
+			continue // orphan builtin row / unknown kind / unrefreshed mcp
 		}
 		tools, bErr := conn.BuildTools(ctx, c)
 		if bErr != nil {
@@ -435,7 +463,7 @@ func (s *ConnectorService) connectorForRow(row models.ConnectorConfig, cached []
 		return connectors.NewMCPConnector(connectors.MCPConnectorParams{
 			Name: row.ConnectorName, Endpoint: endpoint, CachedTools: cached,
 			Secret: s.secret, HTTP: s.egress, Breaker: s.breakers.Get(breakerKey(row.OrgID, endpoint)),
-			ClientVersion: s.clientVer,
+			ClientVersion: s.clientVer, Logger: s.logger,
 		})
 	}
 	return s.catalog[row.ConnectorName] // built-in (nil if orphan)
@@ -493,13 +521,7 @@ func validateConnectorConfig(raw json.RawMessage) ([]byte, error) { return valid
 // validateMCPEndpoint extracts + validates config.endpoint as an https URL whose
 // host is not a literal blocked IP (best-effort; the dialer is the real guard).
 func validateMCPEndpoint(raw json.RawMessage) (string, error) {
-	var probe struct {
-		Endpoint string `json:"endpoint"`
-	}
-	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &probe)
-	}
-	u, err := url.Parse(probe.Endpoint)
+	u, err := url.Parse(mcpEndpoint(raw))
 	if err != nil || u.Scheme != "https" || u.Host == "" {
 		return "", fmt.Errorf("%w: config.endpoint must be an https URL", ErrInvalidInput)
 	}
@@ -509,7 +531,9 @@ func validateMCPEndpoint(raw json.RawMessage) (string, error) {
 	return u.String(), nil
 }
 
-// mcpEndpoint reads config.endpoint ("" when absent).
+// mcpEndpoint reads config.endpoint ("" when absent). The single read-side
+// extractor, shared by validateMCPEndpoint / ListEffective / RefreshTools /
+// connectorForRow so the config shape lives in one place.
 func mcpEndpoint(raw json.RawMessage) string {
 	var probe struct {
 		Endpoint string `json:"endpoint"`
@@ -520,10 +544,13 @@ func mcpEndpoint(raw json.RawMessage) string {
 	return probe.Endpoint
 }
 
-// boundTools clamps the attacker-influenced refreshed metadata: ≤ N tools, valid
-// names, truncated descriptions, object-only bounded schemas.
+// boundTools clamps the attacker-influenced refreshed metadata: ≤ N tools,
+// DEDUPED by name (keep-first — a malicious server can advertise duplicate names,
+// which would otherwise 23505 against the UNIQUE cache index and 500 the refresh),
+// valid names, rune-safe-truncated descriptions, object-only bounded schemas.
 func boundTools(remote []connectors.ToolDef) []store.ConnectorToolRow {
 	out := make([]store.ConnectorToolRow, 0, len(remote))
+	seen := make(map[string]bool, len(remote))
 	for _, t := range remote {
 		if len(out) >= maxRefreshTools {
 			break
@@ -531,17 +558,30 @@ func boundTools(remote []connectors.ToolDef) []store.ConnectorToolRow {
 		if t.Name == "" || !connectors.ValidToolName(t.Name) {
 			continue // unusable remote name; skip
 		}
-		desc := t.Description
-		if len(desc) > maxToolDescBytes {
-			desc = desc[:maxToolDescBytes]
+		if seen[t.Name] {
+			continue // duplicate remote name; keep the first
 		}
+		seen[t.Name] = true
 		schema := []byte(t.InputSchema)
 		if len(schema) == 0 || len(schema) > maxToolSchemaBytes || !json.Valid(schema) || !isJSONObject(schema) {
 			schema = []byte("{}")
 		}
-		out = append(out, store.ConnectorToolRow{ToolName: t.Name, Description: desc, InputSchema: schema})
+		out = append(out, store.ConnectorToolRow{ToolName: t.Name, Description: truncateUTF8(t.Description, maxToolDescBytes), InputSchema: schema})
 	}
 	return out
+}
+
+// truncateUTF8 returns the longest valid-UTF-8 prefix of s no longer than max
+// bytes — never splitting a multi-byte rune (a byte-boundary cut could yield
+// invalid UTF-8 that a TEXT column rejects, aborting the refresh tx → a 500).
+func truncateUTF8(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	for max > 0 && !utf8.RuneStart(s[max]) {
+		max--
+	}
+	return s[:max]
 }
 
 func toToolDefs(rows []models.ConnectorTool) []connectors.ToolDef {

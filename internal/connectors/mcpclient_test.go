@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,7 +20,7 @@ type stubRequest struct {
 
 // mcpStub returns a handler emulating an MCP Streamable-HTTP server in either
 // "json" or "sse" reply mode. behavior lets a test override one method's reply.
-func mcpStub(mode string, tools []mcpTool, callResult callToolResult, overrides map[string]func(http.ResponseWriter)) http.HandlerFunc {
+func mcpStub(mode string, tools []mcpTool, callResult callToolResult, overrides map[string]func(http.ResponseWriter, int)) http.HandlerFunc {
 	writeResult := func(w http.ResponseWriter, id int, result any) {
 		raw, _ := json.Marshal(result)
 		resp := jsonrpcResponse{JSONRPC: "2.0", ID: &id, Result: raw}
@@ -42,7 +43,7 @@ func mcpStub(mode string, tools []mcpTool, callResult callToolResult, overrides 
 		var req stubRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		if ov, ok := overrides[req.Method]; ok {
-			ov(w)
+			ov(w, derefID(req.ID))
 			return
 		}
 		switch req.Method {
@@ -152,11 +153,11 @@ func TestMCPClient_CallTool_MCPIsError(t *testing.T) {
 }
 
 func TestMCPClient_JSONRPCError(t *testing.T) {
-	c := newStubClient(t, mcpStub("json", nil, callToolResult{}, map[string]func(http.ResponseWriter){
-		"tools/call": func(w http.ResponseWriter) {
+	c := newStubClient(t, mcpStub("json", nil, callToolResult{}, map[string]func(http.ResponseWriter, int){
+		"tools/call": func(w http.ResponseWriter, id int) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":0,"error":{"code":-32601,"message":"method not found"}}`))
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"error":{"code":-32601,"message":"method not found"}}`, id)))
 		},
 	}))
 	_ = c.Initialize(context.Background())
@@ -177,8 +178,8 @@ func TestMCPClient_HTTPErrorAndUnauthorized(t *testing.T) {
 		{http.StatusForbidden, errMCPUnauthorized},
 	}
 	for _, tc := range cases {
-		c := newStubClient(t, mcpStub("json", nil, callToolResult{}, map[string]func(http.ResponseWriter){
-			"tools/call": func(w http.ResponseWriter) { w.WriteHeader(tc.status) },
+		c := newStubClient(t, mcpStub("json", nil, callToolResult{}, map[string]func(http.ResponseWriter, int){
+			"tools/call": func(w http.ResponseWriter, _ int) { w.WriteHeader(tc.status) },
 		}))
 		_ = c.Initialize(context.Background())
 		_, _, err := c.CallTool(context.Background(), "search", nil)

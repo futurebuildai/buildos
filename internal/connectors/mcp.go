@@ -3,6 +3,7 @@ package connectors
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -25,6 +26,7 @@ type MCPConnectorParams struct {
 	PerCall        time.Duration
 	MaxResultBytes int
 	ClientVersion  string
+	Logger         *slog.Logger // optional; detailed connector errors log here, NOT into the model
 }
 
 // mcpConnector implements Connector for an MCP server instance. BuildTools wraps
@@ -111,16 +113,31 @@ func (c *mcpConnector) executor(caller Caller, remoteName string) agentic.ToolEx
 		})
 		if err := client.Initialize(ctx); err != nil {
 			c.p.Breaker.RecordFailure(gen)
-			return softError("connector unavailable: " + err.Error()), nil
+			// NEVER surface the raw transport error to the model — it embeds the
+			// resolved IP / DNS resolver / TLS cert host / "blocked private range"
+			// confirmation, which would turn the egress guard into a blind-SSRF
+			// oracle. Log the detail server-side; give the model a generic message.
+			c.logError(ctx, "connect", err)
+			return softError("the connector is unavailable right now"), nil
 		}
 		content, isErr, err := client.CallTool(ctx, remoteName, input)
 		if err != nil {
-			// A transport / JSON-RPC error counts against the breaker.
 			c.p.Breaker.RecordFailure(gen)
-			return softError("connector call failed: " + err.Error()), nil
+			c.logError(ctx, "call", err)
+			return softError("the connector call failed"), nil
 		}
 		// A reachable server (even a tool-level isError) is a healthy endpoint.
 		c.p.Breaker.RecordSuccess(gen)
 		return agentic.ToolResult{Content: content, IsError: isErr}, nil
 	})
+}
+
+// logError records the detailed connector failure server-side (never to the
+// model). The raw error embeds resolved IPs / TLS hosts that must not leak.
+func (c *mcpConnector) logError(ctx context.Context, op string, err error) {
+	if c.p.Logger == nil {
+		return
+	}
+	c.p.Logger.WarnContext(ctx, "mcp connector "+op+" failed",
+		slog.String("connector", c.p.Name), slog.Any("error", err))
 }

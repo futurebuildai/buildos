@@ -28,7 +28,7 @@ func NewConnectorConfigStore() *ConnectorConfigStore { return &ConnectorConfigSt
 type UpsertConnectorConfigParams struct {
 	OrgID         uuid.UUID
 	ConnectorName string
-	Kind          string // "" => keep existing on conflict / 'builtin' on insert
+	Kind          string // "" => normalized to 'builtin'
 	Enabled       bool
 	Config        []byte
 	UpdatedBy     string
@@ -36,8 +36,8 @@ type UpsertConnectorConfigParams struct {
 
 // Upsert writes the row for an (org_id, connector_name) pair, inserting or (on
 // the UNIQUE conflict) fully replacing kind + enabled + config. Returns the
-// written row. An empty Kind defaults to 'builtin' on insert and is preserved on
-// conflict (COALESCE keeps the existing kind).
+// written row. An empty Kind is normalized to 'builtin'; on conflict the kind is
+// overwritten (EXCLUDED.kind) — the service always supplies a concrete kind.
 func (s *ConnectorConfigStore) Upsert(ctx context.Context, tx pgx.Tx, p UpsertConnectorConfigParams) (models.ConnectorConfig, error) {
 	cfg := p.Config
 	if cfg == nil {

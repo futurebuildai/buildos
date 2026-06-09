@@ -99,8 +99,8 @@ func TestMCPConnector_Executor_ResolvesSecret(t *testing.T) {
 }
 
 func TestMCPConnector_Executor_ServerError_SoftFailsAndTripsBreaker(t *testing.T) {
-	h := mcpStub("json", nil, callToolResult{}, map[string]func(http.ResponseWriter){
-		"tools/call": func(w http.ResponseWriter) { w.WriteHeader(http.StatusInternalServerError) },
+	h := mcpStub("json", nil, callToolResult{}, map[string]func(http.ResponseWriter, int){
+		"tools/call": func(w http.ResponseWriter, _ int) { w.WriteHeader(http.StatusInternalServerError) },
 	})
 	breaker := newBreaker(BreakerConfig{FailureThreshold: 1, OpenDuration: time.Minute})
 	c := newMCPConnectorForTest(t, h, nil, breaker)
