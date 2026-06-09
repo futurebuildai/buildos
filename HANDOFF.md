@@ -257,11 +257,21 @@ govulncheck clean. PRs #9 onward also have CI green at merge time
 
 ## In flight
 
+**Phase 3b-ii — the MCP connector + egress security — is IN FLIGHT on branch `feat/phase-3b-ii-mcp-connector`.**
+The **security-critical `internal/connectors` MCP layer is DONE + fully unit-tested** (commit `7a79b6b`):
+the **SSRF egress guard** (`egress.go` — resolve-and-pin private-IP denylist via a `net.Dialer.Control`
+hook, refuses loopback/metadata/redirects, proven by tests), the hand-rolled **MCP Streamable-HTTP client**
+(`mcpclient.go` — initialize/session/tools-list/tools-call, JSON **and** SSE, full soft-fail matrix), a
+**per-(org,endpoint) circuit breaker** (`breaker.go`), and the **`mcpConnector`** (`mcp.go`). All gates
+green at the checkpoint (`make audit` incl. isolation 1+2+3, `go build` default+prod, `govulncheck`). The
+**remaining work is the service/store/admin-API/migration WIRING** (migration 018 + `connector_tools` cache
++ `ConnectorService` mcp path + vault `SecretResolver` adapter + refresh endpoint) — it follows the 3b-i
+patterns and is enumerated in the spec's "Build status" section.
+[PHASE_3B_II_MCP_CONNECTOR.md](.agents/handoff/PHASE_3B_II_MCP_CONNECTOR.md). **NOT merged** — resume by
+implementing the remaining layer, then gates → review → merge.
+
 **Phase 3b-i (connector framework) is COMPLETE — merged + pushed to `origin/main` (HEAD `608948c`).** The
-active chunk is now **Phase 3b-ii — the MCP connector + egress security** (in flight; see ▶ NEXT). All its
-design decisions are recorded in [PHASE_3B_CONNECTOR_FRAMEWORK.md](.agents/handoff/PHASE_3B_CONNECTOR_FRAMEWORK.md) §9
-(full MCP Streamable HTTP; private-IP denylist; hand-rolled, no-new-dep), and the connector invocation seam
-was pre-hardened for it in 3b-i (panic→soft-IsError recovery, nil-executor skip).
+connector invocation seam was pre-hardened for 3b-ii in 3b-i (panic→soft-IsError recovery, nil-executor skip).
 
 **Phase 3a (config registry) COMPLETE — merged + pushed to `origin/main` (HEAD `e471d77`).** **Open
 escalation [ESC-002](.agents/handoff/ESCALATION_LOG.md#esc-002)** (the `plan_tier=""` 402-wall on

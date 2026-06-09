@@ -6,6 +6,22 @@
 
 ---
 
+## Build status (resume here)
+
+**Branch `feat/phase-3b-ii-mcp-connector`. The `internal/connectors` MCP layer is DONE + fully unit-tested + isolation-clean (commit `7a79b6b`).** The remaining work is the service/store/admin-API/migration WIRING (follows the 3b-i patterns).
+
+- ✅ **DONE (committed):** `egress.go` (§3 SSRF guard), `mcpclient.go` (§4 Streamable-HTTP client), `breaker.go` (§5 per-(org,endpoint) breaker + registry), `mcp.go` (§5 `mcpConnector`), `connector.go` ports (`SecretResolver`, `ToolDef`). All with tests (egress IP table + loopback-refusal + redirect-refusal; MCP client json+sse + full soft-fail matrix; breaker state machine; connector executor happy/secret/soft-fail/breaker-trip).
+- ⬜ **REMAINING (the integration layer):**
+  1. **Migration 018** (§6): `connectors_config += kind`; new `connector_tools` table. + `make lint-migrations`.
+  2. **Model + store** (§1): `ConnectorConfig.Kind`; new `ConnectorTool` model; `ConnectorToolsStore` (replace-all + list per (org,connector)); `connector_config.go` store carries `kind`.
+  3. **Service** (§7): `ConnectorService` gains the egress client + `BreakerRegistry` + a `connectors.SecretResolver` + the tools store; `Set` accepts mcp instances (kind=mcp, validate https endpoint + instance-name charset); `RefreshTools(ctx,org,name)` (initialize+tools/list → bound → replace cache + audit `connector.tools.refreshed`); `ToolsFor` builds an `mcpConnector` per enabled mcp instance hydrated from the cache; `ListEffective` surfaces kind/endpoint/tools_count/fetched_at.
+  4. **Vault adapter** (§1): `VaultService.ResolveConnectorSecret(ctx,org,"<name>")` over provider `connector:<name>`; reserve the `connector:`/`anthropic`/`resend` names from shadowing.
+  5. **Admin API** (§7): `PUT` gains `kind`+`config`; new `POST /api/v1/admin/connectors/{connector}/refresh`; DTO surfaces kind/tools_count.
+  6. **System prompt** (§8): mark connector tool METADATA untrusted; **per-call audit** `connector.tool.called`.
+  7. **cmd/server wiring**; **API_CONTRACT.md** + **TECH_STACK.md** (no-new-dep note); integration tests (httptest stub MCP server, SSRF negatives, refresh→cache→ToolsFor, soft-fail matrix).
+
+---
+
 ## 0. Decision summary (read first)
 
 3b-i shipped the connector **framework** (seam, registry, admin API, default-OFF, fail-closed merge, a built-in `reference` connector — zero egress). 3b-ii adds the **first egress connector type: `mcp`** — a hand-rolled, **no-new-dependency** MCP **Streamable-HTTP** client an operator points at an external MCP server to expose its tools to the chat assistant. This is the repo's **first arbitrary-URL outbound path**, so the SSRF egress guard is a primary deliverable, not a footnote.
