@@ -414,31 +414,9 @@ func TestForesightSubjectDefault(t *testing.T) {
 	}
 }
 
-// ---- ForesightThresholds defaults --------------------------------------
-
-func TestForesightThresholdsWithDefaults(t *testing.T) {
-	tests := []struct {
-		name     string
-		in       ForesightThresholds
-		wantDays int
-		wantBurn int
-	}{
-		{"zero_value_gets_defaults", ForesightThresholds{}, defaultForesightScheduleFloatDays, defaultForesightBudgetBurnPercent},
-		{"negative_gets_defaults", ForesightThresholds{ScheduleFloatDays: -1, BudgetBurnPercent: -5}, defaultForesightScheduleFloatDays, defaultForesightBudgetBurnPercent},
-		{"explicit_passthrough", ForesightThresholds{ScheduleFloatDays: 4, BudgetBurnPercent: 90}, 4, 90},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := tc.in.withDefaults()
-			if got.ScheduleFloatDays != tc.wantDays {
-				t.Errorf("ScheduleFloatDays = %d, want %d", got.ScheduleFloatDays, tc.wantDays)
-			}
-			if got.BudgetBurnPercent != tc.wantBurn {
-				t.Errorf("BudgetBurnPercent = %d, want %d", got.BudgetBurnPercent, tc.wantBurn)
-			}
-		})
-	}
-}
+// (Threshold-default behavior moved to the leaf in Phase 3a: see
+// agentic.ForesightTuning.WithDefaults / ParseForesightTuning and their tests in
+// internal/agentic/config_test.go. The service no longer owns those defaults.)
 
 // materialForesightContext returns a context with one breached signal — the
 // minimal input that would clear HasMaterialSignal and trigger a real AI

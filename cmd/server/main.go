@@ -191,16 +191,25 @@ func run(logger *slog.Logger) error {
 	fieldService := service.NewFieldService(pool, fieldStore, feedCardsStore, auditService)
 	agentsService := service.NewAgentsService(pool, fieldStore, feedCardsStore, scheduleStore, scheduleService, aiBriefer, aiAdjuster, auditService)
 
+	// Agent config registry (Phase 3a). The DB-backed per-org enable/tune
+	// surface for the agentic capabilities. One service, two faces: the admin
+	// CRUD face wires into the router (/api/v1/admin/agents), and the
+	// agentic.ConfigResolver face injects into the assistant (Experience gate).
+	// Always constructed (needs only the pool + store), so it is never nil.
+	agentConfigService := service.NewAgentConfigService(pool, store.NewAgentConfigStore(), auditService, logger)
+
 	// Conversational ERP assistant (Phase 2c). Typed-nil-safe: a nil
 	// aiClient (vault/AI unconfigured) leaves the service's AI seam unset
 	// so Converse soft-fails with agentic.ErrAssistantUnavailable (503)
 	// rather than panicking. The read services are passed by concrete type;
 	// pipelineService is threaded now so the Phase-3 pipeline tool is purely
-	// additive. Server-only — the worker binary never constructs this.
+	// additive. agentConfigService gates the Experience capability per org
+	// (Phase 3a). Server-only — the worker binary never constructs this.
 	assistantService := service.NewAssistantService(
 		aiClient, pool,
 		scheduleService, budgetService, procurementService,
 		projectService, feedService, pipelineService,
+		agentConfigService,
 		auditService, logger,
 	)
 
@@ -308,6 +317,7 @@ func run(logger *slog.Logger) error {
 		IntegrationsService: integrationsSvc,
 		Metrics:             metrics,
 		AgentsService:       agentsService,
+		AgentConfigService:  agentConfigService,
 		Assistant:           assistantService,
 		IngestionService:    ingestionService,
 		SetupService:        setupService,

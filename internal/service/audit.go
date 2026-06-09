@@ -32,6 +32,7 @@ const (
 	AuditResourceProcurementRecommendation = "procurement_recommendation"
 	AuditResourceCascade                   = "cascade"
 	AuditResourceForesight                 = "foresight"
+	AuditResourceAgentConfig               = "agent_config"
 )
 
 // AuditRecorder is the consumer-side interface every mutating service

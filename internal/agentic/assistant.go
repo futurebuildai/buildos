@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Experience is the conversational-assistant capability. Registered in
@@ -96,42 +98,71 @@ type ChatPlanner interface {
 }
 
 // Assistant is the experience orchestrator. Like Orchestrator /
-// ForesightOrchestrator it holds only ports, the capability registry, the loop
-// bounds, and a logger — no AI client, no store, no pgx.
+// ForesightOrchestrator it holds only ports, the capability registry, the
+// per-org config resolver, the loop bounds, and a logger — no AI client, no
+// store, no pgx.
 type Assistant struct {
 	planner  ChatPlanner
-	registry *Registry // shared capability registry (Experience gate)
+	registry *Registry      // static capability catalog (Experience known?)
+	resolver ConfigResolver // per-org enabled state; nil => enabled-with-default
 	bounds   LoopBounds
 	logger   *slog.Logger
 }
 
-// NewAssistant wires the planner port + bounds + logger. A nil logger becomes
-// slog.Default(). The capability registry is seeded in-code (NewRegistry).
-// Loop bounds are normalized so an unset field still gets its safe default.
-func NewAssistant(p ChatPlanner, b LoopBounds, logger *slog.Logger) *Assistant {
+// NewAssistant wires the planner port + config resolver + bounds + logger. A nil
+// logger becomes slog.Default(). The capability catalog is seeded in-code
+// (NewRegistry). A nil resolver means "enabled with the catalog default"
+// (pre-3a behavior). Loop bounds are normalized so an unset field still gets its
+// safe default.
+func NewAssistant(p ChatPlanner, resolver ConfigResolver, b LoopBounds, logger *slog.Logger) *Assistant {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Assistant{
 		planner:  p,
 		registry: NewRegistry(),
+		resolver: resolver,
 		bounds:   b.withDefaults(),
 		logger:   logger,
 	}
 }
 
-// Converse gates on the Experience capability (Phase-3 disable seam), then
-// delegates the bounded loop to the planner over the caller-scoped registry.
-// ErrAssistantUnavailable is propagated for the service/handler to soft-fail to
-// 503. The registry is built by the SERVICE per-request, already bound to
-// caller org+role. agentic itself holds no caller identity.
-func (a *Assistant) Converse(ctx context.Context, sys string, in ChatInput, reg *AssistantRegistry) (ChatResult, error) {
+// resolveEnabled returns the per-org CapabilityConfig for Experience. With no
+// resolver wired it falls back to the catalog default (enabled-with-default).
+func (a *Assistant) resolveEnabled(ctx context.Context, orgID uuid.UUID, c Capability) (CapabilityConfig, error) {
+	if a.resolver == nil {
+		d, _ := a.registry.Lookup(c)
+		return CapabilityConfig{Enabled: d.DefaultEnabled, Config: d.DefaultConfig}, nil
+	}
+	return a.resolver.Resolve(ctx, orgID, c)
+}
+
+// Converse gates on the Experience capability (catalog known? + per-org enabled?)
+// then delegates the bounded loop to the planner over the caller-scoped registry.
+// ErrAssistantUnavailable (no AI key) is propagated for the handler to soft-fail
+// to 503; ErrCapabilityDisabled (admin turned it off) is propagated for the
+// handler to map to a clean 403. The registry is built by the SERVICE per-request,
+// already bound to caller org+role. orgID is used ONLY to key resolver.Resolve —
+// it must NEVER influence tool scoping (that stays structural in the per-request
+// registry the service seals from claims).
+func (a *Assistant) Converse(ctx context.Context, orgID uuid.UUID, sys string, in ChatInput, reg *AssistantRegistry) (ChatResult, error) {
 	if _, ok := a.registry.Lookup(Experience); !ok {
-		// The capability isn't registered/enabled. In Phase 2c the in-code
-		// registry always seeds experience so this never trips; the gate is the
-		// seam Phase 3's configurable registry uses to disable the assistant per
-		// deployment without a code change.
+		// Not in the static catalog — a wiring bug. Unreachable in real wiring
+		// (NewRegistry always seeds experience).
 		return ChatResult{}, fmt.Errorf("agentic: capability %q not registered", Experience)
+	}
+
+	cfg, err := a.resolveEnabled(ctx, orgID, Experience)
+	if err != nil {
+		// Config read failure is infrastructure, not advisory: return hard so
+		// the handler surfaces 5xx rather than silently running a possibly-
+		// disabled assistant.
+		return ChatResult{}, fmt.Errorf("agentic: resolve config: %w", err)
+	}
+	if !cfg.Enabled {
+		a.logger.InfoContext(ctx, "experience disabled by config",
+			slog.String("reason", "capability_disabled"))
+		return ChatResult{}, ErrCapabilityDisabled
 	}
 
 	res, err := a.planner.Plan(ctx, sys, in, reg, a.bounds)

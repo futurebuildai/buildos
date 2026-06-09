@@ -85,6 +85,7 @@ type AssistantService struct {
 	projects    *ProjectService
 	feed        *FeedService
 	pipeline    *PipelineService
+	config      agentic.ConfigResolver // per-org Experience enabled gate (Phase 3a); nil => enabled-with-default
 	audit       AuditRecorder
 	bounds      agentic.LoopBounds
 	model       string
@@ -103,6 +104,7 @@ func NewAssistantService(
 	pool *pgxpool.Pool,
 	sched *ScheduleService, bud *BudgetService, proc *ProcurementService,
 	proj *ProjectService, feed *FeedService, pipe *PipelineService,
+	config agentic.ConfigResolver,
 	audit AuditRecorder, logger *slog.Logger,
 ) *AssistantService {
 	if audit == nil {
@@ -119,6 +121,7 @@ func NewAssistantService(
 		projects:    proj,
 		feed:        feed,
 		pipeline:    pipe,
+		config:      config,
 		audit:       audit,
 		bounds:      agentic.LoopBounds{}, // zero -> withDefaults in NewAssistant
 		model:       defaultExperienceModel,
@@ -161,9 +164,11 @@ func (s *AssistantService) Converse(
 		model:  s.model,
 		logger: s.logger,
 	}
-	asst := agentic.NewAssistant(planner, s.bounds, s.logger)
+	asst := agentic.NewAssistant(planner, s.config, s.bounds, s.logger)
 
-	res, err := asst.Converse(ctx, experienceSystemPrompt, in, reg)
+	// callerOrgID is the TENANT key for the per-org Experience enabled gate
+	// (Phase 3a) — never tool scoping (that stays structural in reg).
+	res, err := asst.Converse(ctx, callerOrgID, experienceSystemPrompt, in, reg)
 	if err != nil {
 		// Propagate the sentinel verbatim so the handler maps it to 503;
 		// everything else (RateLimited/Transient/etc.) passes through wrapped.

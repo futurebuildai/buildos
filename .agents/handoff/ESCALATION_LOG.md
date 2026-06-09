@@ -6,6 +6,64 @@ provenance — do not delete.
 
 ---
 
+## ESC-002 — `RequirePlanTier(pro)` 402-walls every self-minted token (post-Brain stale gate)
+
+- **Status:** OPEN (raised 2026-06-08) — does NOT block Phase 3a; needs an owner decision
+- **Raised by:** Claude Code (surfaced by the Phase 3a ultraplan design-critique)
+- **Severity:** Functional (the AI `/api/v1/agents/*` surface is unreachable for all real callers)
+
+### What was found (verified against the code)
+Post-Brain, BuildOS mints **all** access tokens with an empty `plan_tier`
+claim: `internal/service/auth.go:345` (login) and `:521` (refresh) both call
+`s.issuer.Mint(..., "")`. The `RequirePlanTier` middleware
+(`internal/api/middleware/plan.go:60-71`) treats an empty/unrecognized
+`plan_tier` as **free** (rank 1) and returns **402 `UPGRADE_REQUIRED`** for any
+route gated at `pro` (rank 3).
+
+Net effect: every `pro`-gated route is hard-402-walled for **every** real
+caller today. That includes the Phase 2c Experience endpoint
+`POST /api/v1/agents/chat` (gated `RequireMinRole(superintendent)` +
+`RequirePlanTier(pro)`) and the whole `/api/v1/agents/*` group
+(`internal/api/router.go`). The `plan.go` doc comments still reference "Brain
+populating this claim at token-issue time" — stale since the standalone pivot
+(ESC-001); nothing populates it now.
+
+### Why it surfaced during Phase 3a
+Phase 3a (the agent config registry) adds an admin surface to enable/disable +
+tune the harness capabilities, including `experience`. The config registry is
+correct and independently valuable, but the Experience *endpoint* it governs is
+currently unreachable end-to-end because of this inherited gate. 3a should not
+silently ship a polished config surface for an endpoint nobody can invoke.
+
+### Scope / non-blocking rationale
+Phase 3a is **not blocked**: the config registry works regardless, and 2 of the
+3 governed capabilities are reachable without any plan gate —
+`delay_cascade` and `foresight` are **River worker flows** (no HTTP plan gate),
+and the new admin surface `/api/v1/admin/agents` is **admin-gated, not
+plan-gated**. Only the Experience HTTP path is affected, and only for its
+reachability — its enable/disable config is still valid.
+
+### Options (for owner decision)
+1. **Populate `plan_tier` at mint from the org record.** Add a `plan_tier`
+   column to the org (or a single-tenant fork default of `pro`/`enterprise`),
+   and thread it into both `Mint(...)` calls. Restores the gate's intent.
+2. **Treat the `pro` gate as vestigial post-pivot and remove it.** Single-tenant
+   fork = the owner already paid for the deployment; per-request billing tiers
+   were a Brain-era concept (ESC-001 dropped billing entirely). Drop
+   `RequirePlanTier(pro)` from `/api/v1/agents/*` and keep role gates only.
+3. **Default-mint `pro`.** Minimal change: `Mint(..., PlanTierPro)` in both
+   sites until/unless a real tiering model returns.
+
+Recommendation: **Option 2** (the pivot dropped billing; the tier gate has no
+backing system), or **Option 3** as a one-line stopgap. Either is a small,
+separate change from Phase 3a.
+
+### What is blocked
+Nothing in Phase 3a. This entry exists so the owner decides the gate's fate
+rather than the harness silently depending on an unreachable endpoint.
+
+---
+
 ## ESC-001 — Brain-dependent specs contradict the standalone deployment goal
 
 - **Status:** RESOLVED (2026-06-01)

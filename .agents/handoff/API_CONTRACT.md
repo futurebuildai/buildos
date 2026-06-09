@@ -68,6 +68,7 @@ These mint the credentials the rest of the API requires, so they mount OUTSIDE t
 | Auth endpoints (`/auth/*`) | Public (unauthenticated) | | | |
 | Setup wizard (`/setup/*`) | ✓ | ✓ | ✗ | ✗ |
 | Integrations vault (`/integrations/*`) | ✓ | ✓ | ✗ | ✗ |
+| Agent config registry (`/admin/agents/*`) | ✓ | ✓ | ✗ | ✗ |
 | Financial endpoints | ✓ | ✓ | Read-only | ✗ |
 | Schedule endpoints | ✓ | ✓ | ✓ | Read-only |
 | Pipeline endpoints | ✓ | ✓ | Read-only | ✗ |
@@ -660,6 +661,71 @@ Admin-gated encrypted credential store. Per-org 3rd-party API keys (Anthropic, R
 }
 ```
 `fingerprint`, `created_at`, and `created_by` are omitted for unconfigured providers.
+
+---
+
+## 13b. Agent Config Registry (Phase 3a)
+
+Admin-gated, per-org enable/tune of the agentic harness capabilities
+(`delay_cascade`, `foresight`, `experience`) — post-deploy, no redeploy. Mounted
+under `/api/v1/admin/agents` (a new `/api/v1/admin/*` operator namespace),
+deliberately **off** the pro-tier `/api/v1/agents` tree so the kill-switch is
+reachable regardless of plan tier. Behind auth + the **SetupGate** (config is
+operational, not bootstrap → 403 `SETUP_INCOMPLETE` before onboarding completes)
+and **`admin+`** RBAC. Config values are **tuning only — never secrets** (those
+live in the vault, `/integrations/*`).
+
+The in-code catalog is the existence authority: a capability not built into the
+binary returns `404`. Absence of an override row means "enabled with the catalog
+default", so a row only ever encodes an override; `DELETE` resets to default.
+
+### GET /api/v1/admin/agents
+- **Auth:** JWT (admin+)
+- **Purpose:** List every catalog capability with its effective config for the caller's org (override row, else catalog default).
+- **Response:** `200 { data: { agents: []EffectiveAgentConfig } }`
+
+### PUT /api/v1/admin/agents/{capability}
+- **Auth:** JWT (admin+)
+- **Purpose:** Upsert the override for a capability. Full-document semantics: `enabled` is authoritative; an omitted/null `config` resets the capability's tuning to the catalog default. (Not PATCH — no partial merge.)
+- **Body:** `{ enabled: bool, config?: object }` (`config` is a JSON object; for `foresight`, `schedule_float_days` / `budget_burn_percent` must be non-negative integers)
+- **Response:** `200 { data: { agent: AgentConfig } }`
+- **Errors:** `404 NOT_FOUND` (capability unknown to the catalog), `400 VALIDATION_ERROR` (config not an object / invalid foresight ints)
+
+### DELETE /api/v1/admin/agents/{capability}
+- **Auth:** JWT (admin+)
+- **Purpose:** Remove the override row (reset the capability to the catalog default).
+- **Response:** `204 No Content` — **idempotent** whether or not an override existed.
+- **Errors:** `404 NOT_FOUND` (capability unknown to the catalog)
+
+### EffectiveAgentConfig Object
+```json
+{
+  "capability": "foresight",
+  "description": "Periodically surface material standing cross-module risks…",
+  "enabled": true,
+  "config": { "schedule_float_days": 2, "budget_burn_percent": 80 },
+  "source": "default",
+  "updated_by": "",
+  "updated_at": null
+}
+```
+`source` is `"default"` (no override row) or `"override"` (an explicit per-org row); `updated_by` / `updated_at` are populated only for overrides.
+
+### AgentConfig Object (PUT response)
+```json
+{
+  "id": "uuid",
+  "org_id": "uuid",
+  "capability": "foresight",
+  "enabled": false,
+  "config": { "budget_burn_percent": 50 },
+  "updated_by": "user-sub",
+  "created_at": "timestamp",
+  "updated_at": "timestamp"
+}
+```
+
+**Capability gate behavior:** when a capability is disabled, `delay_cascade` and `foresight` (River worker flows) become clean no-ops; the synchronous `experience` endpoint (`POST /api/v1/agents/chat`) returns `403 CAPABILITY_DISABLED` (distinct from the `503` a missing AI key produces and from RBAC `403 FORBIDDEN`).
 
 ---
 

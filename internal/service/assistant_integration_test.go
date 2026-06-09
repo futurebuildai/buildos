@@ -521,6 +521,7 @@ func TestAssistantIntegration_SoftFailNoKey(t *testing.T) {
 		client, fx.pool,
 		fx.pkg.schedule, fx.pkg.budget, fx.pkg.procurement,
 		fx.pkg.projects, fx.pkg.feed, fx.pkg.pipeline,
+		nil, // config resolver — nil => Experience enabled-with-default
 		NoopAuditRecorder{}, slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	)
 

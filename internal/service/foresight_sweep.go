@@ -35,17 +35,21 @@ type ForesightSweepService struct {
 	pool         *pgxpool.Pool
 	projectStore *store.ProjectStore
 	procChecker  ProcurementRecomputer
+	config       agentic.ConfigResolver // per-org enabled + foresight tuning (Phase 3a)
 	newOrch      func(orgID uuid.UUID) *agentic.ForesightOrchestrator
 	logger       *slog.Logger
 }
 
 // NewForesightSweepService wires the sweep. newOrch is the per-org orchestrator
 // factory (mirrors cascadeOrchestratorFactory): it builds a per-org reasoner so
-// the Anthropic key resolves per org. A nil logger gets slog.Default().
+// the Anthropic key resolves per org. config resolves the per-org enabled flag +
+// foresight tuning ONCE per org at the fan-out boundary (Phase 3a). A nil config
+// means enabled-with-default for every org. A nil logger gets slog.Default().
 func NewForesightSweepService(
 	pool *pgxpool.Pool,
 	projectStore *store.ProjectStore,
 	procChecker ProcurementRecomputer,
+	config agentic.ConfigResolver,
 	newOrch func(orgID uuid.UUID) *agentic.ForesightOrchestrator,
 	logger *slog.Logger,
 ) *ForesightSweepService {
@@ -56,20 +60,62 @@ func NewForesightSweepService(
 		pool:         pool,
 		projectStore: projectStore,
 		procChecker:  procChecker,
+		config:       config,
 		newOrch:      newOrch,
 		logger:       logger,
 	}
+}
+
+// orgForesightConfig is the per-org resolved foresight config, memoized for the
+// duration of one sweep so a many-project org resolves config ONCE.
+type orgForesightConfig struct {
+	enabled bool
+	tuning  agentic.ForesightTuning
+}
+
+// resolveOrgConfig returns the org's foresight config, resolving (and parsing
+// tuning) on the first sighting of an org and memoizing thereafter. A nil
+// resolver yields enabled-with-default. A resolver read error is returned so the
+// caller fails the whole sweep retryably (River retries) rather than swallowing
+// it into the per-project skip bucket.
+func (s *ForesightSweepService) resolveOrgConfig(ctx context.Context, memo map[uuid.UUID]orgForesightConfig, orgID uuid.UUID) (orgForesightConfig, error) {
+	if fc, ok := memo[orgID]; ok {
+		return fc, nil
+	}
+	var fc orgForesightConfig
+	if s.config == nil {
+		fc = orgForesightConfig{enabled: true, tuning: agentic.DefaultForesightTuning()}
+	} else {
+		cc, err := s.config.Resolve(ctx, orgID, agentic.Foresight)
+		if err != nil {
+			return orgForesightConfig{}, err
+		}
+		fc = orgForesightConfig{enabled: cc.Enabled, tuning: agentic.ParseForesightTuning(cc.Config)}
+	}
+	memo[orgID] = fc
+	if !fc.enabled {
+		// Log ONCE per org (memoization guarantees first-sighting only) so an
+		// accidental org-wide disable is visible — zero cards + zero errors
+		// otherwise looks identical to a quiet fleet.
+		s.logger.InfoContext(ctx, "foresight sweep: capability disabled for org",
+			slog.String("org_id", orgID.String()),
+			slog.String("reason", "capability_disabled"))
+	}
+	return fc, nil
 }
 
 // RunForesightSweep is the worker.ForesightRunner entrypoint. Sequence (spec §2d):
 //  1. RecomputeStatuses first — establishes happens-before so the procurement
 //     dimension reads FRESH statuses (R3). Idempotent fleet sweep.
 //  2. Keyset-paginate ListActiveAcrossOrgsForSweep across all orgs.
-//  3. Per project: build a per-org orchestrator and RunForesight. A per-project
-//     error is logged and skipped (never aborts the fleet).
+//  3. Per project: resolve the org's config ONCE (memoized; Phase 3a), skip the
+//     org entirely when foresight is disabled, else build a per-org orchestrator
+//     and RunForesight with the org's tuning. A per-project run error is logged
+//     and skipped (never aborts the fleet); a CONFIG-resolve error fails the
+//     whole sweep (retryable) — a kill-switch read failure must not be swallowed.
 //
-// Returns nil unless the recompute or the listing itself errored (those
-// River-retry the whole sweep).
+// Returns nil unless the recompute, the listing, or a config resolve errored
+// (those River-retry the whole sweep).
 func (s *ForesightSweepService) RunForesightSweep(ctx context.Context) error {
 	log := s.logger.With(slog.String("flow", "foresight_sweep"))
 
@@ -79,13 +125,15 @@ func (s *ForesightSweepService) RunForesightSweep(ctx context.Context) error {
 	}
 
 	var (
-		afterID       uuid.UUID // uuid.Nil starts; every real uuid sorts after nil
-		projectsSeen  int
-		risksFound    int
-		cardsCreated  int
-		cardsSkipped  int
-		projectErrors int
+		afterID         uuid.UUID // uuid.Nil starts; every real uuid sorts after nil
+		projectsSeen    int
+		risksFound      int
+		cardsCreated    int
+		cardsSkipped    int
+		projectErrors   int
+		projectsSkipped int // skipped because their org disabled foresight
 	)
+	cfgByOrg := make(map[uuid.UUID]orgForesightConfig) // per-sweep config memo (one resolve per org)
 
 	for {
 		var page []projectRef
@@ -111,11 +159,23 @@ func (s *ForesightSweepService) RunForesightSweep(ctx context.Context) error {
 			projectsSeen++
 			afterID = p.ID // advance the keyset cursor
 
+			// Resolve the org's foresight config once (memoized). A read error
+			// fails the whole sweep retryably — a disable kill-switch read
+			// failure must NOT fall into the per-project skip bucket below.
+			fc, cErr := s.resolveOrgConfig(ctx, cfgByOrg, p.OrgID)
+			if cErr != nil {
+				return fmt.Errorf("foresight sweep: resolve config for org %s: %w", p.OrgID, cErr)
+			}
+			if !fc.enabled {
+				projectsSkipped++
+				continue
+			}
+
 			orch := s.newOrch(p.OrgID)
 			res, runErr := orch.RunForesight(ctx, agentic.ForesightInput{
 				OrgID:     p.OrgID,
 				ProjectID: p.ID,
-			})
+			}, fc.tuning)
 			if runErr != nil {
 				// Per-project isolation: log + continue, never abort the fleet.
 				projectErrors++
@@ -138,6 +198,7 @@ func (s *ForesightSweepService) RunForesightSweep(ctx context.Context) error {
 
 	log.InfoContext(ctx, "foresight sweep completed",
 		slog.Int("projects", projectsSeen),
+		slog.Int("projects_skipped_disabled", projectsSkipped),
 		slog.Int("risks", risksFound),
 		slog.Int("cards_created", cardsCreated),
 		slog.Int("cards_skipped", cardsSkipped),

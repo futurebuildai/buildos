@@ -52,7 +52,8 @@ type foresightFixture struct {
 // newForesightWorkspaceFixture wires a REAL service.ForesightWorkspace over a
 // fresh migrated pool with all five stores plus a REAL AuditService (so the
 // in-tx audit writes actually hit audit_log and the assertions can count them).
-// A zero-value ForesightThresholds is passed so the documented defaults apply
+// Breach thresholds arrive per call via LoadForesightContext's tuning param
+// (Phase 3a); the RunForesight calls below pass agentic.DefaultForesightTuning()
 // (schedule float <=2 days, burn >=80%). It seeds an org + active project but no
 // schedule/procurement/budget rows; callers seed the graph they need.
 func newForesightWorkspaceFixture(t *testing.T) *foresightFixture {
@@ -68,7 +69,6 @@ func newForesightWorkspaceFixture(t *testing.T) *foresightFixture {
 		store.NewProjectStore(),
 		store.NewFeedCardsStore(),
 		audit,
-		ForesightThresholds{},
 	)
 
 	orgID := uuid.New()
@@ -242,7 +242,7 @@ func TestForesight_MetricCrossesThreshold_SurfacesOneCard(t *testing.T) {
 	seedForesightBudget(t, fx.pool, fx.projectID, "2.0", "USD", 500000, 100000, 100000) // 20%
 
 	reasoner := &fakeForesightReasoner{plan: budgetBurnPlan("1.0")}
-	res, err := fx.orchestrator(reasoner).RunForesight(ctx, agentic.ForesightInput{OrgID: fx.orgID, ProjectID: fx.projectID})
+	res, err := fx.orchestrator(reasoner).RunForesight(ctx, agentic.ForesightInput{OrgID: fx.orgID, ProjectID: fx.projectID}, agentic.DefaultForesightTuning())
 	if err != nil {
 		t.Fatalf("RunForesight: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestForesight_SecondSweepSameStandingRisk_NoDuplicate(t *testing.T) {
 	orch := fx.orchestrator(reasoner)
 
 	// Run #1 — surfaces the card.
-	res1, err := orch.RunForesight(ctx, agentic.ForesightInput{OrgID: fx.orgID, ProjectID: fx.projectID})
+	res1, err := orch.RunForesight(ctx, agentic.ForesightInput{OrgID: fx.orgID, ProjectID: fx.projectID}, agentic.DefaultForesightTuning())
 	if err != nil {
 		t.Fatalf("RunForesight #1: %v", err)
 	}
@@ -327,7 +327,7 @@ func TestForesight_SecondSweepSameStandingRisk_NoDuplicate(t *testing.T) {
 
 	// Run #2 — same standing risk. The carded subject is dropped pre-AI, so the
 	// material-signal gate trips and the reasoner is NOT called again.
-	res2, err := orch.RunForesight(ctx, agentic.ForesightInput{OrgID: fx.orgID, ProjectID: fx.projectID})
+	res2, err := orch.RunForesight(ctx, agentic.ForesightInput{OrgID: fx.orgID, ProjectID: fx.projectID}, agentic.DefaultForesightTuning())
 	if err != nil {
 		t.Fatalf("RunForesight #2: %v", err)
 	}
@@ -350,7 +350,7 @@ func TestForesight_SecondSweepSameStandingRisk_NoDuplicate(t *testing.T) {
 	// dedup slot, so the standing risk is suppressed (not re-surfaced).
 	dismissForesightCard(t, fx.pool, fx.orgID, foresightCardBudget, "1.0")
 
-	res3, err := orch.RunForesight(ctx, agentic.ForesightInput{OrgID: fx.orgID, ProjectID: fx.projectID})
+	res3, err := orch.RunForesight(ctx, agentic.ForesightInput{OrgID: fx.orgID, ProjectID: fx.projectID}, agentic.DefaultForesightTuning())
 	if err != nil {
 		t.Fatalf("RunForesight #3: %v", err)
 	}
@@ -389,7 +389,7 @@ func TestForesight_SoftFailNoKey(t *testing.T) {
 
 	// Real reasoner, nil *ai.Client -> typed-nil-safe -> ErrReasonerUnavailable.
 	reasoner := NewForesightReasoner(nil, fx.orgID)
-	res, err := fx.orchestrator(reasoner).RunForesight(ctx, agentic.ForesightInput{OrgID: fx.orgID, ProjectID: fx.projectID})
+	res, err := fx.orchestrator(reasoner).RunForesight(ctx, agentic.ForesightInput{OrgID: fx.orgID, ProjectID: fx.projectID}, agentic.DefaultForesightTuning())
 	if err != nil {
 		t.Fatalf("RunForesight soft-fail returned err = %v, want nil", err)
 	}
@@ -422,7 +422,7 @@ func TestForesight_NoBreach_NoAICall_NoCard(t *testing.T) {
 	seedForesightBudget(t, fx.pool, fx.projectID, "1.0", "USD", 500000, 100000, 100000) // 20% burn
 
 	reasoner := &fakeForesightReasoner{plan: budgetBurnPlan("1.0")}
-	res, err := fx.orchestrator(reasoner).RunForesight(ctx, agentic.ForesightInput{OrgID: fx.orgID, ProjectID: fx.projectID})
+	res, err := fx.orchestrator(reasoner).RunForesight(ctx, agentic.ForesightInput{OrgID: fx.orgID, ProjectID: fx.projectID}, agentic.DefaultForesightTuning())
 	if err != nil {
 		t.Fatalf("RunForesight: %v", err)
 	}
@@ -453,7 +453,7 @@ func TestForesight_BudgetZeroEstimate_NeverBreaches(t *testing.T) {
 	seedForesightBudget(t, fx.pool, fx.projectID, "1.0", "USD", 0, 250000, 250000)
 
 	reasoner := &fakeForesightReasoner{plan: budgetBurnPlan("1.0")}
-	res, err := fx.orchestrator(reasoner).RunForesight(ctx, agentic.ForesightInput{OrgID: fx.orgID, ProjectID: fx.projectID})
+	res, err := fx.orchestrator(reasoner).RunForesight(ctx, agentic.ForesightInput{OrgID: fx.orgID, ProjectID: fx.projectID}, agentic.DefaultForesightTuning())
 	if err != nil {
 		t.Fatalf("RunForesight: %v", err)
 	}
@@ -465,5 +465,42 @@ func TestForesight_BudgetZeroEstimate_NeverBreaches(t *testing.T) {
 	}
 	if cards := readForesightFeedCards(t, fx.pool, fx.orgID); len(cards) != 0 {
 		t.Errorf("persisted feed cards = %d, want 0", len(cards))
+	}
+}
+
+// TestForesight_PerOrgTuning_ChangesBreachBehavior proves the Phase 3a "tune
+// post-deploy, no redeploy" claim end-to-end at the deterministic layer: the
+// SAME budget line (60% burn) is below the default 80% threshold but breaches a
+// per-org override of 50% — surfaced purely by changing the tuning param passed
+// into LoadForesightContext, no code change.
+func TestForesight_PerOrgTuning_ChangesBreachBehavior(t *testing.T) {
+	fx := newForesightWorkspaceFixture(t)
+	ctx := context.Background()
+
+	// One budget line at exactly 60% burn (600000*100/1000000).
+	seedForesightBudget(t, fx.pool, fx.projectID, "1.0", "USD", 1000000, 600000, 600000)
+
+	in := agentic.ForesightInput{OrgID: fx.orgID, ProjectID: fx.projectID}
+
+	// Default tuning (80%): 60% does NOT breach -> no budget signal.
+	def, err := fx.workspace.LoadForesightContext(ctx, in, agentic.DefaultForesightTuning())
+	if err != nil {
+		t.Fatalf("LoadForesightContext(default): %v", err)
+	}
+	if len(def.Budget) != 0 {
+		t.Errorf("default tuning: budget signals = %d, want 0 (60%% < 80%%)", len(def.Budget))
+	}
+
+	// Override tuning (50%): the same 60% line now breaches.
+	override := agentic.ForesightTuning{BudgetBurnPercent: 50}.WithDefaults()
+	got, err := fx.workspace.LoadForesightContext(ctx, in, override)
+	if err != nil {
+		t.Fatalf("LoadForesightContext(override): %v", err)
+	}
+	if len(got.Budget) != 1 {
+		t.Fatalf("override tuning (50%%): budget signals = %d, want 1 (60%% >= 50%%)", len(got.Budget))
+	}
+	if got.Budget[0].WBS != "1.0" || got.Budget[0].BurnPercent != 60 {
+		t.Errorf("breached budget = %+v, want WBS 1.0 / burn 60", got.Budget[0])
 	}
 }

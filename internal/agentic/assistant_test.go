@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // discardLogger is a leaf-clean *slog.Logger that writes nowhere.
@@ -49,7 +51,7 @@ func (e *fakeExecutor) Execute(_ context.Context, _ json.RawMessage) (ToolResult
 }
 
 func TestNewAssistant_AppliesDefaultBounds(t *testing.T) {
-	a := NewAssistant(&fakePlanner{}, LoopBounds{}, nil)
+	a := NewAssistant(&fakePlanner{}, nil, LoopBounds{}, nil)
 	if a.bounds.MaxIterations != defaultMaxIterations {
 		t.Errorf("MaxIterations = %d, want %d", a.bounds.MaxIterations, defaultMaxIterations)
 	}
@@ -78,7 +80,7 @@ func TestNewAssistant_PreservesExplicitBounds(t *testing.T) {
 		MaxResultBytes:  1024,
 		Timeout:         5 * time.Second,
 	}
-	a := NewAssistant(&fakePlanner{}, want, nil)
+	a := NewAssistant(&fakePlanner{}, nil, want, nil)
 	if a.bounds != want {
 		t.Errorf("bounds = %+v, want %+v", a.bounds, want)
 	}
@@ -93,10 +95,10 @@ func TestConverse_HappyPath_ThreadsRegistryAndBounds(t *testing.T) {
 	})
 
 	planner := &fakePlanner{res: ChatResult{Reply: "grounded answer", Iterations: 2}}
-	a := NewAssistant(planner, LoopBounds{}, nil)
+	a := NewAssistant(planner, nil, LoopBounds{}, nil)
 
 	in := ChatInput{Messages: []ChatTurn{{Role: "user", Text: "how many projects?"}}}
-	res, err := a.Converse(context.Background(), "system prompt", in, reg)
+	res, err := a.Converse(context.Background(), uuid.New(), "system prompt", in, reg)
 	if err != nil {
 		t.Fatalf("Converse returned error: %v", err)
 	}
@@ -131,7 +133,7 @@ func TestConverse_CapabilityGate_RefusesWhenUnregistered(t *testing.T) {
 		logger:   discardLogger(),
 	}
 
-	_, err := a.Converse(context.Background(), "sys", ChatInput{}, NewAssistantRegistry())
+	_, err := a.Converse(context.Background(), uuid.New(), "sys", ChatInput{}, NewAssistantRegistry())
 	if err == nil {
 		t.Fatal("expected error when Experience capability is unregistered")
 	}
@@ -142,20 +144,53 @@ func TestConverse_CapabilityGate_RefusesWhenUnregistered(t *testing.T) {
 
 func TestConverse_SoftFail_PropagatesErrAssistantUnavailable(t *testing.T) {
 	planner := &fakePlanner{err: ErrAssistantUnavailable}
-	a := NewAssistant(planner, LoopBounds{}, discardLogger())
+	a := NewAssistant(planner, nil, LoopBounds{}, discardLogger())
 
-	_, err := a.Converse(context.Background(), "sys", ChatInput{}, NewAssistantRegistry())
+	_, err := a.Converse(context.Background(), uuid.New(), "sys", ChatInput{}, NewAssistantRegistry())
 	if !errors.Is(err, ErrAssistantUnavailable) {
 		t.Fatalf("err = %v, want ErrAssistantUnavailable", err)
+	}
+}
+
+func TestConverse_ConfigDisabled_ReturnsErrCapabilityDisabled(t *testing.T) {
+	planner := &fakePlanner{res: ChatResult{Reply: "should not run"}}
+	a := NewAssistant(planner, &fakeConfigResolver{cfg: CapabilityConfig{Enabled: false}}, LoopBounds{}, discardLogger())
+
+	_, err := a.Converse(context.Background(), uuid.New(), "sys", ChatInput{}, NewAssistantRegistry())
+	if !errors.Is(err, ErrCapabilityDisabled) {
+		t.Fatalf("err = %v, want ErrCapabilityDisabled", err)
+	}
+	if planner.calls != 0 {
+		t.Errorf("planner ran %d times despite the capability being disabled", planner.calls)
+	}
+}
+
+func TestConverse_ConfigResolveError_PropagatesHard(t *testing.T) {
+	planner := &fakePlanner{}
+	boom := errors.New("config db down")
+	a := NewAssistant(planner, &fakeConfigResolver{err: boom}, LoopBounds{}, discardLogger())
+
+	_, err := a.Converse(context.Background(), uuid.New(), "sys", ChatInput{}, NewAssistantRegistry())
+	if err == nil {
+		t.Fatal("a config read error must propagate hard")
+	}
+	if errors.Is(err, ErrCapabilityDisabled) || errors.Is(err, ErrAssistantUnavailable) {
+		t.Errorf("a config read error must not masquerade as disabled/unavailable: %v", err)
+	}
+	if !errors.Is(err, boom) {
+		t.Errorf("err = %v, want it to wrap the resolver error", err)
+	}
+	if planner.calls != 0 {
+		t.Errorf("planner ran %d times despite a config read error", planner.calls)
 	}
 }
 
 func TestConverse_WrappedPlannerErrorIsNotSoftFail(t *testing.T) {
 	sentinel := errors.New("boom")
 	planner := &fakePlanner{err: sentinel}
-	a := NewAssistant(planner, LoopBounds{}, discardLogger())
+	a := NewAssistant(planner, nil, LoopBounds{}, discardLogger())
 
-	_, err := a.Converse(context.Background(), "sys", ChatInput{}, NewAssistantRegistry())
+	_, err := a.Converse(context.Background(), uuid.New(), "sys", ChatInput{}, NewAssistantRegistry())
 	if err == nil {
 		t.Fatal("expected error")
 	}

@@ -145,6 +145,12 @@ func run(logger *slog.Logger) error {
 	projectStore := store.NewProjectStore()
 	feedStore := store.NewFeedCardsStore()
 
+	// Agent config registry resolver (Phase 3a) — the per-org enable/tune
+	// source the orchestrators + sweep consult. One shared instance (stateless;
+	// reads agents_config), injected as the agentic.ConfigResolver into both the
+	// cascade factory and the foresight sweep. Never nil.
+	agentConfigResolver := service.NewAgentConfigService(pool, store.NewAgentConfigStore(), auditService, logger)
+
 	cascadeWorkspace := service.NewCascadeWorkspace(
 		pool,
 		scheduleStore,
@@ -157,6 +163,7 @@ func run(logger *slog.Logger) error {
 	cascadeOrchestrator := &cascadeOrchestratorFactory{
 		aiClient:  aiClient,
 		workspace: cascadeWorkspace,
+		config:    agentConfigResolver,
 		logger:    logger,
 	}
 
@@ -180,7 +187,6 @@ func run(logger *slog.Logger) error {
 		projectStore,
 		feedStore,
 		auditService,
-		service.ForesightThresholds{}, // zero-value -> documented defaults
 	)
 	foresightFactory := &foresightOrchestratorFactory{
 		aiClient:  aiClient,
@@ -194,6 +200,7 @@ func run(logger *slog.Logger) error {
 		pool,
 		projectStore,
 		procurementService,
+		agentConfigResolver,
 		foresightFactory.RunForesight,
 		logger,
 	)
@@ -259,6 +266,7 @@ func run(logger *slog.Logger) error {
 type cascadeOrchestratorFactory struct {
 	aiClient  *ai.Client // may be nil when the vault is unconfigured
 	workspace *service.CascadeWorkspace
+	config    agentic.ConfigResolver // per-org delay_cascade enabled gate (Phase 3a)
 	logger    *slog.Logger
 }
 
@@ -268,7 +276,7 @@ type cascadeOrchestratorFactory struct {
 // agentic.ErrReasonerUnavailable instead of dereferencing a nil pointer.
 func (f *cascadeOrchestratorFactory) RunDelayCascade(ctx context.Context, in agentic.DelayCascadeInput) (agentic.CascadeResult, error) {
 	reasoner := f.newReasoner(in.OrgID)
-	orch := agentic.NewOrchestrator(reasoner, f.workspace, f.logger)
+	orch := agentic.NewOrchestrator(reasoner, f.workspace, f.config, f.logger)
 	return orch.RunDelayCascade(ctx, in)
 }
 

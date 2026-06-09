@@ -72,7 +72,7 @@ func TestRunDelayCascade_HappyPath(t *testing.T) {
 	}
 	rsn := &fakeReasoner{plan: plan}
 
-	o := NewOrchestrator(rsn, ws, nil)
+	o := NewOrchestrator(rsn, ws, nil, nil)
 	res, err := o.RunDelayCascade(context.Background(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -111,7 +111,7 @@ func TestRunDelayCascade_NoCriticalPath_NoOp(t *testing.T) {
 	}}
 	rsn := &fakeReasoner{}
 
-	o := NewOrchestrator(rsn, ws, nil)
+	o := NewOrchestrator(rsn, ws, nil, nil)
 	res, err := o.RunDelayCascade(context.Background(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -133,7 +133,7 @@ func TestRunDelayCascade_EmptyContext_NoOp(t *testing.T) {
 	ws := &fakeWorkspace{loadCtx: CascadeContext{}}
 	rsn := &fakeReasoner{}
 
-	o := NewOrchestrator(rsn, ws, nil)
+	o := NewOrchestrator(rsn, ws, nil, nil)
 	res, err := o.RunDelayCascade(context.Background(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -152,7 +152,7 @@ func TestRunDelayCascade_ReasonerUnavailable_SoftFails(t *testing.T) {
 	// Wrap the sentinel to prove errors.Is unwrapping works.
 	rsn := &fakeReasoner{err: fmt.Errorf("no key for org: %w", ErrReasonerUnavailable)}
 
-	o := NewOrchestrator(rsn, ws, nil)
+	o := NewOrchestrator(rsn, ws, nil, nil)
 	res, err := o.RunDelayCascade(context.Background(), in)
 	if err != nil {
 		t.Fatalf("reasoner-unavailable must soft-fail to nil error, got: %v", err)
@@ -174,7 +174,7 @@ func TestRunDelayCascade_ReasonerHardError_Propagates(t *testing.T) {
 	boom := errors.New("anthropic 500")
 	rsn := &fakeReasoner{err: boom}
 
-	o := NewOrchestrator(rsn, ws, nil)
+	o := NewOrchestrator(rsn, ws, nil, nil)
 	_, err := o.RunDelayCascade(context.Background(), in)
 	if err == nil {
 		t.Fatal("expected a hard reasoner error to propagate, got nil")
@@ -193,7 +193,7 @@ func TestRunDelayCascade_LoadError_Propagates(t *testing.T) {
 	ws := &fakeWorkspace{loadErr: boom}
 	rsn := &fakeReasoner{}
 
-	o := NewOrchestrator(rsn, ws, nil)
+	o := NewOrchestrator(rsn, ws, nil, nil)
 	_, err := o.RunDelayCascade(context.Background(), in)
 	if err == nil {
 		t.Fatal("expected load error to propagate, got nil")
@@ -214,7 +214,7 @@ func TestRunDelayCascade_ApplyError_Propagates(t *testing.T) {
 		{Module: "schedule", Severity: "critical", Title: "t", Body: "b", RecommendedAction: "a"},
 	}}}
 
-	o := NewOrchestrator(rsn, ws, nil)
+	o := NewOrchestrator(rsn, ws, nil, nil)
 	_, err := o.RunDelayCascade(context.Background(), in)
 	if err == nil {
 		t.Fatal("expected apply error to propagate, got nil")
@@ -229,7 +229,7 @@ func TestRunDelayCascade_EmptyPlan_NoApply(t *testing.T) {
 	ws := &fakeWorkspace{loadCtx: criticalContext()}
 	rsn := &fakeReasoner{plan: CascadePlan{Impacts: nil}}
 
-	o := NewOrchestrator(rsn, ws, nil)
+	o := NewOrchestrator(rsn, ws, nil, nil)
 	res, err := o.RunDelayCascade(context.Background(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -244,9 +244,66 @@ func TestRunDelayCascade_EmptyPlan_NoApply(t *testing.T) {
 
 func TestNewOrchestrator_NilLoggerDefaults(t *testing.T) {
 	// A nil logger must not panic — it should fall back to slog.Default().
-	o := NewOrchestrator(&fakeReasoner{}, &fakeWorkspace{}, nil)
+	o := NewOrchestrator(&fakeReasoner{}, &fakeWorkspace{}, nil, nil)
 	if o.logger == nil {
 		t.Fatal("expected a non-nil logger after NewOrchestrator(nil)")
+	}
+}
+
+func TestRunDelayCascade_NilResolver_EnabledWithDefault(t *testing.T) {
+	// The pre-3a behavior: with no resolver wired the orchestrator treats the
+	// capability as enabled-with-default and runs the flow.
+	in := DelayCascadeInput{OrgID: uuid.New(), ProjectID: uuid.New()}
+	ws := &fakeWorkspace{loadCtx: criticalContext(), applyRes: CascadeResult{CardsCreated: 1, Impacts: 1}}
+	rsn := &fakeReasoner{plan: CascadePlan{Impacts: []CascadeImpact{
+		{Module: "schedule", Severity: "high", Title: "t", Body: "b", RecommendedAction: "a"},
+	}}}
+
+	o := NewOrchestrator(rsn, ws, nil, nil) // nil resolver
+	res, err := o.RunDelayCascade(context.Background(), in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.CardsCreated != 1 || rsn.calls != 1 || ws.applyCall != 1 {
+		t.Fatalf("nil resolver must run the flow (enabled-with-default); res=%+v reason=%d apply=%d", res, rsn.calls, ws.applyCall)
+	}
+}
+
+func TestRunDelayCascade_ConfigDisabled_NoOp(t *testing.T) {
+	in := DelayCascadeInput{OrgID: uuid.New(), ProjectID: uuid.New()}
+	ws := &fakeWorkspace{loadCtx: criticalContext()}
+	rsn := &fakeReasoner{}
+
+	o := NewOrchestrator(rsn, ws, &fakeConfigResolver{cfg: CapabilityConfig{Enabled: false}}, nil)
+	res, err := o.RunDelayCascade(context.Background(), in)
+	if err != nil {
+		t.Fatalf("a disabled capability is a clean no-op, got err: %v", err)
+	}
+	if res != (CascadeResult{}) {
+		t.Fatalf("got %+v, want zero CascadeResult when disabled", res)
+	}
+	// The gate must short-circuit before any load / reasoning.
+	if ws.loadCall != 0 || rsn.calls != 0 {
+		t.Fatalf("must not load/reason when disabled; load=%d reason=%d", ws.loadCall, rsn.calls)
+	}
+}
+
+func TestRunDelayCascade_ConfigResolveError_Propagates(t *testing.T) {
+	in := DelayCascadeInput{OrgID: uuid.New(), ProjectID: uuid.New()}
+	ws := &fakeWorkspace{loadCtx: criticalContext()}
+	rsn := &fakeReasoner{}
+	boom := errors.New("config db down")
+
+	o := NewOrchestrator(rsn, ws, &fakeConfigResolver{err: boom}, nil)
+	_, err := o.RunDelayCascade(context.Background(), in)
+	if err == nil {
+		t.Fatal("a config read error must propagate hard (not soft-fail), got nil")
+	}
+	if !errors.Is(err, boom) {
+		t.Fatalf("error chain should wrap the resolver error, got: %v", err)
+	}
+	if ws.loadCall != 0 || rsn.calls != 0 {
+		t.Fatalf("must not load/reason after a config read error; load=%d reason=%d", ws.loadCall, rsn.calls)
 	}
 }
 
@@ -255,7 +312,7 @@ func TestRunDelayCascade_UnregisteredCapability_Errors(t *testing.T) {
 	ws := &fakeWorkspace{loadCtx: criticalContext()}
 	rsn := &fakeReasoner{}
 
-	o := NewOrchestrator(rsn, ws, nil)
+	o := NewOrchestrator(rsn, ws, nil, nil)
 	// Simulate a deployment where the capability is disabled (the seam Phase 3
 	// drives via the configurable registry).
 	o.registry = &Registry{descriptors: map[Capability]Descriptor{}}

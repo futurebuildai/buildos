@@ -261,6 +261,24 @@ func TestAssistantConverse_UnavailableReturns503(t *testing.T) {
 	}
 }
 
+func TestAssistantConverse_CapabilityDisabledReturns403(t *testing.T) {
+	// An admin turned the experience capability off (Phase 3a). This is a
+	// deliberate config STATE, not an outage — 403 CAPABILITY_DISABLED, distinct
+	// from the 503 a missing key produces.
+	h := NewAssistantHandler(&mockAssistantConverser{err: agentic.ErrCapabilityDisabled})
+	r := buildRequest(t, "POST", "/api/v1/agents/chat", testOrgID, nil,
+		strings.NewReader(`{"message":"hi"}`))
+	w := httptest.NewRecorder()
+	h.Converse(w, r)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status=%d, want 403, body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "CAPABILITY_DISABLED") {
+		t.Errorf("body missing CAPABILITY_DISABLED: %s", w.Body.String())
+	}
+}
+
 func TestAssistantConverse_InvalidOrgClaimReturns401(t *testing.T) {
 	svc := &mockAssistantConverser{}
 	h := NewAssistantHandler(svc)

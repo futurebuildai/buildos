@@ -76,7 +76,23 @@ Dependency-ordered, each its own PR-sized chunk:
 
 ### P3 — Phase 3: configurability + integration/MCP layer
 DB-backed agent/connector registry, admin config surface (enable + tune agents/integrations post-deploy,
-no redeploy), MCP connector seam, vault-backed credential UI.
+no redeploy), MCP connector seam, vault-backed credential UI. In dependency order 3a → 3b → 3c:
+
+- **3a · Config registry (✅ BUILT on branch `feat/phase-3a-config-registry`, gates green, awaiting owner
+  ultrareview — NOT merged).** `agents_config` table (migration 016) + leaf `agentic.ConfigResolver` port +
+  `service.AgentConfigService` (admin CRUD + resolver) + `/api/v1/admin/agents` admin API. Per-org
+  enable/disable for all three capabilities + foresight threshold tuning, post-deploy. Spec:
+  [PHASE_3A_CONFIG_REGISTRY.md](./PHASE_3A_CONFIG_REGISTRY.md). **Entry points for the resolver/gate seam:**
+  `internal/agentic/config.go` (port), `internal/service/agent_config.go` (adapter, two faces),
+  `internal/store/agent_config.go`, `internal/api/agent_config.go`, `cmd/{server,worker}/main.go` (wiring).
+- **3b · Integration/MCP seam (NEXT).** Vault-backed 3p connectors exposed to agents as tools; per-connector
+  enable/config reusing the 3a `AgentConfigService` pattern; an MCP connector seam. Entry points: the
+  `agentic` tool layer (`assistant_tool.go`), `internal/cryptobox` vault, `agents_config`-style connector config.
+- **3c · Admin config UI.** `web/` Lit screens wiring the 3a `/api/v1/admin/agents` API + the 3b connector API.
+
+**Adjacent (small, owner-decision): [ESC-002](./ESCALATION_LOG.md#esc-002)** — self-minted tokens carry
+`plan_tier=""` so `RequirePlanTier(pro)` 402-walls `/api/v1/agents/*`. Populate `plan_tier` at mint
+(`internal/service/auth.go:345,521`) or drop the now-billing-less pro gate (`internal/api/router.go`).
 
 ### P4 — Phase 4: production-readiness for handoff
 Close Flutter field-app gaps (check-in/schedule/equipment), harden operator + field + harness workflows

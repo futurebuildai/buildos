@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+
+	"github.com/google/uuid"
 )
 
 // ErrReasonerUnavailable signals that no AI reasoner is available for this
@@ -16,22 +18,24 @@ var ErrReasonerUnavailable = errors.New("agentic: reasoner unavailable")
 
 // Orchestrator runs cross-module agentic flows over the Reasoner (judgment)
 // and CascadeWorkspace (data/effects) ports. It holds no engine, no store, and
-// no AI client — only the two ports, the capability registry, and a logger.
+// no AI client — only the two ports, the capability registry, the per-org
+// config resolver, and a logger.
 type Orchestrator struct {
 	reasoner  Reasoner
 	workspace CascadeWorkspace
 	registry  *Registry
+	resolver  ConfigResolver // per-org enabled/tuning; nil => enabled-with-default
 	logger    *slog.Logger
 }
 
-// NewOrchestrator constructs an Orchestrator from the two ports and a logger.
-// A nil logger is replaced with slog.Default() so callers need not guard it.
-// The capability registry is seeded in-code (NewRegistry); RunDelayCascade
-// consults it before dispatch, so a capability that isn't registered is
-// refused. Phase 3 swaps the in-code registry for a DB-backed, per-deployment
-// configurable one — at which point this same gate disables a capability
-// without any code change.
-func NewOrchestrator(reasoner Reasoner, workspace CascadeWorkspace, logger *slog.Logger) *Orchestrator {
+// NewOrchestrator constructs an Orchestrator from the two ports, the per-org
+// config resolver, and a logger. A nil logger is replaced with slog.Default()
+// so callers need not guard it. The static capability catalog is seeded in-code
+// (NewRegistry); the resolver (Phase 3a) supplies the per-org ENABLED/tuning
+// state. A nil resolver means "enabled with the catalog default" — preserving
+// the pre-3a behavior (every capability runs) and keeping unit tests that pass
+// nil unchanged in semantics.
+func NewOrchestrator(reasoner Reasoner, workspace CascadeWorkspace, resolver ConfigResolver, logger *slog.Logger) *Orchestrator {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -39,8 +43,21 @@ func NewOrchestrator(reasoner Reasoner, workspace CascadeWorkspace, logger *slog
 		reasoner:  reasoner,
 		workspace: workspace,
 		registry:  NewRegistry(),
+		resolver:  resolver,
 		logger:    logger,
 	}
+}
+
+// resolveEnabled returns the per-org CapabilityConfig for a capability. With no
+// resolver wired it falls back to the in-code catalog default (enabled-with-
+// default), so the gate is a no-op in that mode. A resolver read error is
+// returned as-is (an infrastructure failure the caller treats as hard).
+func (o *Orchestrator) resolveEnabled(ctx context.Context, orgID uuid.UUID, c Capability) (CapabilityConfig, error) {
+	if o.resolver == nil {
+		d, _ := o.registry.Lookup(c)
+		return CapabilityConfig{Enabled: d.DefaultEnabled, Config: d.DefaultConfig}, nil
+	}
+	return o.resolver.Resolve(ctx, orgID, c)
 }
 
 // RunDelayCascade executes the delay-cascade flow:
@@ -68,11 +85,21 @@ func (o *Orchestrator) RunDelayCascade(ctx context.Context, in DelayCascadeInput
 	)
 
 	if _, ok := o.registry.Lookup(DelayCascade); !ok {
-		// The capability isn't registered/enabled. In Phase 1 the in-code
-		// registry always seeds delay_cascade so this never trips; the gate
-		// is the seam Phase 3's configurable registry uses to disable a
-		// capability per deployment without a code change.
+		// Not in the static catalog — a wiring bug (the binary can't run it).
+		// Unreachable in real wiring (NewRegistry always seeds delay_cascade).
 		return CascadeResult{}, fmt.Errorf("agentic: capability %q not registered", DelayCascade)
+	}
+
+	// Per-org config gate (Phase 3a). A read error is an infrastructure failure
+	// returned hard so River retries; a deliberate disable is a clean no-op.
+	cfg, err := o.resolveEnabled(ctx, in.OrgID, DelayCascade)
+	if err != nil {
+		return CascadeResult{}, fmt.Errorf("agentic: resolve config: %w", err)
+	}
+	if !cfg.Enabled {
+		log.InfoContext(ctx, "delay cascade disabled by config",
+			slog.String("reason", "capability_disabled"))
+		return CascadeResult{}, nil
 	}
 
 	cc, err := o.workspace.LoadCascadeContext(ctx, in.OrgID, in.ProjectID)

@@ -144,6 +144,16 @@ func writeAIServiceError(w http.ResponseWriter, r *http.Request, err error) {
 		return
 	}
 
+	// agentic.ErrCapabilityDisabled — an admin deliberately turned the
+	// capability off via the agent config registry (Phase 3a). This is a
+	// configuration STATE, not an outage: 403 with a distinct code so clients
+	// can tell "admin disabled this" apart from a 503 (key missing / AI down)
+	// or an RBAC 403.
+	if errors.Is(err, agentic.ErrCapabilityDisabled) {
+		writeErrorResponse(w, r, http.StatusForbidden, "CAPABILITY_DISABLED", "this capability is disabled for your organization")
+		return
+	}
+
 	// Native AI errors next — they wrap inside service errors.
 	//
 	// ErrUnconfigured (no Anthropic key set for the org) is a

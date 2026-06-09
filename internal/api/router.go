@@ -45,6 +45,7 @@ type RouterConfig struct {
 	SetupService        SetupServicer        // optional — when nil, /setup/* routes don't mount AND SetupGate is skipped
 	IntegrationsService IntegrationsServicer // optional — when nil, /integrations/* routes don't mount (vault disabled)
 	AgentsService       AgentsServicer       // optional — when nil, /agents/* routes don't mount
+	AgentConfigService  AgentConfigServicer  // optional — when nil, /admin/agents/* routes don't mount (agent config registry)
 	Assistant           AssistantConverser   // optional — when nil, POST /agents/chat doesn't mount (no AI client)
 	IngestionService    InvoiceIngestor      // optional — when nil, the /invoices/ingest route doesn't mount (AI unconfigured)
 	Metrics             MetricsRecorder      // optional — when nil, /metrics doesn't mount and HTTP middleware is skipped
@@ -158,6 +159,10 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	if cfg.IntegrationsService != nil {
 		integrations = NewIntegrationsHandler(cfg.IntegrationsService)
 	}
+	var agentConfig *AgentConfigHandler
+	if cfg.AgentConfigService != nil {
+		agentConfig = NewAgentConfigHandler(cfg.AgentConfigService)
+	}
 
 	// Auth middleware
 	authMiddleware := mw.Auth(cfg.Verifier, cfg.DevAuthMode, cfg.Logger)
@@ -219,6 +224,20 @@ func NewRouter(cfg RouterConfig) http.Handler {
 			// same vault. When the vault is nil the frontend keeps its
 			// assume-on fallback (unchanged behavior).
 			MountCapabilitiesRoutes(r, integrations)
+		}
+
+		// --------------------------------------------------------
+		// 0.6 Agent config registry — admin-gated enable/tune of the
+		//     agentic capabilities (delay_cascade, foresight, experience)
+		//     per org, post-deploy, no redeploy (Phase 3a). Mounted under
+		//     /api/v1/admin/agents — deliberately OFF the pro-tier
+		//     /api/v1/agents tree so the kill-switch is reachable
+		//     regardless of plan tier. RBAC (admin+) enforced inside
+		//     MountAgentConfigRoutes. Behind the SetupGate (config is
+		//     operational, not bootstrap).
+		// --------------------------------------------------------
+		if agentConfig != nil {
+			MountAgentConfigRoutes(r, agentConfig)
 		}
 
 		// --------------------------------------------------------

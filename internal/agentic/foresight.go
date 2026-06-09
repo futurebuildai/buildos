@@ -137,8 +137,11 @@ type ForesightReasoner interface {
 type ForesightWorkspace interface {
 	// LoadForesightContext runs the deterministic per-project metric computation
 	// in a read-only tx and returns ONLY threshold-crossing, not-already-carded
-	// signals (dedup-before-AI cost gate).
-	LoadForesightContext(ctx context.Context, in ForesightInput) (ForesightContext, error)
+	// signals (dedup-before-AI cost gate). tuning carries the per-org breach
+	// thresholds (Phase 3a) — already defaulted by the caller; the workspace
+	// reads tuning.ScheduleFloatDays / .BudgetBurnPercent where it previously
+	// used baked-in constants.
+	LoadForesightContext(ctx context.Context, in ForesightInput, tuning ForesightTuning) (ForesightContext, error)
 	// ApplyForesight renders the plan into DEDUPED feed cards + audit in one
 	// write tx. A 23505 unique-violation on a card is a clean skip, not an error.
 	// The ForesightContext is passed so each card's audit row can carry the
@@ -194,7 +197,15 @@ func NewForesightOrchestrator(r ForesightReasoner, w ForesightWorkspace, logger 
 //
 // Hard failures from Load and Apply (real I/O / tx errors) are returned so the
 // River worker can retry; only the advisory reasoner gap is swallowed.
-func (o *ForesightOrchestrator) RunForesight(ctx context.Context, in ForesightInput) (ForesightResult, error) {
+//
+// The per-org ENABLED gate for foresight does NOT live here — it lives in the
+// service-layer sweep coordinator (ForesightSweepService), which resolves config
+// ONCE per org at its cross-org fan-out boundary (memoized) and only invokes
+// RunForesight for enabled orgs, passing the already-resolved tuning. This avoids
+// O(projects) redundant resolves and keeps a resolver read error a retryable
+// sweep failure rather than a swallowed per-project skip. RunForesight still
+// checks the static catalog (a wiring guard).
+func (o *ForesightOrchestrator) RunForesight(ctx context.Context, in ForesightInput, tuning ForesightTuning) (ForesightResult, error) {
 	log := o.logger.With(
 		slog.String("flow", "foresight"),
 		slog.String("org_id", in.OrgID.String()),
@@ -202,14 +213,12 @@ func (o *ForesightOrchestrator) RunForesight(ctx context.Context, in ForesightIn
 	)
 
 	if _, ok := o.registry.Lookup(Foresight); !ok {
-		// The capability isn't registered/enabled. In Phase 2b NewRegistry
-		// always seeds foresight so this never trips; the gate is the seam
-		// Phase 3's configurable registry uses to disable a capability per
-		// deployment without a code change.
+		// Not in the static catalog — a wiring bug. Unreachable in real wiring
+		// (NewRegistry always seeds foresight).
 		return ForesightResult{}, fmt.Errorf("agentic: capability %q not registered", Foresight)
 	}
 
-	fc, err := o.workspace.LoadForesightContext(ctx, in)
+	fc, err := o.workspace.LoadForesightContext(ctx, in, tuning)
 	if err != nil {
 		return ForesightResult{}, fmt.Errorf("agentic: load foresight context: %w", err)
 	}

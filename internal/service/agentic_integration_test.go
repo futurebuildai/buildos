@@ -232,7 +232,7 @@ func TestAgenticOrchestrator_RunDelayCascade_AppliesMultiModulePlan(t *testing.T
 	seedCascadeBudget(t, fx.pool, fx.projectID, "2.0", "USD", 300000, 290000, 0)
 
 	reasoner := &fakeCascadeReasoner{plan: multiModulePlan()}
-	orch := agentic.NewOrchestrator(reasoner, fx.workspace, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	orch := agentic.NewOrchestrator(reasoner, fx.workspace, nil, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 
 	res, err := orch.RunDelayCascade(ctx, agentic.DelayCascadeInput{OrgID: fx.orgID, ProjectID: fx.projectID})
 	if err != nil {
@@ -329,7 +329,7 @@ func TestAgenticOrchestrator_RunDelayCascade_NoCriticalPath(t *testing.T) {
 	seedCascadeTask(t, fx.pool, fx.projectID, "2.0", "Framing", 3, 6, false)
 
 	reasoner := &fakeCascadeReasoner{plan: multiModulePlan()}
-	orch := agentic.NewOrchestrator(reasoner, fx.workspace, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	orch := agentic.NewOrchestrator(reasoner, fx.workspace, nil, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 
 	res, err := orch.RunDelayCascade(ctx, agentic.DelayCascadeInput{OrgID: fx.orgID, ProjectID: fx.projectID})
 	if err != nil {
@@ -362,7 +362,7 @@ func TestAgenticOrchestrator_RunDelayCascade_ReasonerUnavailable(t *testing.T) {
 	seedCascadeTask(t, fx.pool, fx.projectID, "2.0", "Framing", 3, 0, true)
 
 	reasoner := &fakeCascadeReasoner{err: fmt.Errorf("no key: %w", agentic.ErrReasonerUnavailable)}
-	orch := agentic.NewOrchestrator(reasoner, fx.workspace, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	orch := agentic.NewOrchestrator(reasoner, fx.workspace, nil, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 
 	res, err := orch.RunDelayCascade(ctx, agentic.DelayCascadeInput{OrgID: fx.orgID, ProjectID: fx.projectID})
 	if err != nil {

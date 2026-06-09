@@ -30,40 +30,12 @@ import (
 // carries NO numeric metric fields. Neither leg ever mutates the schedule or
 // the money; the CPM physics engine + the persisted ledger stay authoritative.
 
-// ---- ForesightThresholds -----------------------------------------------
-
-// ForesightThresholds are the deterministic gate dials. Defaults are applied at
-// construction (NewForesightWorkspace) so a zero-value cfg behaves sanely;
-// Phase 3's config registry makes them per-deployment tunable.
-type ForesightThresholds struct {
-	// ScheduleFloatDays: a task with remaining float <= N is breached
-	// (default 2). A critical, not-yet-complete task always breaches
-	// regardless of this dial.
-	ScheduleFloatDays int
-	// BudgetBurnPercent: a budget line with burn >= N is breached (default
-	// 80). A line with EstimatedCents==0 has BurnPercent -1 and never breaches.
-	BudgetBurnPercent int
-	// Procurement breach reads the persisted procurement_items.status
-	// (WARNING/CRITICAL, set by procurement_check) — no window const here.
-}
-
-// defaultForesightScheduleFloatDays / defaultForesightBudgetBurnPercent are the
-// documented Phase-2b defaults (see spec §4 / §8).
-const (
-	defaultForesightScheduleFloatDays = 2
-	defaultForesightBudgetBurnPercent = 80
-)
-
-// withForesightDefaults fills any unset (<=0) dial with its documented default.
-func (c ForesightThresholds) withDefaults() ForesightThresholds {
-	if c.ScheduleFloatDays <= 0 {
-		c.ScheduleFloatDays = defaultForesightScheduleFloatDays
-	}
-	if c.BudgetBurnPercent <= 0 {
-		c.BudgetBurnPercent = defaultForesightBudgetBurnPercent
-	}
-	return c
-}
+// Foresight breach thresholds are per-org tunable post-deploy (Phase 3a). The
+// dials live in the leaf as agentic.ForesightTuning (the single source of truth
+// for the defaults); the resolver supplies the per-org values and the sweep
+// passes them into LoadForesightContext as a per-call param. This adapter holds
+// NO threshold state — it reads tuning.ScheduleFloatDays / .BudgetBurnPercent
+// from the argument it is handed.
 
 // ---- ForesightReasoner (agentic.ForesightReasoner) ---------------------
 
@@ -193,12 +165,12 @@ type ForesightWorkspace struct {
 	projectStore  *store.ProjectStore
 	feedStore     *store.FeedCardsStore
 	audit         AuditRecorder
-	cfg           ForesightThresholds
 }
 
-// NewForesightWorkspace wires the stores + audit recorder + threshold dials. A
-// nil AuditRecorder is replaced with the no-op; a zero-value cfg gets the
-// documented defaults.
+// NewForesightWorkspace wires the stores + audit recorder. A nil AuditRecorder
+// is replaced with the no-op. Breach thresholds are NOT held here (Phase 3a):
+// they arrive per call via LoadForesightContext's tuning param so a single
+// shared workspace serves every org with its own tuning.
 func NewForesightWorkspace(
 	pool *pgxpool.Pool,
 	sched *store.ScheduleStore,
@@ -207,7 +179,6 @@ func NewForesightWorkspace(
 	proj *store.ProjectStore,
 	feed *store.FeedCardsStore,
 	audit AuditRecorder,
-	cfg ForesightThresholds,
 ) *ForesightWorkspace {
 	if audit == nil {
 		audit = NoopAuditRecorder{}
@@ -220,7 +191,6 @@ func NewForesightWorkspace(
 		projectStore:  proj,
 		feedStore:     feed,
 		audit:         audit,
-		cfg:           cfg.withDefaults(),
 	}
 }
 
@@ -250,9 +220,13 @@ const foresightHoursPerDay = 24
 //     metric + Breached, AND drop any subject that already has an active/
 //     dismissed risk card (feedStore.HasActiveRiskCard). Only breached,
 //     not-already-carded metrics land in the context.
-func (w *ForesightWorkspace) LoadForesightContext(ctx context.Context, in agentic.ForesightInput) (agentic.ForesightContext, error) {
+func (w *ForesightWorkspace) LoadForesightContext(ctx context.Context, in agentic.ForesightInput, tuning agentic.ForesightTuning) (agentic.ForesightContext, error) {
 	var out agentic.ForesightContext
 	now := time.Now().UTC()
+	// Defensive: a direct caller may hand a zero tuning. WithDefaults coerces
+	// any non-positive dial to its documented default so the breach math below
+	// is always well-defined (the sweep already passes defaulted tuning).
+	tuning = tuning.WithDefaults()
 
 	err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		if err := store.VerifyProjectInOrg(ctx, tx, in.ProjectID, in.OrgID); err != nil {
@@ -306,7 +280,7 @@ func (w *ForesightWorkspace) LoadForesightContext(ctx context.Context, in agenti
 		for _, t := range tasks {
 			floatDays := foresightRemainingFloatDays(t.TotalFloat)
 			criticalActive := t.IsCritical && t.Status != "completed" && t.PercentComplete < 100
-			breached := criticalActive || floatDays <= w.cfg.ScheduleFloatDays
+			breached := criticalActive || floatDays <= tuning.ScheduleFloatDays
 			if !breached {
 				continue
 			}
@@ -339,7 +313,7 @@ func (w *ForesightWorkspace) LoadForesightContext(ctx context.Context, in agenti
 		for _, b := range budgets {
 			burn := foresightBurnPercent(b.ActualCostCents, b.EstimatedCostCents)
 			// A -1 line (zero estimate) never breaches.
-			breached := burn >= 0 && burn >= w.cfg.BudgetBurnPercent
+			breached := burn >= 0 && burn >= tuning.BudgetBurnPercent
 			if !breached {
 				continue
 			}

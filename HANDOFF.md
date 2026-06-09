@@ -30,6 +30,8 @@ Companion docs:
 
 ## Last shipped (most recent → older)
 
+- **2026-06-08** [branch `feat/phase-3a-config-registry`, **built + all local gates green, NOT merged — awaiting owner ultrareview**] **Phase 3a — Configurability: the DB-backed agent config registry. Operators now enable/disable AND tune the agentic capabilities (`delay_cascade`, `foresight`, `experience`) per org, post-deploy, NO redeploy — the VISION Phase-3 "agents enabled and tuned post-deploy via admin config" deliverable (agent half).** Splits the STATIC in-code catalog (`agentic.Registry` — what the binary can run) from the DYNAMIC per-org config (new leaf port `agentic.ConfigResolver` → `CapabilityConfig{Enabled, Config json.RawMessage}`; adapter `service.AgentConfigService` reads `agents_config`, no-row ⇒ enabled-with-catalog-default → **no migration seeding**). `Descriptor` gains `DefaultEnabled`/`DefaultConfig` (foresight default `{schedule_float_days:2,budget_burn_percent:80}` is the SINGLE source of truth — service consts deleted). **Gate placement by trigger boundary:** cascade resolves inside `RunDelayCascade` (one job=one flow); experience inside `Converse` (orgID threaded; `ErrCapabilityDisabled` → **403 `CAPABILITY_DISABLED`**); foresight at the **sweep's per-org boundary** (memoized — ONE resolve/org/sweep, disabled-org short-circuit, resolve-error fails the sweep RETRYABLY not the per-project log+continue bucket). **The one real tune-proof:** foresight thresholds now flow per-org — `ForesightWorkspace.LoadForesightContext` takes a typed leaf `ForesightTuning` (breaking port change; defensive total-parse, garbage⇒defaults); a `{budget_burn_percent:50}` override surfaces a 60%-burn line the 80% default wouldn't (integration-proven). Admin API `/api/v1/admin/agents` (GET list-effective / PUT full-upsert / DELETE idempotent-reset) — **off** the pro-tier `/api/v1/agents` tree (kill-switch reachable regardless of plan tier), behind Auth+SetupGate+`RequireMinRole(admin)`, audit `agent.config.updated`/`agent.config.reset`, 404-on-unknown-capability (catalog is the existence authority), 400-on-bad-config. **Migration 016** (`agents_config`: org_id FK CASCADE, `UNIQUE(org_id,capability)` for ON CONFLICT, JSONB tuning — NEVER secrets, plain index +lock-ok). Fail-mode: config read error = HARD (retry/5xx), never soft-fail. **Isolation HELD** — `internal/agentic` gained ZERO new imports (the leaf-pure `ConfigResolver` fake lives in `agentic/*_test.go`; `make lint-isolation` Check 1+2 green). **Built via the design-critique loop:** an adversarial 4-lens design workflow hardened ~13 decisions pre-build (constructor blast-radius, default-config SoT, sweep fan-out, foresight port change, DELETE idempotency, etc.). **Gates green:** `make audit` ALL PASSED (isolation 1+2, migration-016 lint, bench 138µs/406µs, test+test-prod) + `govulncheck` clean (default+prod) + full `make test-integration` exit 0 (all packages ok, 0 FAIL — incl. new agent_config store/service + foresight tuning-flow + sweep memo tests). **Surfaced + filed [ESC-002](.agents/handoff/ESCALATION_LOG.md#esc-002):** all self-minted tokens carry `plan_tier=""` so `RequirePlanTier(pro)` 402-walls the Experience HTTP endpoint for every real caller (inherited, post-Brain-stale; does NOT block 3a — cascade/foresight are unguarded worker flows, the admin surface is admin-gated). **NOT committed/pushed/merged** — paused for owner `/code-review ultra`. Spec: [.agents/handoff/PHASE_3A_CONFIG_REGISTRY.md](.agents/handoff/PHASE_3A_CONFIG_REGISTRY.md).
+
 - **2026-06-08** [`c1dd95f` (dep/CVE bump) + `60a99f0` (Phase 2c) + `e1f37db` (backstop fix) → `main`, **PUSHED to origin**] **Phase 2c — Experience: the harness "experience" role and the LAST Phase-2 chunk. A conversational ERP assistant — `POST /api/v1/agents/chat` runs a BOUNDED Claude tool-use loop: the model plans READ-ONLY ERP tool calls, the server executes each scoped to the caller org+role, feeds engine facts back, and the model synthesizes a grounded answer. `agentic-tool-registry` design.** New leaf `internal/authz` (single role ladder `RoleAtLeast` — middleware + service share it); `internal/agentic` gains `Tool`/`ToolExecutor`/`AssistantRegistry`/`Assistant` ports (leaf-clean; `Execute(ctx,input)` takes NO identity param → RBAC is STRUCTURAL); `internal/ai.RunToolLoop` (bounded: MaxIterations 6 / MaxToolCalls 12 / MaxResultBytes 256KiB / Timeout 30s; correct `tool_use_id` echo; graceful `Truncated`); 8 read-only caller-bound tool executors + in-executor `MinRole` re-check (the load-bearing cross-role fix for the role-ungated financial services); chat handler gated `RequireMinRole(superintendent)`+`RequirePlanTier(pro)`. **5-layer RBAC defense-in-depth** (closure binding / `VerifyProjectInOrg` / in-executor `MinRole` / registry filter / route gate); integer cents verbatim; act-tools + persisted conversations + streaming deferred to Phase 3. **No migration** (stateless, reuses `audit_log`). **Review:** local backstop (36-agent workflow) found **NO RBAC bypass** (structural scoping held) → 1 fix in `e1f37db` (valid-JSON unknown-tool error); A/B/D/E deferred as documented fast-follows (NEXT_STEPS). **Also greened CI:** `c1dd95f` bumps `x/net`→v0.55.0, `x/crypto`→v0.52.0, Go→1.26.4, clearing the 8 `govulncheck` CVEs that failed the `lint-go` job (the only red job; a live-vuln-DB issue, not our logic). **Gates green:** `make audit` ALL PASSED (bench 182µs/479µs) + `govulncheck` clean both modes + full `make test-integration` exit 0. Spec: [.agents/handoff/PHASE_2C_EXPERIENCE.md](./.agents/handoff/PHASE_2C_EXPERIENCE.md).
 
 - **2026-06-08** [`728f2a9` (Phase 2b) + `66c773d` (backstop fixes) → local `main`, **NOT pushed**] **Phase 2b — Foresight: the harness "foresight" role. Cross-module risk agents (procurement criticality / schedule-slip / budget burn) proactively surfaced as DEDUPED feed cards. Third agentic-OS chunk; agentic-capability per spec (a SEPARATE `ForesightOrchestrator` + `ForesightReasoner`/`ForesightWorkspace` ports — cascade untouched).** A periodic (24h) River `foresight_sweep` fans out per active project; per project a deterministic read-only tx computes the 3 metrics (procurement READS `procurement_items.status`; schedule from `total_float`/`is_critical`; budget burn = integer `actual*100/estimated`, `-1` sentinel for 0-estimate) and DROPS already-carded subjects (dedup-before-AI → standing risks cost 0 tokens); a `HasMaterialSignal` gate then ONE batched Opus judgment; ONE write tx applies deduped cards + audit. AI judges materiality only (no numeric output). Migration **015**: `feed_cards.subject_code` + a partial UNIQUE index over `status IN (active,dismissed)` for the 3 risk card_types (skip-if-active dedup; dismissal suppresses re-spam; plain `CREATE INDEX`+`lock-ok` since the migrate runner tx-wraps every file → CONCURRENTLY would 25001). **Review:** ran the **local backstop proactively** (35-agent workflow) → **4 fixes in `66c773d`**: sweep risk-telemetry restored; audit rows now carry the breach metric (spec §4, context threaded into `ApplyForesight`); 23505→sentinel scoped to the dedup index by name; burn-% int64 overflow guard. **Gates green:** `make audit` ALL PASSED (isolation 1+2, migration-015 lint, bench 181µs/463µs) + `make test-integration` exit 0 (service incl. 5 foresight tests / store / worker). **Local merge only — not pushed.** Spec: [.agents/handoff/PHASE_2B_FORESIGHT.md](./.agents/handoff/PHASE_2B_FORESIGHT.md). Deferred to Phase 3: auto-expire reaper for resolved risks; "foresight active" health surface.
@@ -253,17 +255,22 @@ govulncheck clean. PRs #9 onward also have CI green at merge time
 
 ## In flight
 
-**Nothing actively in flight. Phase 2 (the agentic harness — all four roles) is COMPLETE.** Phases **1
-(orchestration substrate + real `delay_cascade`), 2a (ingestion), 2b (foresight), 2c (experience)** have
-all landed on `main` AND are **pushed to `origin/main`** (HEAD `e1f37db`; the earlier pre-Phase-1 gap is
-closed). CI is green again — the `lint-go`/govulncheck failure the first push surfaced was a dependency-CVE
-issue (NOT our logic), fixed by the `c1dd95f` dep+toolchain bump (x/net, x/crypto, Go 1.26.4). The next
-chunk is **Phase 3 — configurability + integration/MCP layer (see ▶ NEXT below)**. To resume the loop:
-ultraplan → ultracode → `make audit` + `govulncheck` + `make test-integration` → `/ultrareview` **plus a
-local backstop review** (the load-bearing tier — it caught real issues on 2a/2b/2c the cloud pass missed).
-**Add `govulncheck` to the local pre-push sweep** (now part of the loop): `make audit` does NOT run it, and
-CI runs `govulncheck@latest` against a live vuln DB so it flips `lint-go` red on a newly-published CVE with
-zero code change — consider pinning the govulncheck version in `.github/workflows/ci.yml`.
+**Phase 3a — config registry: BUILT on branch `feat/phase-3a-config-registry`, all local gates green,
+PAUSED for owner ultrareview.** This is the active chunk. Next action is the OWNER's: run
+`/code-review ultra` on the branch (Claude cannot trigger it). After review, Claude triages findings →
+loops back to ultracode → commits/merges → updates this doc. The branch is **uncommitted in the working
+tree** (or committed locally, not pushed) — nothing has touched `main`/`origin`. See the top "Last shipped"
+entry for the full description and [.agents/handoff/PHASE_3A_CONFIG_REGISTRY.md](.agents/handoff/PHASE_3A_CONFIG_REGISTRY.md)
+for the spec. **Open escalation [ESC-002](.agents/handoff/ESCALATION_LOG.md#esc-002)** (the `plan_tier=""`
+402-wall on `/api/v1/agents/*`) needs an owner decision but does NOT block 3a.
+
+**Phase 2 (the agentic harness — all four roles) is COMPLETE and on `origin/main` (HEAD `e1f37db`).** Phases
+**1 (orchestration substrate + real `delay_cascade`), 2a (ingestion), 2b (foresight), 2c (experience)** all
+landed + pushed. The loop per chunk: ultraplan → ultracode → `make audit` + `govulncheck` + `make
+test-integration` → `/code-review ultra` **plus a local backstop review** (the load-bearing tier — it
+caught real issues on 2a/2b/2c the cloud pass missed). **Run `govulncheck` in the local pre-push sweep**
+(not in `make audit`); CI runs `govulncheck@latest` against a live vuln DB so it can flip `lint-go` red on a
+newly-published CVE with zero code change — consider pinning the govulncheck version in `.github/workflows/ci.yml`.
 
 **Standalone pivot — DONE and merged.** Native-stack code, Wave 2 deletion,
 docs sweep, and projects CRUD all landed in `dc78aa7` (direct push to
@@ -422,18 +429,23 @@ Known follow-up surfaced by PR #9 (not blocking, queued):
 
 ## Next up (prioritized — pick from the top)
 
-**▶ NEXT (after the active Phase 1 chunk): Phase 2 — fill out the four harness roles
-on the `internal/agentic` substrate.** Direction is now set by [/VISION.md](./VISION.md)
-(the agentic-OS roadmap). With Phase 1 (harness substrate + real `delay_cascade`) the
-active in-flight chunk, the next chunk is **Phase 2**, in dependency order:
-1. **Ingestion** — wire the orphaned `InvoiceExtract` (`internal/ai`) to persist into an
-   `invoices` row + emit a review feed card (first ingestion pipeline). Then field/photo/text intake.
-2. **Experience** — a conversational assistant over the ERP via the harness tool layer.
-3. **Foresight** — cross-module risk/recommendation agents (procurement criticality, schedule risk,
-   budget burn) surfaced as feed cards.
-Each is its own PR-sized chunk; run the ultraplan → ultracode → local gates → ultrareview loop per chunk
-(VISION.md ▶ "Working process"). Phase 3 (DB-backed agent/connector registry + post-deploy config + MCP
-seam) and Phase 4 (production-readiness / Flutter field-app gaps / security review) follow.
+**▶ NEXT: Phase 3 — configurability + integration/MCP layer. Chunk 3a (config registry) is BUILT and
+awaiting ultrareview (see "In flight"); 3b and 3c follow.** Per [PHASES_2-4_ULTRALOOP_PLAN.md](.agents/handoff/PHASES_2-4_ULTRALOOP_PLAN.md)
+§"Phase 3", in dependency order:
+1. **3a · Config registry — DONE on branch, awaiting owner `/code-review ultra`.** DB-backed `agents_config`
+   replaces the in-code gate: enable/disable + tune capabilities per org, post-deploy. (This chunk.)
+2. **3b · Integration/MCP seam** — generalize the tool registry to mount vault-backed 3p connectors as
+   tools; per-connector enable/config; an MCP connector seam. Entry points: extend `agentic` tool layer
+   (`assistant_tool.go`) + `internal/cryptobox` vault + the 3a `AgentConfigService` pattern for connector
+   config. ultrareview focus: credentials never leave the deployment; connector failures soft-fail.
+3. **3c · Admin config UI** — `web/` Lit screens to manage agents + integrations (wire to the 3a
+   `/api/v1/admin/agents` API + the 3b connector API); capability-gated. A11y + design-system conformance.
+Each is its own PR-sized chunk; run ultraplan → ultracode → local gates (`make audit` + `govulncheck` +
+`make test-integration`) → `/code-review ultra` + a local backstop review per chunk (VISION.md ▶ "Working
+process"). **Quick win available now:** decide [ESC-002](.agents/handoff/ESCALATION_LOG.md#esc-002) (the
+`plan_tier` 402-wall) — a small, separate change (populate `plan_tier` at mint, or drop the now-billing-less
+pro gate) that unblocks the Experience HTTP endpoint end-to-end. Phase 4 (production-readiness / Flutter
+field-app gaps / security review) follows Phase 3.
 
 ---
 

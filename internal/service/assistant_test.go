@@ -325,7 +325,7 @@ func TestAssistant_ChatPlanner_MapsResultAndStampsOrg(t *testing.T) {
 func TestAssistant_Converse_NilAI_ReturnsUnavailable(t *testing.T) {
 	// NewAssistantService with a nil *ai.Client leaves s.ai unset (typed-nil
 	// guard). Converse must soft-fail to ErrAssistantUnavailable, not panic.
-	svc := NewAssistantService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	svc := NewAssistantService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	_, err := svc.Converse(context.Background(), uuid.New(), authz.RoleAdmin, "sub-1", agentic.ChatInput{})
 	if !errors.Is(err, agentic.ErrAssistantUnavailable) {
 		t.Fatalf("nil AI client should yield ErrAssistantUnavailable, got %v", err)
