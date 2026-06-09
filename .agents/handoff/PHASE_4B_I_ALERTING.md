@@ -1,6 +1,6 @@
 # Phase 4b-i — Prometheus alerting rules + operator/deploy runbooks
 
-**Status:** BUILT on `feat/phase-4b-i-alerting-runbooks` (committed, not pushed/merged). Config + docs only — **zero Go changes** (`make audit` unaffected). Awaiting owner review → merge.
+**Status:** DONE — merged (fast-forward) + PUSHED to `origin/main` (HEAD `ff22d74`). Config + docs only — zero Go changes. Built + verified via the ultra-loop (grounding caught the dead-metric problem; a 4-lens verification workflow fixed 8 issues).
 **Plan:** [PHASES_2-4_ULTRALOOP_PLAN.md](./PHASES_2-4_ULTRALOOP_PLAN.md) §"Phase 4" chunk 4b. Pairs with the existing [dr-runbook.md](../../docs/dr-runbook.md) + [fork-onboarding.md](../../docs/fork-onboarding.md).
 
 ## What shipped

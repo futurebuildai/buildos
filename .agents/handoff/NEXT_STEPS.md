@@ -126,7 +126,7 @@ the actual code, which made the original "3 missing field screens" framing partl
    `/fleet` is operator-only, so equipment needs a new field-scoped read endpoint in `internal/api/field.go`).
    Entry: `mobile/lib/screens/`. Gates: `cd mobile && dart format + flutter analyze + flutter test (+golden)`.
 3. **4b · operator hardening.**
-   - **4b-i · alerting rules + runbooks — BUILT on `feat/phase-4b-i-alerting-runbooks`, awaiting review.**
+   - **4b-i · alerting rules + runbooks — DONE: merged + PUSHED (`origin/main` `ff22d74`).**
      `deploy/prometheus/buildos.rules.yml` (8 alerts) + `deploy/prometheus/README.md` +
      `docs/observability-runbook.md` + `docs/deploy-runbook.md`. Config+docs only. **Grounding correction to
      the original plan:** the suggested setup-gate / DB-pool / River-job alerts have NO backing metric — only
