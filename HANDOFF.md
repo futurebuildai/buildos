@@ -257,9 +257,9 @@ govulncheck clean. PRs #9 onward also have CI green at merge time
 
 ## In flight
 
-**Phase 3b-ii — the MCP connector + egress security — is COMPLETE on branch `feat/phase-3b-ii-mcp-connector`
-(4 commits: `7a79b6b` core, `29c61f1` wiring, `2f60deb` review fixes, + the docs flip), all local gates
-green + max-effort security review clean — NOT merged, ready for the owner merge decision.** An operator
+**Phase 3b-ii — the MCP connector + egress security — is COMPLETE: merged (fast-forward) + PUSHED to
+`origin/main` (HEAD `9a84235`).** The next chunk is **Phase 3c — the admin config web UI** (wire `web/`
+Lit screens to `/api/v1/admin/agents` + `/api/v1/admin/connectors`). An operator
 can point an `mcp` connector instance at an external MCP server (Streamable HTTP); its tools appear
 (namespaced, admin-floored, default-OFF, fail-closed) in the chat assistant. Built **no-new-dependency**:
 the **SSRF egress guard** (`egress.go` — https-only + resolve-and-pin private-IP denylist via a
@@ -457,17 +457,16 @@ awaiting ultrareview (see "In flight"); 3b and 3c follow.** Per [PHASES_2-4_ULTR
      awaiting owner merge.** `internal/connectors` + `connectors_config` (017) + `ConnectorService` +
      `/api/v1/admin/connectors` + the fail-closed namespaced buildRegistry merge + a built-in `reference`
      connector. Zero network I/O, default-OFF. Spec: [PHASE_3B_CONNECTOR_FRAMEWORK.md](.agents/handoff/PHASE_3B_CONNECTOR_FRAMEWORK.md).
-   - **3b-ii · MCP connector + egress security — NEXT.** A hand-rolled (no-new-dep) **full MCP Streamable
-     HTTP** client (`initialize`→`notifications/initialized`→`tools/list`→`tools/call`, SSE + `Mcp-Session-Id`)
-     as a new connector type; **SSRF guard** = https-only + `net.Dialer.Control` resolve-and-pin **private-IP
-     denylist** (loopback/RFC1918/link-local-metadata/ULA/CGNAT) + no-redirect + bounded body; a
-     connectors-local circuit breaker keyed per (org, endpoint); per-call timeout ~8–10s (< the 30s loop
-     budget); per-result byte cap 32–64KiB; vault credential `connector:<id>` unsealed at `tools/call`; a
-     dedicated `connector_tools` cache (fetched_at + hash) + operator-driven refresh. **All decisions
-     recorded in [PHASE_3B_CONNECTOR_FRAMEWORK.md](.agents/handoff/PHASE_3B_CONNECTOR_FRAMEWORK.md) §9.**
-     The seam is already hardened for it (panic→soft-IsError recovery, nil-executor skip landed in 3b-i).
-3. **3c · Admin config UI** — `web/` Lit screens to manage agents + connectors (wire to `/api/v1/admin/agents`
-   + `/api/v1/admin/connectors`); capability-gated. A11y + design-system conformance.
+   - **3b-ii · MCP connector + egress security — DONE (merged + pushed, HEAD `9a84235`; security review
+     clean, no SSRF bypass).** Hand-rolled MCP Streamable-HTTP client + SSRF denylist guard + per-(org,
+     endpoint) breaker + `connector_tools` cache + the `mcp` connector type + admin refresh endpoint. Spec:
+     [PHASE_3B_II_MCP_CONNECTOR.md](.agents/handoff/PHASE_3B_II_MCP_CONNECTOR.md).
+3. **3c · Admin config UI — NEXT.** `web/` Lit screens to manage agents + connectors (wire to
+   `/api/v1/admin/agents` + `/api/v1/admin/connectors` + the `connector:<name>` vault credential via
+   `/api/v1/integrations`); capability-gated; create/enable/configure/refresh an MCP connector instance.
+   A11y + design-system conformance. Entry points: `web/src/` (Lit components + typed API client). **Note:
+   the agent/connector admin surfaces are admin-gated and reachable today regardless of ESC-002** (only the
+   pro-gated `/api/v1/agents/chat` experience endpoint is affected by that).
 Each is its own PR-sized chunk; run ultraplan → ultracode → local gates (`make audit` + `govulncheck` +
 `make test-integration`) → `/code-review ultra` + a local backstop review per chunk (VISION.md ▶ "Working
 process"). **Quick win available now:** decide [ESC-002](.agents/handoff/ESCALATION_LOG.md#esc-002) (the

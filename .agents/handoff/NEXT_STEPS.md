@@ -93,10 +93,16 @@ no redeploy), MCP connector seam, vault-backed credential UI. In dependency orde
     Check 3. Spec: [PHASE_3B_CONNECTOR_FRAMEWORK.md](./PHASE_3B_CONNECTOR_FRAMEWORK.md). Entry points for
     3b-ii: `internal/connectors` (add the MCP connector type), `internal/service/connector_config.go`
     (resolver + cached tools), `internal/cryptobox`/`integration_credentials` vault (the `connector:<id>` key).
-  - **3b-ii · MCP connector + egress security (NEXT).** Hand-rolled (no-dep) full MCP Streamable HTTP client
-    + SSRF private-IP denylist guard + per-(org,endpoint) breaker + per-result byte cap + vault credential +
-    `connector_tools` cache. All decisions recorded in the 3b spec §9; the seam is pre-hardened
-    (panic→soft-IsError, nil-executor skip landed in 3b-i).
+  - **3b-ii · MCP connector + egress security (✅ DONE — merged + pushed to `origin/main`, HEAD `9a84235`;
+    61-agent security review clean, no SSRF bypass).** Hand-rolled (no-dep) full MCP Streamable HTTP client
+    (`internal/connectors/{egress,mcpclient,breaker,mcp}.go`) + SSRF private-IP denylist guard +
+    per-(org,endpoint) breaker + `connector_tools` cache (migration 018) + the `mcp` connector type
+    (`ConnectorService` Set/RefreshTools/ToolsFor) + admin `POST .../refresh`. Spec:
+    [PHASE_3B_II_MCP_CONNECTOR.md](./PHASE_3B_II_MCP_CONNECTOR.md).
+- **3c · Admin config UI (NEXT).** `web/` Lit screens to manage agents + connectors against
+  `/api/v1/admin/agents` + `/api/v1/admin/connectors` (+ the `connector:<name>` vault credential via
+  `/api/v1/integrations`). Create/enable/configure/refresh MCP instances; capability-gated; a11y +
+  design-system conformance. Entry points: `web/src/`.
 - **3c · Admin config UI.** `web/` Lit screens wiring the 3a `/api/v1/admin/agents` API + the 3b connector API.
 
 **Adjacent (small, owner-decision): [ESC-002](./ESCALATION_LOG.md#esc-002)** — self-minted tokens carry
