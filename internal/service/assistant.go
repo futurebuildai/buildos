@@ -333,7 +333,15 @@ func (i registryInvoker) Invoke(ctx context.Context, name string, input json.Raw
 	if !ok {
 		// Unknown tool (not added for this role, or hallucinated). IsError so
 		// the model self-corrects; never an abort.
-		return fmt.Sprintf(`{"error":"unknown_tool","detail":"no tool named %q is available"}`, name), true, nil
+		// Build via json.Marshal so an injected/odd tool name is escaped into
+		// VALID JSON — a raw %q inside the template would embed unescaped quotes
+		// and break the object the model reads. The "unknown_tool" token is
+		// preserved (the role x tool matrix test asserts on it).
+		b, _ := json.Marshal(map[string]string{
+			"error":  "unknown_tool",
+			"detail": fmt.Sprintf("no tool named %q is available", name),
+		})
+		return string(b), true, nil
 	}
 	res, err := exec.Execute(ctx, input)
 	if err != nil {
