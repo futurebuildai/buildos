@@ -27,12 +27,16 @@ type Registry struct {
 }
 
 // NewRegistry returns a Registry seeded with the built-in capabilities (today:
-// delay_cascade).
+// delay_cascade, foresight).
 func NewRegistry() *Registry {
 	r := &Registry{descriptors: make(map[Capability]Descriptor)}
 	r.Register(Descriptor{
 		Capability:  DelayCascade,
 		Description: "Reason about the cross-module blast radius of a schedule slip and surface impacts as feed cards.",
+	})
+	r.Register(Descriptor{
+		Capability:  Foresight,
+		Description: "Periodically surface material standing cross-module risks (procurement criticality, schedule slip, budget burn) the deterministic engine has computed, judged for materiality by AI, as deduped feed cards.",
 	})
 	return r
 }

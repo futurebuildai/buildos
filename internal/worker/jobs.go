@@ -89,6 +89,15 @@ type PipelineAnalyticsArgs struct{}
 
 func (PipelineAnalyticsArgs) Kind() string { return "pipeline_analytics" }
 
+// ForesightSweepArgs is the periodic cross-org foresight sweep payload. It is
+// empty (org-wide) by design: the single 24h tick fans out per active project
+// INSIDE the runner (one cron tick -> N orchestrator runs, each <=1 AI call).
+// Per-project granularity lives in the service loop, not in River args — mirrors
+// ProcurementCheckArgs / CorporateRollupArgs.
+type ForesightSweepArgs struct{}
+
+func (ForesightSweepArgs) Kind() string { return "foresight_sweep" }
+
 type PermitIssuedTransitionArgs struct {
 	ProspectID       uuid.UUID `json:"prospect_id"`
 	PermitIssuedDate string    `json:"permit_issued_date"` // RFC 3339 date
@@ -324,5 +333,47 @@ type PermitIssuedTransitionWorker struct {
 
 func (w *PermitIssuedTransitionWorker) Work(ctx context.Context, job *river.Job[PermitIssuedTransitionArgs]) error {
 	slog.InfoContext(ctx, "permit_issued_transition: not yet implemented", "prospect_id", job.Args.ProspectID)
+	return nil
+}
+
+// ForesightRunner is the dependency surface ForesightSweepWorker needs from the
+// service layer. Defined here (consumer side) for the same reason BudgetRunner /
+// ProcurementChecker are — keeps worker free of an internal/service import
+// (service already imports worker for River args, and a back-edge would create a
+// cycle). Satisfied by *service.ForesightSweepService.
+type ForesightRunner interface {
+	RunForesightSweep(ctx context.Context) error
+}
+
+// ForesightSweepWorker runs the daily cross-module foresight sweep: it refreshes
+// procurement statuses, fans out per active project across orgs, computes the
+// deterministic risk metrics, and (when material) asks the model to judge
+// materiality, applying any deduped risk feed cards + audit. A missing AI key
+// soft-fails inside each per-project orchestrator (no error), so the runner
+// returns nil; River retries only on real recompute / listing I/O failures.
+// Mirrors ProcurementCheckWorker.
+type ForesightSweepWorker struct {
+	river.WorkerDefaults[ForesightSweepArgs]
+	Runner ForesightRunner
+}
+
+// NewForesightSweepWorker panics if runner is nil — wiring errors should fail at
+// startup, not at the first scheduled tick.
+func NewForesightSweepWorker(r ForesightRunner) *ForesightSweepWorker {
+	if r == nil {
+		panic("worker: ForesightSweepWorker requires non-nil ForesightRunner")
+	}
+	return &ForesightSweepWorker{Runner: r}
+}
+
+func (w *ForesightSweepWorker) Work(ctx context.Context, job *river.Job[ForesightSweepArgs]) error {
+	started := time.Now()
+	if err := w.Runner.RunForesightSweep(ctx); err != nil {
+		slog.ErrorContext(ctx, "foresight_sweep failed", "error", err)
+		return fmt.Errorf("foresight_sweep: %w", err)
+	}
+	slog.InfoContext(ctx, "foresight_sweep completed",
+		"duration_ms", time.Since(started).Milliseconds(),
+	)
 	return nil
 }

@@ -30,6 +30,7 @@ func TestJobArgsKind(t *testing.T) {
 		{MaintenanceRemindersArgs{}, "maintenance_reminders"},
 		{FieldNotificationRetryArgs{}, "field_notification_retry"},
 		{DelayCascadeArgs{}, "delay_cascade"},
+		{ForesightSweepArgs{}, "foresight_sweep"},
 		{PipelineAnalyticsArgs{}, "pipeline_analytics"},
 		{PermitIssuedTransitionArgs{}, "permit_issued_transition"},
 	}
@@ -91,6 +92,9 @@ func TestWorkerConstructors_PanicOnNilDependency(t *testing.T) {
 	})
 	t.Run("DelayCascadeWorker", func(t *testing.T) {
 		assertPanics(t, func() { NewDelayCascadeWorker(nil) })
+	})
+	t.Run("ForesightSweepWorker", func(t *testing.T) {
+		assertPanics(t, func() { NewForesightSweepWorker(nil) })
 	})
 }
 
@@ -154,6 +158,16 @@ func (f *fakeCascadeOrchestrator) RunDelayCascade(_ context.Context, in agentic.
 	f.called = true
 	f.gotIn = in
 	return f.res, f.err
+}
+
+type fakeForesightRunner struct {
+	err    error
+	called bool
+}
+
+func (f *fakeForesightRunner) RunForesightSweep(_ context.Context) error {
+	f.called = true
+	return f.err
 }
 
 func TestProcurementCheckWorker_Work(t *testing.T) {
@@ -243,6 +257,26 @@ func TestDelayCascadeWorker_Work(t *testing.T) {
 		w := NewDelayCascadeWorker(&fakeCascadeOrchestrator{err: sentinel})
 		job := &river.Job[DelayCascadeArgs]{Args: DelayCascadeArgs{OrgID: uuid.New(), ProjectID: uuid.New()}}
 		if err := w.Work(context.Background(), job); !errors.Is(err, sentinel) {
+			t.Errorf("Work() = %v, want wrapped %v", err, sentinel)
+		}
+	})
+}
+
+func TestForesightSweepWorker_Work(t *testing.T) {
+	t.Run("delegates and succeeds", func(t *testing.T) {
+		fr := &fakeForesightRunner{}
+		w := NewForesightSweepWorker(fr)
+		if err := w.Work(context.Background(), &river.Job[ForesightSweepArgs]{}); err != nil {
+			t.Fatalf("Work() = %v, want nil", err)
+		}
+		if !fr.called {
+			t.Error("RunForesightSweep was not called")
+		}
+	})
+	t.Run("wraps runner error", func(t *testing.T) {
+		sentinel := errors.New("sweep failed")
+		w := NewForesightSweepWorker(&fakeForesightRunner{err: sentinel})
+		if err := w.Work(context.Background(), &river.Job[ForesightSweepArgs]{}); !errors.Is(err, sentinel) {
 			t.Errorf("Work() = %v, want wrapped %v", err, sentinel)
 		}
 	})

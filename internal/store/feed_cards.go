@@ -18,16 +18,28 @@ type FeedCardsStore struct{}
 // NewFeedCardsStore creates a new FeedCardsStore.
 func NewFeedCardsStore() *FeedCardsStore { return &FeedCardsStore{} }
 
+// ErrDuplicateActiveRiskCard signals a SQLSTATE 23505 on the foresight dedup
+// partial unique index (project_id, card_type, subject_code over status IN
+// ('active','dismissed') for the three risk card_types). The service treats it
+// as a clean skip — a concurrent sweep already carded this risk — not a hard
+// error, so a race degrades to a skip rather than a River retry storm.
+var ErrDuplicateActiveRiskCard = errors.New("feed_cards: active risk card already exists")
+
 // CreateFeedCardParams is the input for inserting a feed card. Either
 // TargetUserID or TargetRole must be set; service layer enforces this.
 // Actions is pre-marshalled JSON ready to land in the JSONB column.
 type CreateFeedCardParams struct {
-	OrgID        uuid.UUID
-	ProjectID    *uuid.UUID
-	CardType     string
-	Title        string
-	Body         string
-	Priority     string
+	OrgID     uuid.UUID
+	ProjectID *uuid.UUID
+	CardType  string
+	Title     string
+	Body      string
+	Priority  string
+	// SubjectCode anchors the foresight dedup key (the WBS, or "total" for a
+	// project-level budget card). "" for non-risk cards (manual/cascade/2a
+	// ingest) — the dedup partial index's card_type predicate excludes those.
+	// Persists into the NOT NULL DEFAULT '' subject_code column (migration 015).
+	SubjectCode  string
 	TargetUserID *uuid.UUID
 	TargetRole   *string
 	Actions      json.RawMessage
@@ -49,13 +61,13 @@ func (s *FeedCardsStore) CreateFeedCard(ctx context.Context, tx pgx.Tx, p Create
 	err := tx.QueryRow(ctx, `
 		INSERT INTO feed_cards (
 			org_id, project_id, card_type, title, body, priority,
-			target_user_id, target_role, actions
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+			target_user_id, target_role, actions, subject_code
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
 		RETURNING id, org_id, project_id, card_type, title, body, priority,
 		          target_user_id, target_role, actions,
 		          status, actioned_at, expires_at, created_at`,
 		p.OrgID, p.ProjectID, p.CardType, p.Title, p.Body, p.Priority,
-		p.TargetUserID, p.TargetRole, actions,
+		p.TargetUserID, p.TargetRole, actions, p.SubjectCode,
 	).Scan(
 		&card.ID, &card.OrgID, &card.ProjectID, &card.CardType,
 		&card.Title, &card.Body, &card.Priority,
@@ -63,9 +75,51 @@ func (s *FeedCardsStore) CreateFeedCard(ctx context.Context, tx pgx.Tx, p Create
 		&card.Status, &card.ActionedAt, &card.ExpiresAt, &card.CreatedAt,
 	)
 	if err != nil {
+		// A 23505 here can only be the foresight dedup partial unique index
+		// (the only UNIQUE constraint involving feed_cards inserts) — a
+		// concurrent sweep already carded this (project, card_type, subject).
+		// Surface the typed sentinel so ApplyForesight treats it as a clean
+		// skip, not a hard error / retry storm.
+		if isUniqueViolation(err) {
+			return models.FeedCard{}, ErrDuplicateActiveRiskCard
+		}
 		return models.FeedCard{}, fmt.Errorf("insert feed_card: %w", err)
 	}
 	return card, nil
+}
+
+// HasActiveRiskCardParams keys the app-layer dedup pre-check for foresight risk
+// cards. SubjectCode is non-empty (the WBS, or "total" for a project-level
+// budget card).
+type HasActiveRiskCardParams struct {
+	ProjectID   uuid.UUID
+	CardType    string
+	SubjectCode string
+}
+
+// HasActiveRiskCard reports whether a foresight risk card already exists for the
+// given (project_id, card_type, subject_code) in a non-terminal state
+// (status IN ('active','dismissed')). It is the primary, app-layer half of the
+// dedup belt-and-suspenders: 'active' prevents duplicate live cards and
+// 'dismissed' suppresses daily re-spam of an acknowledged-but-standing risk
+// (§5). Terminal 'actioned'/'expired' states free the slot for true recurrence.
+// The partial unique index (migration 015) is the concurrent-race backstop.
+func (s *FeedCardsStore) HasActiveRiskCard(ctx context.Context, tx pgx.Tx, p HasActiveRiskCardParams) (bool, error) {
+	var exists bool
+	err := tx.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM feed_cards
+			WHERE project_id = $1
+			  AND card_type = $2
+			  AND subject_code = $3
+			  AND status IN ('active', 'dismissed')
+		)`,
+		p.ProjectID, p.CardType, p.SubjectCode,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("has active risk card: %w", err)
+	}
+	return exists, nil
 }
 
 // ListFeedCardsParams controls a feed listing query.

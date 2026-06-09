@@ -24,6 +24,7 @@ func TestNewRegistry_Integration(t *testing.T) {
 		NotificationDeliverer: &fakeDeliverer{},
 		ProcurementChecker:    &fakeChecker{},
 		CascadeOrchestrator:   &fakeCascadeOrchestrator{},
+		ForesightRunner:       &fakeForesightRunner{},
 	}
 
 	reg, err := NewRegistry(pool, slog.Default(), deps)
@@ -63,6 +64,7 @@ func TestRegistry_Start(t *testing.T) {
 		NotificationDeliverer: &fakeDeliverer{},
 		ProcurementChecker:    &fakeChecker{},
 		CascadeOrchestrator:   &fakeCascadeOrchestrator{},
+		ForesightRunner:       &fakeForesightRunner{},
 	}
 	reg, err := NewRegistry(pool, slog.Default(), deps)
 	if err != nil {

@@ -583,3 +583,130 @@ func (c *Client) DelayCascadeReason(ctx context.Context, req DelayCascadeReasonR
 	}
 	return &out, nil
 }
+
+// ---- foresight_risk ----------------------------------------------------
+
+// ForesightProcurementRisk is one procurement line the deterministic engine
+// has flagged as ordering-window-at-risk. Status is READ from the DB (set by
+// procurement_check) — the model does NOT re-derive it. DaysUntilMustOrder is
+// the engine-computed integer days until the ordering window closes.
+type ForesightProcurementRisk struct {
+	WBS                string `json:"wbs"`
+	Description        string `json:"description"`
+	Status             string `json:"status"`
+	DaysUntilMustOrder int    `json:"days_until_must_order"`
+}
+
+// ForesightScheduleRisk is one schedule task the engine has flagged as
+// slip-prone. RemainingFloatDays + IsCritical + PercentComplete are all
+// CPM/engine-computed; the model never recomputes a schedule date or float.
+type ForesightScheduleRisk struct {
+	WBS                string `json:"wbs"`
+	Name               string `json:"name"`
+	RemainingFloatDays int    `json:"remaining_float_days"`
+	IsCritical         bool   `json:"is_critical"`
+	PercentComplete    int    `json:"percent_complete"`
+}
+
+// ForesightBudgetRisk is one cost-coded budget line trending over estimate.
+// All monetary values are integer cents paired with CurrencyCode per the
+// Composite Currency Pattern — never floats. BurnPercent is the engine-computed
+// integer percent (ActualCents*100/EstimatedCents); the model never recomputes it.
+type ForesightBudgetRisk struct {
+	WBS            string `json:"wbs"`
+	EstimatedCents int64  `json:"estimated_cents"`
+	CommittedCents int64  `json:"committed_cents"`
+	ActualCents    int64  `json:"actual_cents"`
+	CurrencyCode   string `json:"currency_code"`
+	BurnPercent    int    `json:"burn_percent"`
+}
+
+// ForesightRiskRequest is the input for the cross-module foresight risk
+// judgment. The deterministic engine has ALREADY computed every metric across
+// the three dimensions; the model judges materiality/severity/phrasing only and
+// never recomputes a schedule date or a monetary total.
+type ForesightRiskRequest struct {
+	ProjectName string                     `json:"project_name"`
+	Procurement []ForesightProcurementRisk `json:"procurement,omitempty"`
+	Schedule    []ForesightScheduleRisk    `json:"schedule,omitempty"`
+	Budget      []ForesightBudgetRisk      `json:"budget,omitempty"`
+}
+
+// ForesightRiskItem is one judged, materiality-ranked risk. RiskType anchors
+// the dedup subject and is exactly one of "procurement_criticality",
+// "schedule_slip", or "budget_burn". Severity is one of "critical", "high",
+// "normal", "low". WBS is the dedup subject code. Title/Body render as a feed
+// card; RecommendedAction is the suggested human next step. The response schema
+// carries NO numeric metric fields — those stay with the deterministic engine.
+type ForesightRiskItem struct {
+	RiskType          string `json:"risk_type"`
+	WBS               string `json:"wbs"`
+	Severity          string `json:"severity"`
+	Title             string `json:"title"`
+	Body              string `json:"body"`
+	RecommendedAction string `json:"recommended_action"`
+}
+
+// ForesightRiskResponse carries the materiality-ranked risks.
+type ForesightRiskResponse struct {
+	Risks []ForesightRiskItem `json:"risks"`
+}
+
+const foresightRiskSystem = `You judge the materiality of standing cross-module risks on a residential construction project. ` +
+	`You receive three categories the deterministic engine has ALREADY computed: procurement criticality (items whose ordering window the schedule puts at risk), ` +
+	`schedule-slip risk (critical-path or low-float tasks), and budget burn (lines trending over estimate). ` +
+	`You NEVER recompute a schedule date or a monetary total — every date, float day, and dollar figure (integer cents) is given. ` +
+	`For each material risk return risk_type (exactly one of "procurement_criticality", "schedule_slip", or "budget_burn"), wbs, severity ` +
+	`(exactly one of "critical", "high", "normal", or "low"), a short title, a concise body, and a recommended human next step. ` +
+	`OMIT immaterial or well-managed risks — do not surface a card for every breach.`
+
+var foresightRiskSchema = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "risk_type": {"type": "string", "enum": ["procurement_criticality", "schedule_slip", "budget_burn"]},
+          "wbs": {"type": "string"},
+          "severity": {"type": "string", "enum": ["critical", "high", "normal", "low"]},
+          "title": {"type": "string"},
+          "body": {"type": "string"},
+          "recommended_action": {"type": "string"}
+        },
+        "required": ["risk_type", "wbs", "severity", "title", "body", "recommended_action"]
+      }
+    }
+  },
+  "required": ["risks"]
+}`)
+
+// ForesightRiskJudgment judges the materiality of computed cross-module risks.
+// Tool call, uses Model (Opus). Inherits ErrUnconfigured from callTool when no
+// Anthropic key is configured for the org. Returns an error if all three input
+// arrays are empty (the orchestrator's material-signal gate guarantees they
+// aren't, but we defend it here).
+func (c *Client) ForesightRiskJudgment(ctx context.Context, req ForesightRiskRequest) (*ForesightRiskResponse, error) {
+	if len(req.Procurement) == 0 && len(req.Schedule) == 0 && len(req.Budget) == 0 {
+		return nil, fmt.Errorf("ai.ForesightRiskJudgment: at least one risk is required")
+	}
+
+	prompt, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("ai.ForesightRiskJudgment: marshal prompt: %w", err)
+	}
+
+	raw, err := c.callTool(ctx, "foresight_risk", c.model, foresightRiskSystem,
+		[]contentBlock{textBlock("Judge the materiality of these standing cross-module risks:\n" + string(prompt))},
+		"judge_foresight_risk", foresightRiskSchema)
+	if err != nil {
+		return nil, fmt.Errorf("ai.ForesightRiskJudgment: %w", err)
+	}
+
+	var out ForesightRiskResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("ai.ForesightRiskJudgment: decode tool output: %w", err)
+	}
+	return &out, nil
+}

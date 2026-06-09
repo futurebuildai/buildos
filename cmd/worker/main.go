@@ -138,13 +138,20 @@ func run(logger *slog.Logger) error {
 		logger.Warn("VAULT_MASTER_KEY not set — delay_cascade AI reasoning disabled (logged no-op)")
 	}
 
+	// Shared stores for the cascade + foresight workspaces (both read the same
+	// schedule / project / feed tables). Hoisted so the foresight workspace below
+	// reuses the exact instances rather than re-allocating.
+	scheduleStore := store.NewScheduleStore()
+	projectStore := store.NewProjectStore()
+	feedStore := store.NewFeedCardsStore()
+
 	cascadeWorkspace := service.NewCascadeWorkspace(
 		pool,
-		store.NewScheduleStore(),
+		scheduleStore,
 		procurementStore,
 		financialsStore,
-		store.NewProjectStore(),
-		store.NewFeedCardsStore(),
+		projectStore,
+		feedStore,
 		auditService,
 	)
 	cascadeOrchestrator := &cascadeOrchestratorFactory{
@@ -153,11 +160,50 @@ func run(logger *slog.Logger) error {
 		logger:    logger,
 	}
 
+	// ----------------------------------------------------------------
+	// Foresight-sweep wiring. Same shape as the cascade orchestrator: the
+	// deterministic ForesightWorkspace carries no per-org state and is built
+	// once over the (reused) stores; the per-org reasoner bakes in the org id
+	// (the AI key resolves per org) so a fresh per-org ForesightOrchestrator is
+	// built on every project from p.OrgID — that happens in the
+	// foresightOrchestratorFactory closure. A nil aiClient (vault unconfigured)
+	// makes each per-project JudgeRisks soft-fail with ErrReasonerUnavailable,
+	// which the orchestrator swallows: the sweep runs deterministically and
+	// emits no cards. ForesightThresholds{} takes the documented defaults
+	// (schedule float <=2 days, burn >=80%).
+	// ----------------------------------------------------------------
+	foresightWorkspace := service.NewForesightWorkspace(
+		pool,
+		scheduleStore,
+		procurementStore,
+		financialsStore,
+		projectStore,
+		feedStore,
+		auditService,
+		service.ForesightThresholds{}, // zero-value -> documented defaults
+	)
+	foresightFactory := &foresightOrchestratorFactory{
+		aiClient:  aiClient,
+		workspace: foresightWorkspace,
+		logger:    logger,
+	}
+	// procurementService is the ProcurementRecomputer (R3: RecomputeStatuses runs
+	// first so the procurement dimension reads FRESH statuses). It is the same
+	// instance wired as Dependencies.ProcurementChecker.
+	foresightSweep := service.NewForesightSweepService(
+		pool,
+		projectStore,
+		procurementService,
+		foresightFactory.RunForesight,
+		logger,
+	)
+
 	registry, err := worker.NewRegistry(pool, logger, worker.Dependencies{
 		BudgetRunner:          budgetService,
 		NotificationDeliverer: notifService,
 		ProcurementChecker:    procurementService,
 		CascadeOrchestrator:   cascadeOrchestrator,
+		ForesightRunner:       foresightSweep,
 	})
 	if err != nil {
 		return fmt.Errorf("creating worker registry: %w", err)
@@ -233,4 +279,27 @@ func (f *cascadeOrchestratorFactory) RunDelayCascade(ctx context.Context, in age
 // hazard to guard at the call site.
 func (f *cascadeOrchestratorFactory) newReasoner(orgID uuid.UUID) agentic.Reasoner {
 	return service.NewCascadeReasoner(f.aiClient, orgID)
+}
+
+// foresightOrchestratorFactory is the per-org orchestrator builder for the
+// foresight sweep. It mirrors cascadeOrchestratorFactory: the AI key resolves
+// per-org (via ai.ContextWithOrgID inside the reasoner), and the reasoner bakes
+// the org id in at construction — so a fresh per-org reasoner + orchestrator is
+// built on every project the sweep visits. The workspace carries no per-org
+// state and is reused across invocations. Its RunForesight method is passed to
+// NewForesightSweepService as the per-org factory func.
+type foresightOrchestratorFactory struct {
+	aiClient  *ai.Client // may be nil when the vault is unconfigured
+	workspace *service.ForesightWorkspace
+	logger    *slog.Logger
+}
+
+// RunForesight builds the per-org reasoner + orchestrator. NewForesightReasoner
+// takes the concrete *ai.Client and handles a nil client internally (JudgeRisks
+// then soft-fails with ErrReasonerUnavailable), so a key-less / vault-
+// unconfigured worker passes its nil aiClient straight through — no typed-nil
+// interface hazard to guard at the call site.
+func (f *foresightOrchestratorFactory) RunForesight(orgID uuid.UUID) *agentic.ForesightOrchestrator {
+	reasoner := service.NewForesightReasoner(f.aiClient, orgID)
+	return agentic.NewForesightOrchestrator(reasoner, f.workspace, f.logger)
 }

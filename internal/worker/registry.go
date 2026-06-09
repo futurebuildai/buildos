@@ -28,6 +28,7 @@ type Dependencies struct {
 	NotificationDeliverer NotificationDeliverer // FieldNotificationRetryWorker
 	ProcurementChecker    ProcurementChecker    // ProcurementCheckWorker
 	CascadeOrchestrator   CascadeOrchestrator   // DelayCascadeWorker
+	ForesightRunner       ForesightRunner       // ForesightSweepWorker
 }
 
 // NewRegistry creates a River worker registry with all job workers registered.
@@ -48,6 +49,7 @@ func NewRegistry(pool *pgxpool.Pool, logger *slog.Logger, deps Dependencies) (*R
 	river.AddWorker(workers, NewDelayCascadeWorker(deps.CascadeOrchestrator))
 	river.AddWorker(workers, &PipelineAnalyticsWorker{})
 	river.AddWorker(workers, &PermitIssuedTransitionWorker{})
+	river.AddWorker(workers, NewForesightSweepWorker(deps.ForesightRunner))
 
 	periodicJobs := []*river.PeriodicJob{
 		river.NewPeriodicJob(
@@ -89,6 +91,13 @@ func NewRegistry(pool *pgxpool.Pool, logger *slog.Logger, deps Dependencies) (*R
 			river.PeriodicInterval(24*time.Hour),
 			func() (river.JobArgs, *river.InsertOpts) {
 				return PipelineAnalyticsArgs{}, nil
+			},
+			&river.PeriodicJobOpts{RunOnStart: false},
+		),
+		river.NewPeriodicJob(
+			river.PeriodicInterval(24*time.Hour),
+			func() (river.JobArgs, *river.InsertOpts) {
+				return ForesightSweepArgs{}, nil
 			},
 			&river.PeriodicJobOpts{RunOnStart: false},
 		),

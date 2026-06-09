@@ -98,6 +98,42 @@ func (s *ProjectStore) ListByOrg(ctx context.Context, tx pgx.Tx, orgID uuid.UUID
 	return out, rows.Err()
 }
 
+// ListActiveAcrossOrgsForSweep enumerates active projects across ALL orgs for
+// the system-actor foresight sweep, keyset-paginated by id.
+//
+// !!! DELIBERATELY OMITS THE org_id FILTER !!!
+// This is the ONE project read in the codebase that intentionally crosses org
+// boundaries. It is the sanctioned ADR-002 exception (deployment = tenant, so
+// the worker is the system actor — same posture as the corporate rollup). The
+// isolation lint does NOT defend tenant scoping, so this is a review tripwire:
+//
+//	NEVER wire this behind an HTTP handler. It is worker-only.
+//
+// Keyset pagination (afterID, the previous page's last id) bounds memory; pass
+// uuid.Nil to start (every real uuid sorts after the nil uuid). Ordered by id
+// so the keyset cursor is stable.
+func (s *ProjectStore) ListActiveAcrossOrgsForSweep(ctx context.Context, tx pgx.Tx, limit int, afterID uuid.UUID) ([]models.Project, error) {
+	rows, err := tx.Query(ctx, `SELECT `+projectColumns+`
+		FROM projects
+		WHERE status = 'active' AND id > $1
+		ORDER BY id
+		LIMIT $2`, afterID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query active projects for sweep: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]models.Project, 0)
+	for rows.Next() {
+		p, err := scanProject(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan active projects for sweep: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // GetByID returns a single project scoped to its org. Maps no-row to
 // ErrNotFound so cross-org access is indistinguishable from a missing
 // project (no existence leak).
