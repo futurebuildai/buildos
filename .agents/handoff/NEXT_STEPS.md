@@ -85,9 +85,18 @@ no redeploy), MCP connector seam, vault-backed credential UI. In dependency orde
   [PHASE_3A_CONFIG_REGISTRY.md](./PHASE_3A_CONFIG_REGISTRY.md). **Entry points for the resolver/gate seam:**
   `internal/agentic/config.go` (port), `internal/service/agent_config.go` (adapter, two faces),
   `internal/store/agent_config.go`, `internal/api/agent_config.go`, `cmd/{server,worker}/main.go` (wiring).
-- **3b · Integration/MCP seam (NEXT).** Vault-backed 3p connectors exposed to agents as tools; per-connector
-  enable/config reusing the 3a `AgentConfigService` pattern; an MCP connector seam. Entry points: the
-  `agentic` tool layer (`assistant_tool.go`), `internal/cryptobox` vault, `agents_config`-style connector config.
+- **3b · Integration/MCP seam — SPLIT (owner-approved after a design critique found one chunk under-secured):**
+  - **3b-i · connector framework (✅ DONE on branch `feat/phase-3b-connector-framework`, reviewed clean, gates
+    green — awaiting owner merge).** `internal/connectors` (Connector interface + built-in `reference`
+    connector, no network) + `connectors_config` (migration 017, default-OFF) + `ConnectorService` +
+    `/api/v1/admin/connectors` + fail-closed namespaced admin-floored `buildRegistry` merge + isolation
+    Check 3. Spec: [PHASE_3B_CONNECTOR_FRAMEWORK.md](./PHASE_3B_CONNECTOR_FRAMEWORK.md). Entry points for
+    3b-ii: `internal/connectors` (add the MCP connector type), `internal/service/connector_config.go`
+    (resolver + cached tools), `internal/cryptobox`/`integration_credentials` vault (the `connector:<id>` key).
+  - **3b-ii · MCP connector + egress security (NEXT).** Hand-rolled (no-dep) full MCP Streamable HTTP client
+    + SSRF private-IP denylist guard + per-(org,endpoint) breaker + per-result byte cap + vault credential +
+    `connector_tools` cache. All decisions recorded in the 3b spec §9; the seam is pre-hardened
+    (panic→soft-IsError, nil-executor skip landed in 3b-i).
 - **3c · Admin config UI.** `web/` Lit screens wiring the 3a `/api/v1/admin/agents` API + the 3b connector API.
 
 **Adjacent (small, owner-decision): [ESC-002](./ESCALATION_LOG.md#esc-002)** — self-minted tokens carry
