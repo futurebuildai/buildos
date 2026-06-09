@@ -110,6 +110,8 @@ func TestAgentConfigService_Set_InvalidForesightTuning_InvalidInput(t *testing.T
 	cases := []string{
 		`{"budget_burn_percent":-9}`, // negative
 		`{"schedule_float_days":-1}`, // negative
+		`{"schedule_float_days":0}`,  // explicit 0 — runtime coerces to default, so reject (reported != executed otherwise)
+		`{"budget_burn_percent":0}`,  // explicit 0 — same
 		`["not","an","object"]`,      // not an object
 		`{not valid json`,            // malformed
 	}

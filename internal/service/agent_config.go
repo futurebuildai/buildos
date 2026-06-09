@@ -267,21 +267,24 @@ func (s *AgentConfigService) Resolve(ctx context.Context, orgID uuid.UUID, c age
 // capabilities with a typed shape (foresight), that its tuning fields are
 // well-formed. Returns the normalized raw bytes ("{}" for an empty/nil blob).
 func validateAgentConfig(capability string, raw json.RawMessage) ([]byte, error) {
-	if len(bytes.TrimSpace(raw)) == 0 {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
 		return []byte("{}"), nil
 	}
 	if !json.Valid(raw) {
 		return nil, fmt.Errorf("%w: config must be valid JSON", ErrInvalidInput)
 	}
-	trimmed := bytes.TrimSpace(raw)
 	if trimmed[0] != '{' {
 		return nil, fmt.Errorf("%w: config must be a JSON object", ErrInvalidInput)
 	}
 
 	if capability == agentic.Foresight.String() {
-		// Reject non-integer / negative thresholds at write time so the admin
-		// cannot persist config the engine would silently discard. The runtime
-		// parse (agentic.ParseForesightTuning) stays defensive regardless.
+		// Reject any EXPLICIT non-positive threshold at write time. The runtime
+		// (agentic.ForesightTuning.WithDefaults) treats <=0 as "unset → use the
+		// documented default", so persisting an explicit 0 would be stored and
+		// echoed by GET yet silently executed as the default — a reported-vs-
+		// executed mismatch. Reject it here (>= 1) so the write contract matches
+		// the runtime semantics; an omitted field (nil) still means "use default".
 		var probe struct {
 			ScheduleFloatDays *int `json:"schedule_float_days"`
 			BudgetBurnPercent *int `json:"budget_burn_percent"`
@@ -289,11 +292,11 @@ func validateAgentConfig(capability string, raw json.RawMessage) ([]byte, error)
 		if err := json.Unmarshal(raw, &probe); err != nil {
 			return nil, fmt.Errorf("%w: foresight tuning must be integers", ErrInvalidInput)
 		}
-		if probe.ScheduleFloatDays != nil && *probe.ScheduleFloatDays < 0 {
-			return nil, fmt.Errorf("%w: schedule_float_days must be >= 0", ErrInvalidInput)
+		if probe.ScheduleFloatDays != nil && *probe.ScheduleFloatDays <= 0 {
+			return nil, fmt.Errorf("%w: schedule_float_days must be a positive integer", ErrInvalidInput)
 		}
-		if probe.BudgetBurnPercent != nil && *probe.BudgetBurnPercent < 0 {
-			return nil, fmt.Errorf("%w: budget_burn_percent must be >= 0", ErrInvalidInput)
+		if probe.BudgetBurnPercent != nil && *probe.BudgetBurnPercent <= 0 {
+			return nil, fmt.Errorf("%w: budget_burn_percent must be a positive integer", ErrInvalidInput)
 		}
 	}
 	return raw, nil

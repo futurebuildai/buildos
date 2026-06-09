@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-
-	"github.com/google/uuid"
 )
 
 // ErrReasonerUnavailable signals that no AI reasoner is available for this
@@ -48,18 +46,6 @@ func NewOrchestrator(reasoner Reasoner, workspace CascadeWorkspace, resolver Con
 	}
 }
 
-// resolveEnabled returns the per-org CapabilityConfig for a capability. With no
-// resolver wired it falls back to the in-code catalog default (enabled-with-
-// default), so the gate is a no-op in that mode. A resolver read error is
-// returned as-is (an infrastructure failure the caller treats as hard).
-func (o *Orchestrator) resolveEnabled(ctx context.Context, orgID uuid.UUID, c Capability) (CapabilityConfig, error) {
-	if o.resolver == nil {
-		d, _ := o.registry.Lookup(c)
-		return CapabilityConfig{Enabled: d.DefaultEnabled, Config: d.DefaultConfig}, nil
-	}
-	return o.resolver.Resolve(ctx, orgID, c)
-}
-
 // RunDelayCascade executes the delay-cascade flow:
 //
 //  1. Confirm the delay_cascade capability is registered (enabled).
@@ -92,7 +78,7 @@ func (o *Orchestrator) RunDelayCascade(ctx context.Context, in DelayCascadeInput
 
 	// Per-org config gate (Phase 3a). A read error is an infrastructure failure
 	// returned hard so River retries; a deliberate disable is a clean no-op.
-	cfg, err := o.resolveEnabled(ctx, in.OrgID, DelayCascade)
+	cfg, err := resolveCapabilityConfig(ctx, o.registry, o.resolver, in.OrgID, DelayCascade)
 	if err != nil {
 		return CascadeResult{}, fmt.Errorf("agentic: resolve config: %w", err)
 	}

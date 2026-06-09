@@ -39,6 +39,20 @@ type ConfigResolver interface {
 	Resolve(ctx context.Context, orgID uuid.UUID, c Capability) (CapabilityConfig, error)
 }
 
+// resolveCapabilityConfig is the shared per-org config gate the orchestrators
+// consult after their static-catalog Lookup. With no resolver wired it falls
+// back to the in-code catalog default (enabled-with-default), preserving the
+// pre-3a behavior; otherwise it delegates to the resolver (whose read error is
+// returned as-is for the caller to treat as hard). Single home so the cascade
+// and experience gates can never drift.
+func resolveCapabilityConfig(ctx context.Context, reg *Registry, resolver ConfigResolver, orgID uuid.UUID, c Capability) (CapabilityConfig, error) {
+	if resolver == nil {
+		d, _ := reg.Lookup(c)
+		return CapabilityConfig{Enabled: d.DefaultEnabled, Config: d.DefaultConfig}, nil
+	}
+	return resolver.Resolve(ctx, orgID, c)
+}
+
 // ---- foresight tuning (the one capability whose Config drives behavior in 3a) ----
 
 const (

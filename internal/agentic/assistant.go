@@ -127,16 +127,6 @@ func NewAssistant(p ChatPlanner, resolver ConfigResolver, b LoopBounds, logger *
 	}
 }
 
-// resolveEnabled returns the per-org CapabilityConfig for Experience. With no
-// resolver wired it falls back to the catalog default (enabled-with-default).
-func (a *Assistant) resolveEnabled(ctx context.Context, orgID uuid.UUID, c Capability) (CapabilityConfig, error) {
-	if a.resolver == nil {
-		d, _ := a.registry.Lookup(c)
-		return CapabilityConfig{Enabled: d.DefaultEnabled, Config: d.DefaultConfig}, nil
-	}
-	return a.resolver.Resolve(ctx, orgID, c)
-}
-
 // Converse gates on the Experience capability (catalog known? + per-org enabled?)
 // then delegates the bounded loop to the planner over the caller-scoped registry.
 // ErrAssistantUnavailable (no AI key) is propagated for the handler to soft-fail
@@ -152,7 +142,7 @@ func (a *Assistant) Converse(ctx context.Context, orgID uuid.UUID, sys string, i
 		return ChatResult{}, fmt.Errorf("agentic: capability %q not registered", Experience)
 	}
 
-	cfg, err := a.resolveEnabled(ctx, orgID, Experience)
+	cfg, err := resolveCapabilityConfig(ctx, a.registry, a.resolver, orgID, Experience)
 	if err != nil {
 		// Config read failure is infrastructure, not advisory: return hard so
 		// the handler surfaces 5xx rather than silently running a possibly-
