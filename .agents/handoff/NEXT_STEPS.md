@@ -43,17 +43,20 @@ tx → surface.
 **Verify:** integration test (ephemeral PG) proving a slip → AI-reasoned cross-module cascade as
 actionable feed cards; `make audit` + bench gates + the new isolation gate green.
 
-### P2 — Phase 2: the four harness roles on the substrate (▶ ACTIVE — 2a done; 2b next)
+### P2 — Phase 2: the four harness roles on the substrate (▶ ACTIVE — 2a + 2b done; 2c Experience next)
 Dependency-ordered, each its own PR-sized chunk:
 1. **Ingestion** — ✅ DONE (`f83d135`, local `main`, not pushed). `POST /api/v1/projects/{id}/invoices/ingest`
    → `ai.InvoiceExtract` → validated `invoices` row (`source=ai_ingest`) + review feed card, idempotent via
    the `invoice_ingestions` outbox. Spec: [PHASE_2A_INGESTION.md](./PHASE_2A_INGESTION.md). Deferred to a
    later chunk: raw upload / PDF rasterization / async River trigger (the trigger that promotes the agentic
    port, §11) / relational line-item persistence.
-2. **Experience** — ▶ NEXT candidate: conversational assistant over the ERP via the harness tool layer
-   (generalize `ai.Client.callTool` into a tool registry; RBAC-scoped tool exposure).
-3. **Foresight** — ▶ NEXT candidate: cross-module risk/recommendation agents (procurement criticality,
-   schedule risk, budget burn) surfaced as feed cards, riding the Phase-1 orchestrator pattern.
+2. **Foresight** — ✅ DONE (`66c773d`, local `main`, not pushed). Periodic `foresight_sweep` → deterministic
+   metrics (procurement/schedule/budget) → AI materiality judgment → DEDUPED risk feed cards (migration 015
+   `subject_code` skip-if-active dedup). Spec: [PHASE_2B_FORESIGHT.md](./PHASE_2B_FORESIGHT.md). Deferred to
+   Phase 3: auto-expire reaper for resolved risks; "foresight active" health surface.
+3. **Experience** — ▶ NEXT (the last Phase-2 role): conversational assistant over the ERP via the harness
+   tool layer — generalize `ai.Client.callTool` into an RBAC-scoped tool registry; a chat endpoint that
+   plans + executes tool calls grounded in the deterministic core.
 
 ### P3 — Phase 3: configurability + integration/MCP layer
 DB-backed agent/connector registry, admin config surface (enable + tune agents/integrations post-deploy,
