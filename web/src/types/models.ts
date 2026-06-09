@@ -535,6 +535,129 @@ export interface DailyBriefing {
   alert_count: number;
 }
 
+// ----------------------------- Admin config (Phase 3c) -----------------------------
+// Mirrors the Go admin surfaces: /api/v1/admin/agents (§2.1) and
+// /api/v1/admin/connectors (§2.2). `config` serializes from json.RawMessage as an
+// EMBEDDED JSON OBJECT (never a quoted string) — typed `Record<string, unknown>`
+// and ALWAYS sent back to the server as an object, never JSON.stringify'd.
+
+/** The three catalog capabilities the agentic harness exposes for config. */
+export type AgentCapability = 'delay_cascade' | 'foresight' | 'experience';
+
+/** Whether a row is the catalog default or an org-level override. */
+export type ConfigSource = 'default' | 'override';
+
+/** GET /api/v1/admin/agents → { agents: EffectiveAgentConfig[] } (effective view). */
+export interface EffectiveAgentConfig {
+  capability: AgentCapability;
+  /** Catalog sentence (raw backend description; the UI authors friendlier copy). */
+  description: string;
+  enabled: boolean;
+  /** Embedded object, always ≥ {}. foresight carries tuning; the others are {}. */
+  config: Record<string, unknown>;
+  source: ConfigSource;
+  /** omitempty — present on overrides only. */
+  updated_by?: string;
+  /** omitempty ISO — present on overrides only. */
+  updated_at?: string;
+}
+
+/** PUT /api/v1/admin/agents/{capability} → { agent: AgentConfig } (the persisted override row). */
+export interface AgentConfig {
+  id: string;
+  org_id: string;
+  capability: AgentCapability;
+  enabled: boolean;
+  config: Record<string, unknown>;
+  updated_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * foresight tuning thresholds — both POSITIVE integers (≥1); defaults {2, 80}.
+ * A `type` (not `interface`) so it stays structurally assignable to the
+ * `Record<string, unknown>` `config` field of the admin PUT body (interfaces get
+ * no implicit index signature; object-literal type aliases do).
+ */
+export type ForesightConfig = {
+  schedule_float_days: number;
+  // A PERCENTAGE threshold (0–100 integer), NOT a monetary amount — the field
+  // name is fixed by the backend wire contract (internal/agentic/foresight.go).
+  // The fb/composite-currency rule matches the "budget" substring; this is a
+  // genuine false positive, so the threshold stays a plain integer `number`.
+  // eslint-disable-next-line fb/composite-currency
+  budget_burn_percent: number;
+};
+
+export const FORESIGHT_DEFAULTS: ForesightConfig = {
+  schedule_float_days: 2,
+  budget_burn_percent: 80,
+};
+
+/**
+ * Safely read foresight thresholds out of a `Record<string, unknown>` config,
+ * coercing finite positive integers and falling back to the catalog defaults
+ * {2, 80} for anything missing/NaN/non-positive. `noUncheckedIndexedAccess`
+ * forces this guarded read — never index `config.schedule_float_days` directly
+ * on a non-foresight card.
+ */
+export function readForesightConfig(config: Record<string, unknown>): ForesightConfig {
+  const coerce = (raw: unknown, fallback: number): number => {
+    const n = typeof raw === 'number' ? raw : Number(raw);
+    return Number.isInteger(n) && n >= 1 ? n : fallback;
+  };
+  return {
+    schedule_float_days: coerce(
+      config['schedule_float_days'],
+      FORESIGHT_DEFAULTS.schedule_float_days,
+    ),
+    budget_burn_percent: coerce(
+      config['budget_burn_percent'],
+      FORESIGHT_DEFAULTS.budget_burn_percent,
+    ),
+  };
+}
+
+/** Discriminates a built-in connector (the `reference` catalog entry) from an MCP instance. */
+export type ConnectorKind = 'builtin' | 'mcp';
+
+/** GET /api/v1/admin/connectors → { connectors: EffectiveConnector[] } (effective view). */
+export interface EffectiveConnector {
+  /** Connector name; the built-in catalog has exactly one today: "reference". */
+  connector: string;
+  /** UI branches on THIS, never the name string. */
+  kind: ConnectorKind;
+  description: string;
+  enabled: boolean;
+  /** Embedded object, ≥ {}. MCP carries `{ endpoint }`. */
+  config: Record<string, unknown>;
+  /** omitempty — MCP only (https URL). */
+  endpoint?: string;
+  /** Always present int; 0 for builtin / un-refreshed MCP. */
+  tools_count: number;
+  /** omitempty ISO — MCP only, present ONLY after a successful refresh. */
+  tools_fetched_at?: string;
+  source: ConfigSource;
+  /** omitempty — override only. */
+  updated_by?: string;
+  /** omitempty ISO — override only. */
+  updated_at?: string;
+}
+
+/** PUT /api/v1/admin/connectors/{connector} → { connector: ConnectorConfig } (the persisted row). */
+export interface ConnectorConfig {
+  id: string;
+  org_id: string;
+  connector_name: string;
+  kind: ConnectorKind;
+  enabled: boolean;
+  config: Record<string, unknown>;
+  updated_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
 /**
  * One audit-log row (migration 008_audit_log, store/audit.go). The backend has
  * already scrubbed Restricted-class fields from before/after/metadata via

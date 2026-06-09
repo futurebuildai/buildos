@@ -166,6 +166,22 @@ export const routes: RouteDef[] = [
     title: 'Integrations',
   },
   {
+    path: '/settings/agents',
+    tag: 'fb-agents-page',
+    shell: 'org',
+    // NOT plan-gated (no requiresPro) — ESC-002: the experience kill-switch must reach admins on self-minted plan_tier="" tokens.
+    gate: { roles: ['owner', 'admin'] },
+    title: 'AI Agents',
+  },
+  {
+    path: '/settings/connectors',
+    tag: 'fb-connectors-page',
+    shell: 'org',
+    // NOT plan-gated (no requiresPro) — ESC-002: the experience kill-switch must reach admins on self-minted plan_tier="" tokens.
+    gate: { roles: ['owner', 'admin'] },
+    title: 'Connectors',
+  },
+  {
     path: '/settings/users',
     tag: 'fb-settings-users-page',
     shell: 'org',

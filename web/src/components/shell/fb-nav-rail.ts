@@ -106,6 +106,18 @@ const NAV_MODEL: NavGroupDef[] = [
         gate: { roles: ['owner'] },
       },
       {
+        label: 'AI Agents',
+        href: '/settings/agents',
+        icon: 'sliders',
+        gate: { roles: ['owner', 'admin'] },
+      },
+      {
+        label: 'Connectors',
+        href: '/settings/connectors',
+        icon: 'command',
+        gate: { roles: ['owner', 'admin'] },
+      },
+      {
         label: 'Users & Roles',
         href: '/settings/users',
         icon: 'users',

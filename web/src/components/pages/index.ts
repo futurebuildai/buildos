@@ -27,3 +27,7 @@ import './fb-procurement-page.js';
 import './fb-briefing-page.js';
 import './fb-assistant-page.js';
 import './fb-activity-page.js';
+
+// Phase 3c — admin config UI (AI agents + connectors).
+import './fb-agents-page.js';
+import './fb-connectors-page.js';

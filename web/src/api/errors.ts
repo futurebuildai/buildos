@@ -22,6 +22,8 @@ export const ErrorCode = {
   SETUP_INCOMPLETE: 'SETUP_INCOMPLETE',
   // Soft-fail capability pattern (FRONTEND_ARCHITECTURE §4.3)
   AI_UNCONFIGURED: 'AI_UNCONFIGURED',
+  // An admin turned a capability off (e.g. the `experience` chat kill-switch) — gating, not a fault.
+  CAPABILITY_DISABLED: 'CAPABILITY_DISABLED',
   SERVICE_UNAVAILABLE: 'SERVICE_UNAVAILABLE',
   UPSTREAM_ERROR: 'UPSTREAM_ERROR',
   // Generic
@@ -121,6 +123,8 @@ export function userMessageForCode(code: ErrorCode | string): string {
       return 'Too many requests. Try again in a moment.';
     case ErrorCode.AI_UNCONFIGURED:
       return 'AI features are turned off until an Anthropic API key is added.';
+    case ErrorCode.CAPABILITY_DISABLED:
+      return 'The AI assistant has been turned off by an admin.';
     case ErrorCode.PAYLOAD_TOO_LARGE:
       return 'That file is too large.';
     case ErrorCode.FIRST_OWNER_EXISTS:

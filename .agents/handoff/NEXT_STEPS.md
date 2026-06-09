@@ -99,11 +99,13 @@ no redeploy), MCP connector seam, vault-backed credential UI. In dependency orde
     per-(org,endpoint) breaker + `connector_tools` cache (migration 018) + the `mcp` connector type
     (`ConnectorService` Set/RefreshTools/ToolsFor) + admin `POST .../refresh`. Spec:
     [PHASE_3B_II_MCP_CONNECTOR.md](./PHASE_3B_II_MCP_CONNECTOR.md).
-- **3c · Admin config UI (NEXT).** `web/` Lit screens to manage agents + connectors against
-  `/api/v1/admin/agents` + `/api/v1/admin/connectors` (+ the `connector:<name>` vault credential via
-  `/api/v1/integrations`). Create/enable/configure/refresh MCP instances; capability-gated; a11y +
-  design-system conformance. Entry points: `web/src/`.
-- **3c · Admin config UI.** `web/` Lit screens wiring the 3a `/api/v1/admin/agents` API + the 3b connector API.
+- **3c · Admin config UI — BUILT on `feat/phase-3c-admin-ui`; all web gates green; awaiting owner review.**
+  `web/` Lit screens `/settings/agents` (`fb-agents-page`) + `/settings/connectors` (`fb-connectors-page`)
+  wire `/api/v1/admin/agents` + `/api/v1/admin/connectors` (+ the `connector:<name>` vault credential via
+  `/api/v1/integrations`, managed in-place). admin+, NOT plan-gated; create/enable/configure/refresh/delete
+  MCP instances; foresight threshold tuning; a11y + design-system conformant; new `fb-connector-card`
+  molecule + `api/endpoints/admin.ts`. Spec: [PHASE_3C_ADMIN_UI.md](./PHASE_3C_ADMIN_UI.md). **Owner:**
+  `/code-review max` (± `ultra`) → merge (Claude has not committed/pushed).
 
 **Adjacent (small, owner-decision): [ESC-002](./ESCALATION_LOG.md#esc-002)** — self-minted tokens carry
 `plan_tier=""` so `RequirePlanTier(pro)` 402-walls `/api/v1/agents/*`. Populate `plan_tier` at mint

@@ -257,9 +257,38 @@ govulncheck clean. PRs #9 onward also have CI green at merge time
 
 ## In flight
 
+**Phase 3c — the admin config web UI — is BUILT on branch `feat/phase-3c-admin-ui` (NOT committed/pushed
+until owner review; this branch is the ultracode deliverable). All local web gates green; awaiting owner
+`/code-review max` (± `ultra`) → merge.** Two new admin+ (`{roles:['owner','admin']}`, **NOT** plan-gated —
+ESC-002 kill-switch must reach admins) Lit screens under the "Manage" nav group wire the existing backend
+admin surfaces from the UI, not curl ("Claude for Small Business inside the ERP"):
+- **`/settings/agents`** (`fb-agents-page`, icon `sliders`) — enable/disable + tune the 3 catalog capabilities
+  (`delay_cascade`, `foresight`, `experience`) via `GET/PUT/DELETE /api/v1/admin/agents`. foresight gets a
+  two-field threshold form (`schedule_float_days` / `budget_burn_percent`); the enable toggle resends the
+  **server-confirmed `savedConfig` snapshot** so full-document PUT semantics never silently reset tuning;
+  `await load()` in `finally` resyncs the switch from server truth; an AI-dependency row/banner names the
+  Anthropic-key requirement (owner-only deep link, no admin dead-end).
+- **`/settings/connectors`** (`fb-connectors-page`, icon `command`) — toggle the built-in `reference`
+  connector + create/enable/configure/**refresh**/credential/delete **MCP** instances via
+  `GET/PUT/POST refresh/DELETE /api/v1/admin/connectors`; the card branches on `kind` (never the name),
+  renders all MCP affordances even when disabled, and manages the optional bearer **in-place** via the
+  existing vault (`connector:<name>`, admin+) — no dead-end to the owner-only integrations page. Enabling an
+  MCP auto-refreshes; 502 → persistent card error + Edit-endpoint recovery.
+- **One new molecule** (`fb-connector-card`) + new `api/endpoints/admin.ts` + `models.ts`/`errors.ts`
+  (`CAPABILITY_DISABLED`) + router/nav/pages-barrel wiring. **Design** hardened by a 9-agent critique
+  workflow (caught ~18 correctness/a11y risks pre-build — foresight string-coercion + savedConfig, switch
+  resync, explicit error-code branching, `is_active` cred filter, `.submit()` DOM-clear, happy-dom render
+  footgun) — **0 owner escalations**. **Gates:** `cd web && typecheck · 225 vitest · build · eslint+prettier
+  · playwright a11y 9/9` ALL GREEN. New authenticated axe sweep `tests/live/admin-config.live.spec.ts`
+  (runs under the live backend harness). One real fix during gates: `renderMcps` wrapped its bare
+  `${conditional}` in a static `<section>`/`<div>` (happy-dom silently dropped the cards grid in unit tests;
+  unaffected in a real browser). Spec: [.agents/handoff/PHASE_3C_ADMIN_UI.md](.agents/handoff/PHASE_3C_ADMIN_UI.md).
+  **No backend/Go changes** — `make audit` not required.
+
+---
+
 **Phase 3b-ii — the MCP connector + egress security — is COMPLETE: merged (fast-forward) + PUSHED to
-`origin/main` (HEAD `9a84235`).** The next chunk is **Phase 3c — the admin config web UI** (wire `web/`
-Lit screens to `/api/v1/admin/agents` + `/api/v1/admin/connectors`). An operator
+`origin/main` (HEAD `9a84235`).** An operator
 can point an `mcp` connector instance at an external MCP server (Streamable HTTP); its tools appear
 (namespaced, admin-floored, default-OFF, fail-closed) in the chat assistant. Built **no-new-dependency**:
 the **SSRF egress guard** (`egress.go` — https-only + resolve-and-pin private-IP denylist via a
@@ -461,12 +490,12 @@ awaiting ultrareview (see "In flight"); 3b and 3c follow.** Per [PHASES_2-4_ULTR
      clean, no SSRF bypass).** Hand-rolled MCP Streamable-HTTP client + SSRF denylist guard + per-(org,
      endpoint) breaker + `connector_tools` cache + the `mcp` connector type + admin refresh endpoint. Spec:
      [PHASE_3B_II_MCP_CONNECTOR.md](.agents/handoff/PHASE_3B_II_MCP_CONNECTOR.md).
-3. **3c · Admin config UI — NEXT.** `web/` Lit screens to manage agents + connectors (wire to
-   `/api/v1/admin/agents` + `/api/v1/admin/connectors` + the `connector:<name>` vault credential via
-   `/api/v1/integrations`); capability-gated; create/enable/configure/refresh an MCP connector instance.
-   A11y + design-system conformance. Entry points: `web/src/` (Lit components + typed API client). **Note:
-   the agent/connector admin surfaces are admin-gated and reachable today regardless of ESC-002** (only the
-   pro-gated `/api/v1/agents/chat` experience endpoint is affected by that).
+3. **3c · Admin config UI — BUILT on `feat/phase-3c-admin-ui`, gates green, awaiting owner review.** `web/`
+   Lit screens (`/settings/agents`, `/settings/connectors`) managing agents + connectors + the
+   `connector:<name>` vault credential in-place; admin+ (not plan-gated); create/enable/configure/refresh an
+   MCP instance. A11y + design-system conformant. Spec + full detail:
+   [PHASE_3C_ADMIN_UI.md](.agents/handoff/PHASE_3C_ADMIN_UI.md). **Owner action:** run `/code-review max`
+   (± `ultra`) on the branch → triage → merge (Claude has not committed/pushed/merged).
 Each is its own PR-sized chunk; run ultraplan → ultracode → local gates (`make audit` + `govulncheck` +
 `make test-integration`) → `/code-review ultra` + a local backstop review per chunk (VISION.md ▶ "Working
 process"). **Quick win available now:** decide [ESC-002](.agents/handoff/ESCALATION_LOG.md#esc-002) (the
