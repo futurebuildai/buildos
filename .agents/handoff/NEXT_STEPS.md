@@ -133,7 +133,7 @@ the actual code, which made the original "3 missing field screens" framing partl
      4 `buildos_*` metrics are emitted (server-only); `buildos_river_job_runs_total` is never incremented and
      the worker serves no `/metrics`. Shipped as documented gaps. Spec:
      [PHASE_4B_I_ALERTING.md](./PHASE_4B_I_ALERTING.md).
-   - **4b-ii · worker observability — BUILT on `feat/phase-4b-ii-worker-observability`, awaiting review.**
+   - **4b-ii · worker observability — DONE: merged + PUSHED (`origin/main` `19fc7d3`).**
      `cmd/worker` serves `/metrics`+`/health`+`/ready` and records River job outcomes into
      `buildos_river_job_runs_total` (event subscription) + the worker AI client feeds `buildos_ai_*`; re-added
      the `buildos-jobs` alert group + `BuildOSWorkerDown` + the worker scrape job. Spec:

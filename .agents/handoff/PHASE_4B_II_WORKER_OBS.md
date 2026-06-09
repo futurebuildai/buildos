@@ -1,6 +1,6 @@
 # Phase 4b-ii — worker observability (worker `/metrics` + River job-outcome metrics)
 
-**Status:** BUILT on `feat/phase-4b-ii-worker-observability` (committed, not pushed/merged). Go + the re-added River rules/docs. All gates green. Awaiting owner review → merge.
+**Status:** DONE — merged (fast-forward) + PUSHED to `origin/main` (HEAD `19fc7d3`). Go + the re-added River rules/docs. Built + verified via the ultra-loop (3-lens adversarial verification, 2 findings fixed).
 **Completes the gap 4b-i documented.** Pairs with [PHASE_4B_I_ALERTING.md](./PHASE_4B_I_ALERTING.md). Plan: [PHASES_2-4_ULTRALOOP_PLAN.md](./PHASES_2-4_ULTRALOOP_PLAN.md) §"Phase 4".
 
 ## Why
