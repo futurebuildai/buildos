@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/futurebuildai/buildos/internal/agentic"
 	"github.com/futurebuildai/buildos/internal/ai"
 	mw "github.com/futurebuildai/buildos/internal/api/middleware"
 	"github.com/futurebuildai/buildos/internal/service"
@@ -116,9 +117,34 @@ func (h *AgentsHandler) RecommendScheduleAdjustments(w http.ResponseWriter, r *h
 }
 
 // writeServiceError maps AgentsService sentinels + native AI errors to
-// HTTP responses.
+// HTTP responses. It delegates to the shared free function
+// writeAIServiceError so the AssistantHandler reuses the identical map.
 func (h *AgentsHandler) writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
-	// Native AI errors first — they wrap inside service errors.
+	writeAIServiceError(w, r, err)
+}
+
+// writeAIServiceError maps native-AI + agentic + AgentsService sentinels to
+// HTTP responses. Shared by AgentsHandler.writeServiceError and
+// AssistantHandler.Converse so both AI surfaces soft-fail identically:
+//
+//   - ai.ErrUnconfigured / agentic.ErrAssistantUnavailable          → 503
+//   - *ai.HTTPError{401} (bad stored key) / *ai.HTTPError{>=500}     → 503 / 502
+//   - ai.ErrRateLimited                                             → 429
+//   - ai.ErrTransient / ai.ErrCircuitOpen                           → 502
+//   - service.ErrAgentsAIUnavailable / ScheduleServiceUnavailable   → 503
+//   - service.ErrNotFound                                           → 404
+//   - service.ErrInvalidInput                                       → 400
+//   - anything else                                                 → 500 (opaque)
+func writeAIServiceError(w http.ResponseWriter, r *http.Request, err error) {
+	// agentic.ErrAssistantUnavailable (no AI client wired / no Anthropic key
+	// resolved for the org) — a configuration gap, not an outage: 503 so the
+	// operator knows to set a key in the vault.
+	if errors.Is(err, agentic.ErrAssistantUnavailable) {
+		writeErrorResponse(w, r, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "assistant is not available")
+		return
+	}
+
+	// Native AI errors next — they wrap inside service errors.
 	//
 	// ErrUnconfigured (no Anthropic key set for the org) is a
 	// configuration gap, not an outage: surface 503 so the operator

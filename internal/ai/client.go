@@ -165,6 +165,15 @@ type contentBlock struct {
 	ID    string          `json:"id,omitempty"`
 	Name  string          `json:"name,omitempty"`
 	Input json.RawMessage `json:"input,omitempty"`
+
+	// tool_result block (appears on requests only) —
+	// {type:"tool_result", tool_use_id, content, is_error}. Built by
+	// RunToolLoop (chatloop.go) to feed an executed tool's deterministic
+	// output back to the model on the next turn. ToolUseID MUST match the
+	// id of the tool_use block being answered or Anthropic 400s.
+	ToolUseID string `json:"tool_use_id,omitempty"`
+	Content   string `json:"content,omitempty"`
+	IsError   bool   `json:"is_error,omitempty"`
 }
 
 // imageSource is the base64 image payload inside an image content block.

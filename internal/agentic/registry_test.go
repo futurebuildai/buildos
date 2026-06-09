@@ -30,11 +30,11 @@ func TestRegistry_RegisterAndCapabilitiesSorted(t *testing.T) {
 	r.Register(Descriptor{Capability: Capability("alpha_flow"), Description: "a"})
 
 	caps := r.Capabilities()
-	if len(caps) != 4 {
-		t.Fatalf("Capabilities len = %d, want 4 (delay_cascade + foresight + 2)", len(caps))
+	if len(caps) != 5 {
+		t.Fatalf("Capabilities len = %d, want 5 (delay_cascade + experience + foresight + 2)", len(caps))
 	}
-	// Sorted: alpha_flow, delay_cascade, foresight, zeta_flow.
-	want := []Capability{Capability("alpha_flow"), DelayCascade, Foresight, Capability("zeta_flow")}
+	// Sorted: alpha_flow, delay_cascade, experience, foresight, zeta_flow.
+	want := []Capability{Capability("alpha_flow"), DelayCascade, Experience, Foresight, Capability("zeta_flow")}
 	for i, w := range want {
 		if caps[i].Capability != w {
 			t.Fatalf("caps[%d].Capability = %q, want %q", i, caps[i].Capability, w)
@@ -49,8 +49,8 @@ func TestRegistry_RegisterOverwrites(t *testing.T) {
 	if d.Description != "rewritten" {
 		t.Fatalf("Register should overwrite; description = %q, want %q", d.Description, "rewritten")
 	}
-	if len(r.Capabilities()) != 2 {
-		t.Fatalf("overwrite must not grow the catalog; len = %d, want 2 (delay_cascade + foresight)", len(r.Capabilities()))
+	if len(r.Capabilities()) != 3 {
+		t.Fatalf("overwrite must not grow the catalog; len = %d, want 3 (delay_cascade + experience + foresight)", len(r.Capabilities()))
 	}
 }
 

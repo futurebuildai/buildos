@@ -45,6 +45,7 @@ type RouterConfig struct {
 	SetupService        SetupServicer        // optional — when nil, /setup/* routes don't mount AND SetupGate is skipped
 	IntegrationsService IntegrationsServicer // optional — when nil, /integrations/* routes don't mount (vault disabled)
 	AgentsService       AgentsServicer       // optional — when nil, /agents/* routes don't mount
+	Assistant           AssistantConverser   // optional — when nil, POST /agents/chat doesn't mount (no AI client)
 	IngestionService    InvoiceIngestor      // optional — when nil, the /invoices/ingest route doesn't mount (AI unconfigured)
 	Metrics             MetricsRecorder      // optional — when nil, /metrics doesn't mount and HTTP middleware is skipped
 	SentryEnabled       bool                 // when true, the Sentry HTTP middleware is mounted to capture panics
@@ -140,6 +141,10 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	var agents *AgentsHandler
 	if cfg.AgentsService != nil {
 		agents = NewAgentsHandler(cfg.AgentsService)
+	}
+	var assistant *AssistantHandler
+	if cfg.Assistant != nil {
+		assistant = NewAssistantHandler(cfg.Assistant)
 	}
 	var ingest *IngestHandler
 	if cfg.IngestionService != nil {
@@ -357,6 +362,24 @@ func NewRouter(cfg RouterConfig) http.Handler {
 				r.Use(mw.RequirePlanTier(mw.PlanTierPro))
 				r.Post("/daily-briefing", agents.DailyBriefing)
 			})
+		}
+
+		// Conversational ERP assistant (Phase 2c). Mounted in a sibling
+		// block — it depends on the AssistantService (AI client + read
+		// services), NOT on AgentsService, so the two AI surfaces wire
+		// independently. The bounded Claude tool-use loop runs read-only
+		// tools scoped to the caller's org+role.
+		//
+		// Route gates: RequireMinRole(superintendent) — field_worker has no
+		// conversational surface in 2c — plus RequirePlanTier(pro) (consumes
+		// the org's metered Anthropic key). RBAC invariant #1 (caller
+		// org/role/sub sealed into per-request executor closures) is enforced
+		// in AssistantService.Converse; the handler reads identity from claims
+		// only.
+		if assistant != nil {
+			r.With(mw.RequireMinRole(mw.RoleSuperintendent)).
+				With(mw.RequirePlanTier(mw.PlanTierPro)).
+				Post("/api/v1/agents/chat", assistant.Converse)
 		}
 
 		// --------------------------------------------------------

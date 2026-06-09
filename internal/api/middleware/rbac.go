@@ -2,24 +2,19 @@ package middleware
 
 import (
 	"net/http"
+
+	"github.com/futurebuildai/buildos/internal/authz"
 )
 
-// Role constants matching The Brain OIDC role claim values.
+// Role constants matching the RBAC role claim values. These alias the canonical
+// ladder in internal/authz so the middleware and the service-layer tool
+// executors share a single source of truth (no privilege-ladder drift).
 const (
-	RoleOwner          = "owner"
-	RoleAdmin          = "admin"
-	RoleSuperintendent = "superintendent"
-	RoleFieldWorker    = "field_worker"
+	RoleOwner          = authz.RoleOwner
+	RoleAdmin          = authz.RoleAdmin
+	RoleSuperintendent = authz.RoleSuperintendent
+	RoleFieldWorker    = authz.RoleFieldWorker
 )
-
-// roleHierarchy defines the privilege level for each role.
-// Higher number = more privileges.
-var roleHierarchy = map[string]int{
-	RoleFieldWorker:    1,
-	RoleSuperintendent: 2,
-	RoleAdmin:          3,
-	RoleOwner:          4,
-}
 
 // RequireRole creates middleware that restricts access to the specified roles.
 // The request must have been authenticated via Auth middleware first.
@@ -50,11 +45,6 @@ func RequireRole(allowedRoles ...string) func(http.Handler) http.Handler {
 // RequireMinRole creates middleware that requires at least the specified role level.
 // Role hierarchy: field_worker < superintendent < admin < owner.
 func RequireMinRole(minRole string) func(http.Handler) http.Handler {
-	minLevel, ok := roleHierarchy[minRole]
-	if !ok {
-		minLevel = 99 // Unknown role blocks everyone
-	}
-
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			claims, ok := ClaimsFromContext(r.Context())
@@ -63,8 +53,10 @@ func RequireMinRole(minRole string) func(http.Handler) http.Handler {
 				return
 			}
 
-			userLevel, exists := roleHierarchy[claims.Role]
-			if !exists || userLevel < minLevel {
+			// authz.RoleAtLeast fails closed on an unknown user role AND on an
+			// unknown minRole, preserving the prior "unknown blocks everyone"
+			// semantics via the single shared ladder.
+			if !authz.RoleAtLeast(claims.Role, minRole) {
 				writeError(w, http.StatusForbidden, "FORBIDDEN", "insufficient role for this operation")
 				return
 			}

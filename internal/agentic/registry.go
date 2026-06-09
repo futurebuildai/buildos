@@ -38,6 +38,10 @@ func NewRegistry() *Registry {
 		Capability:  Foresight,
 		Description: "Periodically surface material standing cross-module risks (procurement criticality, schedule slip, budget burn) the deterministic engine has computed, judged for materiality by AI, as deduped feed cards.",
 	})
+	r.Register(Descriptor{
+		Capability:  Experience,
+		Description: "Answer operator questions in natural language by planning which read-only ERP tools to call, executing them scoped to the caller's org and role, and synthesizing a grounded answer from the deterministic engine facts.",
+	})
 	return r
 }
 

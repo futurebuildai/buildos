@@ -191,6 +191,19 @@ func run(logger *slog.Logger) error {
 	fieldService := service.NewFieldService(pool, fieldStore, feedCardsStore, auditService)
 	agentsService := service.NewAgentsService(pool, fieldStore, feedCardsStore, scheduleStore, scheduleService, aiBriefer, aiAdjuster, auditService)
 
+	// Conversational ERP assistant (Phase 2c). Typed-nil-safe: a nil
+	// aiClient (vault/AI unconfigured) leaves the service's AI seam unset
+	// so Converse soft-fails with agentic.ErrAssistantUnavailable (503)
+	// rather than panicking. The read services are passed by concrete type;
+	// pipelineService is threaded now so the Phase-3 pipeline tool is purely
+	// additive. Server-only — the worker binary never constructs this.
+	assistantService := service.NewAssistantService(
+		aiClient, pool,
+		scheduleService, budgetService, procurementService,
+		projectService, feedService, pipelineService,
+		auditService, logger,
+	)
+
 	// Invoice ingestion (Phase 2a). NewIngestionService is typed-nil-safe:
 	// a nil aiClient (vault/AI unconfigured) leaves the internal extractor
 	// seam nil so the pipeline soft-fails with ai.ErrUnconfigured (503)
@@ -295,6 +308,7 @@ func run(logger *slog.Logger) error {
 		IntegrationsService: integrationsSvc,
 		Metrics:             metrics,
 		AgentsService:       agentsService,
+		Assistant:           assistantService,
 		IngestionService:    ingestionService,
 		SetupService:        setupService,
 		SentryEnabled:       sentryOK,
