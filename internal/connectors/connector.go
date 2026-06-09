@@ -31,6 +31,26 @@ type Caller struct {
 	Sub   string
 }
 
+// SecretResolver resolves a connector's per-org credential from the vault. It is
+// DECLARED here (so the connectors package needn't import internal/service);
+// service.VaultService implements it. It returns "" (no credential) — NEVER an
+// error — when none is configured, AND on any transport/decrypt failure, so an
+// MCP tools/call degrades to an unauthenticated request (which soft-fails on a
+// 401) rather than a hard error or retry storm. The secret never reaches the
+// agentic leaf or the model.
+type SecretResolver interface {
+	ResolveConnectorSecret(ctx context.Context, orgID uuid.UUID, connectorName string) (string, error)
+}
+
+// ToolDef is one cached MCP tool definition (from a tools/list refresh). The
+// service reads these from its connector-tools cache and hands them to the MCP
+// connector; the connectors package never touches the DB.
+type ToolDef struct {
+	Name        string          // the REMOTE tool name (un-namespaced)
+	Description string          // attacker-influenced prose (bounded at refresh time)
+	InputSchema json.RawMessage // a JSON object (validated/bounded at refresh time)
+}
+
 // Connector is a named provider of agentic tools. A connector PRODUCES tools
 // (with identity-sealed executors); per-org enable and the admin MinRole floor
 // are the SERVICE's job (service.ConnectorService), not the connector's.
