@@ -125,10 +125,19 @@ the actual code, which made the original "3 missing field screens" framing partl
    gated on a product decision: is fleet field-visible? today field sync carries only Tasks+FeedCards and
    `/fleet` is operator-only, so equipment needs a new field-scoped read endpoint in `internal/api/field.go`).
    Entry: `mobile/lib/screens/`. Gates: `cd mobile && dart format + flutter analyze + flutter test (+golden)`.
-3. **4b · operator hardening.** Prometheus alerting rules (`prometheus-rules.yml`: 5xx spike, setup-gate
-   over-reject, AI soft-fail rate, DB pool exhaustion) + observability/deploy/recovery runbooks; then
-   error-path UX (Retry-After on 5xx/429, AI circuit-breaker, `cmd/migrate --dry-run`). Config+docs first
-   (no recompile), gateable via `make audit`. Parallel with 4a.
+3. **4b · operator hardening.**
+   - **4b-i · alerting rules + runbooks — BUILT on `feat/phase-4b-i-alerting-runbooks`, awaiting review.**
+     `deploy/prometheus/buildos.rules.yml` (8 alerts) + `deploy/prometheus/README.md` +
+     `docs/observability-runbook.md` + `docs/deploy-runbook.md`. Config+docs only. **Grounding correction to
+     the original plan:** the suggested setup-gate / DB-pool / River-job alerts have NO backing metric — only
+     4 `buildos_*` metrics are emitted (server-only); `buildos_river_job_runs_total` is never incremented and
+     the worker serves no `/metrics`. Shipped as documented gaps. Spec:
+     [PHASE_4B_I_ALERTING.md](./PHASE_4B_I_ALERTING.md).
+   - **4b-ii · worker observability — NEW, Go change (surfaced by 4b-i; highest-value next 4b step).** Add a
+     `/metrics` listener to `cmd/worker` + wire `ObserveJob` via a River middleware (then re-add a
+     `buildos-jobs` alert group); export `pgxpool.Stat()` as `buildos_db_pool_*`; add a per-error-code (or
+     SetupGate-rejection) counter. Background jobs are currently invisible to Prometheus.
+   - **4b-iii · error-path UX** — Retry-After on 5xx/429, AI circuit-breaker surfacing, `cmd/migrate --dry-run`.
 4. **4c · security + load (FINAL gate).** k6 load harness (`scripts/k6/`, test-only dep — flag vs
    TECH_STACK.md) + `/security-review` pass (5-layer RBAC matrix, PII scrubbing, SSRF posture, the now-
    reachable agents-surface authZ). Runs after 4a/4b merge.

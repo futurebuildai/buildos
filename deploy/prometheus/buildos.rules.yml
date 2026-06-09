@@ -1,0 +1,231 @@
+# BuildOS Prometheus recording + alerting rules (Phase 4b-i).
+#
+# Load into Prometheus via `rule_files:` (and route the alerts through
+# Alertmanager). Validate before deploying:
+#
+#     promtool check rules deploy/prometheus/buildos.rules.yml
+#
+# Every expression references ONLY the four metrics BuildOS actually emits from
+# internal/obs/metrics.go (custom registry — there are NO go_*/process_* or
+# db-pool metrics; see deploy/prometheus/README.md and the observability
+# runbook for the surface + known instrumentation gaps):
+#
+#   buildos_http_requests_total{route,method,status}     status ∈ 2xx/3xx/4xx/5xx/1xx/0xx
+#   buildos_http_request_duration_seconds{route,method}  (histogram → _bucket/_sum/_count)
+#   buildos_ai_requests_total{kind,model,outcome}        outcome ∈ success/error
+#   buildos_ai_request_duration_seconds{kind,model}      (histogram)
+#
+# Scrape surface: the SERVER (cmd/server) only — it is the single process that
+# wires obs.NewMetrics() (HTTP middleware + the AI client + the /metrics route).
+# The WORKER (cmd/worker) serves NO /metrics and emits nothing today, so there
+# are NO River job alerts here: buildos_river_job_runs_total is registered in
+# metrics.go but ObserveJob has no caller, so it is always zero — alerting on it
+# would be a dead rule (false confidence). Wiring worker observability (a worker
+# /metrics listener + ObserveJob via River middleware) is a Go follow-up; see
+# the observability runbook "instrumentation gaps". `up` is synthesized by
+# Prometheus per scrape target (job `buildos-server`; see the README).
+#
+# Thresholds are conservative defaults TUNED FOR A LOW-TRAFFIC, SINGLE-TENANT
+# FORK (one builder's deployment): ratio alerts carry a minimum-traffic floor so
+# "1 error out of 2 requests" can't page anyone, and there is deliberately NO
+# "no traffic" alert (a small fork is legitimately idle overnight). Tune per
+# deployment; every threshold is called out in the observability runbook.
+
+groups:
+  # ---------------------------------------------------------------------------
+  # Recording rules — pre-computed ratios/quantiles for dashboards + to keep the
+  # alert expressions below readable. Evaluated first (separate group).
+  # ---------------------------------------------------------------------------
+  - name: buildos-recording
+    interval: 30s
+    rules:
+      - record: buildos:http_requests:rate5m
+        expr: sum(rate(buildos_http_requests_total[5m]))
+      - record: buildos:http_5xx_ratio:rate5m
+        expr: |
+          sum(rate(buildos_http_requests_total{status="5xx"}[5m]))
+            / clamp_min(sum(rate(buildos_http_requests_total[5m])), 1e-9)
+      - record: buildos:http_4xx_ratio:rate5m
+        expr: |
+          sum(rate(buildos_http_requests_total{status="4xx"}[5m]))
+            / clamp_min(sum(rate(buildos_http_requests_total[5m])), 1e-9)
+      # p95 EXCLUDES the synchronous AI routes (daily-briefing / chat /
+      # recommend-adjustments / invoices-ingest): they take 5-60s by design and
+      # share the global HTTP histogram (DefBuckets, max finite 10s → +Inf), so
+      # one AI call on a low-traffic fork would otherwise dominate p95 and page.
+      - record: buildos:http_request_duration_seconds:p95
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(
+            buildos_http_request_duration_seconds_bucket{route!~"/api/v1/.*(daily-briefing|chat|recommend-adjustments|ingest).*"}[5m]
+          )))
+      - record: buildos:ai_requests:rate10m
+        expr: sum(rate(buildos_ai_requests_total[10m]))
+      - record: buildos:ai_error_ratio:rate10m
+        expr: |
+          sum(rate(buildos_ai_requests_total{outcome="error"}[10m]))
+            / clamp_min(sum(rate(buildos_ai_requests_total[10m])), 1e-9)
+      - record: buildos:ai_request_duration_seconds:p95
+        expr: histogram_quantile(0.95, sum by (le) (rate(buildos_ai_request_duration_seconds_bucket[10m])))
+
+  # ---------------------------------------------------------------------------
+  # Availability — the server scrape target is up and serving.
+  # ---------------------------------------------------------------------------
+  - name: buildos-availability
+    rules:
+      - alert: BuildOSServerDown
+        # `up` is 0 when Prometheus cannot scrape the server (process down,
+        # /metrics unreachable, or the network policy is blocking the scraper).
+        expr: up{job="buildos-server"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "BuildOS server ({{ $labels.instance }}) is down"
+          description: >
+            Prometheus has failed to scrape the buildos-server target
+            {{ $labels.instance }} for >2m. The process may have crashed,
+            /metrics may be unreachable, or the scrape network policy may be
+            misconfigured. Check the orchestrator (pod restarts / OOMKilled),
+            then /health (liveness) and /ready (DB).
+          runbook_url: "https://github.com/futurebuildai/buildos/blob/main/docs/observability-runbook.md#buildosserverdown"
+
+  # ---------------------------------------------------------------------------
+  # HTTP API — 5xx rate + latency. (4xx is client-driven; see the warning rule.)
+  # ---------------------------------------------------------------------------
+  - name: buildos-http
+    rules:
+      - alert: BuildOSHTTP5xxRateHigh
+        # >5% of requests are 5xx over 5m, with a floor of ~0.05 req/s (~3/min)
+        # so a single error during near-zero traffic can't page.
+        expr: |
+          buildos:http_5xx_ratio:rate5m > 0.05
+            and buildos:http_requests:rate5m > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "BuildOS HTTP 5xx rate high ({{ $value | humanizePercentage }})"
+          description: >
+            More than 5% of HTTP responses are 5xx over the last 5m. Likely a DB
+            outage (check /ready), an unhandled panic (check Sentry + logs for
+            the request_id/trace_id trio), or a dependency failure. Correlate by
+            route via buildos_http_requests_total{status="5xx"}.
+          runbook_url: "https://github.com/futurebuildai/buildos/blob/main/docs/observability-runbook.md#buildoshttp5xxratehigh"
+
+      - alert: BuildOSHTTP5xxRateElevated
+        expr: |
+          buildos:http_5xx_ratio:rate5m > 0.01
+            and buildos:http_requests:rate5m > 0.05
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "BuildOS HTTP 5xx rate elevated ({{ $value | humanizePercentage }})"
+          description: >
+            >1% of responses are 5xx, sustained 15m. Below the paging threshold
+            but worth investigating before it escalates.
+          runbook_url: "https://github.com/futurebuildai/buildos/blob/main/docs/observability-runbook.md#buildoshttp5xxratehigh"
+
+      - alert: BuildOSHTTPLatencyP95High
+        expr: buildos:http_request_duration_seconds:p95 > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "BuildOS HTTP p95 latency high ({{ $value | humanizeDuration }})"
+          description: >
+            HTTP p95 latency >1s for 10m. The deterministic core (CPM physics) is
+            sub-millisecond, so a slow p95 usually means DB contention/pool
+            saturation or a slow dependency. Note: AI endpoints are intentionally
+            slow — exclude them in a per-route breakdown if they dominate.
+          runbook_url: "https://github.com/futurebuildai/buildos/blob/main/docs/observability-runbook.md#buildoshttplatencyp95high"
+
+      - alert: BuildOSHTTP4xxRateElevated
+        # 4xx is mostly client error, but a sustained spike can indicate a
+        # broken client deploy OR a SetupGate misconfiguration 403-walling
+        # operational traffic (SETUP_INCOMPLETE) — note: status is class-only,
+        # so this CANNOT isolate the setup gate; see the runbook + the
+        # instrumentation follow-up.
+        expr: |
+          buildos:http_4xx_ratio:rate5m > 0.40
+            and buildos:http_requests:rate5m > 0.1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "BuildOS HTTP 4xx rate elevated ({{ $value | humanizePercentage }})"
+          description: >
+            >40% of responses are 4xx, sustained 15m. Check for a broken client
+            build, an expired-credential storm (401), or — if the org never
+            completed onboarding — SetupGate returning 403 SETUP_INCOMPLETE on
+            operational routes.
+          runbook_url: "https://github.com/futurebuildai/buildos/blob/main/docs/observability-runbook.md#buildoshttp4xxrateelevated"
+
+      - alert: BuildOSAuthRoute5xx
+        # The auth/onboarding routes (login, first-owner claim, refresh, password
+        # reset) are LOW-VOLUME but critical — a 100%-broken login would be
+        # diluted below the global 5xx ratio by healthy traffic elsewhere. Page
+        # on ANY sustained 5xx on /api/v1/auth/*, independent of overall mix.
+        expr: sum(rate(buildos_http_requests_total{route=~"/api/v1/auth/.*",status="5xx"}[5m])) > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "BuildOS auth/onboarding routes returning 5xx"
+          description: >
+            One or more /api/v1/auth/* routes have returned 5xx sustained for 10m
+            — sign-in or first-owner claim may be broken (users locked out),
+            independent of overall traffic. Check /ready (DB), Sentry, and
+            buildos_http_requests_total{route=~"/api/v1/auth/.*",status="5xx"}.
+          runbook_url: "https://github.com/futurebuildai/buildos/blob/main/docs/observability-runbook.md#buildosauthroute5xx"
+
+  # ---------------------------------------------------------------------------
+  # AI — the harness soft-fails by design (503 when no key / upstream down), so
+  # these are WARNINGS, not pages. They catch a misconfigured/rejected key or a
+  # sustained Anthropic outage degrading the agentic surface.
+  # ---------------------------------------------------------------------------
+  - name: buildos-ai
+    rules:
+      - alert: BuildOSAIErrorRateHigh
+        # NOTE: buildos_ai_requests_total counts ATTEMPTS, not logical calls —
+        # ObserveAICall fires on every retry-loop branch (MaxAttempts 3), so a
+        # retried-then-successful call still emits error attempts. Threshold set
+        # at 40% (not 25%) to absorb ~1 retry per success; the floor (>0.0017 ≈
+        # needs >=2 attempts in the 10m window) stops a single isolated attempt
+        # from warning.
+        expr: |
+          buildos:ai_error_ratio:rate10m > 0.40
+            and buildos:ai_requests:rate10m > 0.0017
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "BuildOS AI error-attempt rate high ({{ $value | humanizePercentage }})"
+          description: >
+            >40% of native Anthropic call ATTEMPTS errored over 10m (the client
+            retries up to 3×, so transient blips inflate this — a retried-then-
+            successful call still emits error attempts). AI degrades gracefully
+            (503/soft-fail), so this won't break the deterministic core — but the
+            agentic surface (chat/briefing/foresight/ingestion) is degraded.
+            Check the stored Anthropic key (rejected/rotated?), the provider
+            status, and buildos_ai_requests_total{outcome="error"} by kind+model.
+          runbook_url: "https://github.com/futurebuildai/buildos/blob/main/docs/observability-runbook.md#buildosaierrorratehigh"
+
+      - alert: BuildOSAILatencyP95High
+        expr: buildos:ai_request_duration_seconds:p95 > 45
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "BuildOS AI p95 latency high ({{ $value | humanizeDuration }})"
+          description: >
+            Native Anthropic p95 latency >45s for 10m (the AI client caps at
+            ~60s). Sustained slowness risks request timeouts on the synchronous
+            AI endpoints. Usually upstream; check the provider status page.
+          runbook_url: "https://github.com/futurebuildai/buildos/blob/main/docs/observability-runbook.md#buildosailatencyp95high"
+
+  # NOTE: there is deliberately NO buildos-jobs / River alert group. The worker
+  # emits no metrics and serves no /metrics, and buildos_river_job_runs_total is
+  # never incremented (ObserveJob has no caller). Until worker observability is
+  # wired (a Go follow-up), background-job failures are visible only via logs,
+  # Sentry, and the River job tables — see the observability runbook.

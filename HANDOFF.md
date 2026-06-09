@@ -261,19 +261,29 @@ govulncheck clean. PRs #9 onward also have CI green at merge time
 
 ## In flight
 
-**Phase 4 is IN PROGRESS. Chunk 1 (ESC-002 — drop the pro gate) is COMPLETE: merged + PUSHED to
-`origin/main` (HEAD `8a1fcc3`); full record in the top "Last shipped" entry.** A Phase-4 ultraplan (6-agent
-assessment, 2026-06-09) decomposed the phase + ordered the chunks against the actual code (which made the
-plan doc's "3 missing field screens" framing partly stale). Remaining chunks (see NEXT_STEPS §P4 for the
-detailed plan + entry points):
-- **4a · Flutter field — NEXT candidate.** `schedule_screen` already exists (read-only Gantt); crew check-in
-  already works embedded in `daily_log`. Real gaps: extract a standalone **check-in** screen + the offline
-  affordance pattern (4a-i, mobile-only, no backend), then **equipment** (4a-ii, CROSS-STACK + a product
-  decision: is fleet field-visible? today field sync carries only Tasks+FeedCards, `/fleet` is operator-only,
-  so equipment needs a new field-scoped read endpoint in `internal/api/field.go`). Gates: `cd mobile && dart
-  format + flutter analyze + flutter test (+golden)` (Flutter 3.41.3 confirmed installed locally).
-- **4b · operator hardening** (Prometheus alerting rules + runbooks; then error-path UX) — config+docs first,
-  parallel with 4a.
+**Phase 4 is IN PROGRESS.** Chunk 1 (ESC-002) is merged + pushed (`origin/main` `8a1fcc3`; top "Last
+shipped"). **Chunk 4b-i (Prometheus alerting rules + operator/deploy runbooks) is BUILT on branch
+`feat/phase-4b-i-alerting-runbooks` (committed, NOT pushed/merged); config+docs only, zero Go; awaiting owner
+review.** A Phase-4 ultraplan (6-agent assessment, 2026-06-09) decomposed the phase against the actual code
+(which made the plan doc's "3 missing field screens" framing partly stale). Status by chunk (see NEXT_STEPS
+§P4 for entry points):
+- **4b-i · alerting + runbooks — BUILT on branch, awaiting review.** `deploy/prometheus/buildos.rules.yml`
+  (8 alerts over the 4 real `buildos_*` metrics, tuned for a low-traffic fork) + `deploy/prometheus/README.md`
+  + `docs/observability-runbook.md` + `docs/deploy-runbook.md`. **Key grounding finding:** only 4 metrics are
+  actually emitted (server-only); `buildos_river_job_runs_total` is registered but never incremented and the
+  worker serves no `/metrics`, so the plan's DB-pool/setup-gate/River alerts have NO backing metric — shipped
+  as documented gaps, not dead rules. Built grounded → authored → caught the dead-metric problem → a 4-lens
+  verification workflow fixed 8 more issues. Spec: [PHASE_4B_I_ALERTING.md](.agents/handoff/PHASE_4B_I_ALERTING.md).
+  **Surfaced the natural next 4b sub-chunk (a Go change): worker `/metrics` + `ObserveJob` wiring** (then
+  re-add the River alert group) — background jobs are currently observable only via logs/Sentry/River tables.
+- **4a · Flutter field.** `schedule_screen` already exists (read-only Gantt); crew check-in already works
+  embedded in `daily_log`. Real gaps: extract a standalone **check-in** screen + the offline affordance
+  pattern (4a-i, mobile-only, no backend), then **equipment** (4a-ii, CROSS-STACK + a product decision: is
+  fleet field-visible? today field sync carries only Tasks+FeedCards, `/fleet` is operator-only, so equipment
+  needs a new field-scoped read endpoint in `internal/api/field.go`). Gates: `cd mobile && dart format +
+  flutter analyze + flutter test (+golden)` (Flutter 3.41.3 confirmed installed locally).
+- **4b-ii · operator hardening (remaining)** — worker observability (above), then error-path UX (Retry-After
+  on 5xx/429, AI circuit-breaker surfacing, `cmd/migrate --dry-run`).
 - **4c · security + load** (k6 + `/security-review`) — FINAL gate, after 4a/4b.
 
 ---
