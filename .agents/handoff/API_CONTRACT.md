@@ -69,6 +69,7 @@ These mint the credentials the rest of the API requires, so they mount OUTSIDE t
 | Setup wizard (`/setup/*`) | ✓ | ✓ | ✗ | ✗ |
 | Integrations vault (`/integrations/*`) | ✓ | ✓ | ✗ | ✗ |
 | Agent config registry (`/admin/agents/*`) | ✓ | ✓ | ✗ | ✗ |
+| Connector registry (`/admin/connectors/*`) | ✓ | ✓ | ✗ | ✗ |
 | Financial endpoints | ✓ | ✓ | Read-only | ✗ |
 | Schedule endpoints | ✓ | ✓ | ✓ | Read-only |
 | Pipeline endpoints | ✓ | ✓ | Read-only | ✗ |
@@ -726,6 +727,51 @@ default", so a row only ever encodes an override; `DELETE` resets to default.
 ```
 
 **Capability gate behavior:** when a capability is disabled, `delay_cascade` and `foresight` (River worker flows) become clean no-ops; the synchronous `experience` endpoint (`POST /api/v1/agents/chat`) returns `403 CAPABILITY_DISABLED` (distinct from the `503` a missing AI key produces and from RBAC `403 FORBIDDEN`).
+
+---
+
+## 13c. Connector Registry (Phase 3b)
+
+Admin-gated, per-org enable/config of the integration **connectors** — named
+providers of agentic tools the assistant can call. 3b-i ships an in-process,
+read-only built-in (`reference`); 3b-ii adds vault-backed MCP connectors. Mounted
+under `/api/v1/admin/connectors` (the `/api/v1/admin/*` operator namespace), off
+the pro-tier `/api/v1/agents` tree, behind auth + the **SetupGate** + **`admin+`**
+RBAC. Connectors are **DEFAULT-OFF** per org (explicit admin opt-in); their tools
+mount only in the chat assistant (`POST /api/v1/agents/chat`), are **namespaced**
+(`conn__<connector>__<tool>`) and **MinRole-floored at admin**, and **fail closed**
+(any error mounts zero connector tools, never breaking chat). The built-in catalog
+is the existence authority (unknown connector ⇒ 404). Config is non-secret —
+**credentials go in the vault** (`/integrations/*`), never here.
+
+### GET /api/v1/admin/connectors
+- **Auth:** JWT (admin+)
+- **Response:** `200 { data: { connectors: []EffectiveConnector } }` (catalog merged with per-org config; `enabled` defaults `false`).
+
+### PUT /api/v1/admin/connectors/{connector}
+- **Auth:** JWT (admin+)
+- **Body:** `{ enabled: bool, config?: object }` (`config` must be a JSON object; 3b-i stores but does not interpret it).
+- **Response:** `200 { data: { connector: ConnectorConfig } }`
+- **Errors:** `404 NOT_FOUND` (connector unknown to the catalog), `400 VALIDATION_ERROR` (config not an object).
+
+### DELETE /api/v1/admin/connectors/{connector}
+- **Auth:** JWT (admin+)
+- **Response:** `204 No Content` — **idempotent** reset to default-OFF.
+- **Errors:** `404 NOT_FOUND` (connector unknown to the catalog).
+
+### EffectiveConnector Object
+```json
+{
+  "connector": "reference",
+  "description": "Read-only, in-process reference lookups …",
+  "enabled": false,
+  "config": {},
+  "source": "default",
+  "updated_by": "",
+  "updated_at": null
+}
+```
+`source` is `"default"` (no row, disabled) or `"override"` (an explicit per-org row).
 
 ---
 

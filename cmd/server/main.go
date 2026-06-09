@@ -198,6 +198,13 @@ func run(logger *slog.Logger) error {
 	// Always constructed (needs only the pool + store), so it is never nil.
 	agentConfigService := service.NewAgentConfigService(pool, store.NewAgentConfigStore(), auditService, logger)
 
+	// Connector registry (Phase 3b). DB-backed per-org enable/config for the
+	// integration connectors (default-OFF). Two faces: the admin CRUD face wires
+	// into the router (/api/v1/admin/connectors), and the ToolsFor face injects
+	// into the assistant so enabled connector tools mount into chat. Always
+	// constructed (pool + store + in-code built-in catalog), so never nil.
+	connectorService := service.NewConnectorService(pool, store.NewConnectorConfigStore(), auditService, logger)
+
 	// Conversational ERP assistant (Phase 2c). Typed-nil-safe: a nil
 	// aiClient (vault/AI unconfigured) leaves the service's AI seam unset
 	// so Converse soft-fails with agentic.ErrAssistantUnavailable (503)
@@ -210,6 +217,7 @@ func run(logger *slog.Logger) error {
 		scheduleService, budgetService, procurementService,
 		projectService, feedService, pipelineService,
 		agentConfigService,
+		connectorService,
 		auditService, logger,
 	)
 
@@ -318,6 +326,7 @@ func run(logger *slog.Logger) error {
 		Metrics:             metrics,
 		AgentsService:       agentsService,
 		AgentConfigService:  agentConfigService,
+		ConnectorService:    connectorService,
 		Assistant:           assistantService,
 		IngestionService:    ingestionService,
 		SetupService:        setupService,

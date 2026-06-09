@@ -14,6 +14,7 @@ import (
 	"github.com/futurebuildai/buildos/internal/agentic"
 	"github.com/futurebuildai/buildos/internal/ai"
 	"github.com/futurebuildai/buildos/internal/authz"
+	"github.com/futurebuildai/buildos/internal/connectors"
 	"github.com/futurebuildai/buildos/internal/pii"
 )
 
@@ -69,6 +70,14 @@ type assistantAI interface {
 	RunToolLoop(ctx context.Context, kind string, req ai.ToolLoopRequest) (*ai.ToolLoopResponse, error)
 }
 
+// connectorToolSource is the consumer-side slice of *ConnectorService that
+// buildRegistry needs: the per-request enabled connector tools (namespaced +
+// MinRole-floored). Behind an interface so buildRegistry's fail-closed merge is
+// unit-testable with a fake (and so a nil source skips the connector leg).
+type connectorToolSource interface {
+	ToolsFor(ctx context.Context, c connectors.Caller) ([]agentic.Tool, error)
+}
+
 // ---- AssistantService --------------------------------------------------
 
 // AssistantService builds the per-request caller-scoped registry, implements
@@ -77,19 +86,20 @@ type assistantAI interface {
 // leaves `ai` unset -> Converse returns agentic.ErrAssistantUnavailable -> the
 // handler soft-fails to 503.
 type AssistantService struct {
-	ai          assistantAI // nil -> Converse returns ErrAssistantUnavailable
-	pool        *pgxpool.Pool
-	schedule    *ScheduleService
-	budget      *BudgetService
-	procurement *ProcurementService
-	projects    *ProjectService
-	feed        *FeedService
-	pipeline    *PipelineService
-	config      agentic.ConfigResolver // per-org Experience enabled gate (Phase 3a); nil => enabled-with-default
-	audit       AuditRecorder
-	bounds      agentic.LoopBounds
-	model       string
-	logger      *slog.Logger
+	ai           assistantAI // nil -> Converse returns ErrAssistantUnavailable
+	pool         *pgxpool.Pool
+	schedule     *ScheduleService
+	budget       *BudgetService
+	procurement  *ProcurementService
+	projects     *ProjectService
+	feed         *FeedService
+	pipeline     *PipelineService
+	config       agentic.ConfigResolver // per-org Experience enabled gate (Phase 3a); nil => enabled-with-default
+	connectorSvc connectorToolSource    // per-org integration connectors (Phase 3b); nil => no connector tools
+	audit        AuditRecorder
+	bounds       agentic.LoopBounds
+	model        string
+	logger       *slog.Logger
 }
 
 // NewAssistantService wires the AI client + the read services + the audit-tx
@@ -105,6 +115,7 @@ func NewAssistantService(
 	sched *ScheduleService, bud *BudgetService, proc *ProcurementService,
 	proj *ProjectService, feed *FeedService, pipe *PipelineService,
 	config agentic.ConfigResolver,
+	connectorSvc *ConnectorService,
 	audit AuditRecorder, logger *slog.Logger,
 ) *AssistantService {
 	if audit == nil {
@@ -133,6 +144,12 @@ func NewAssistantService(
 	if client != nil {
 		s.ai = client
 	}
+	// Same typed-nil dodge for the connector source: a nil *ConnectorService
+	// stored into the interface field would be a non-nil interface, defeating the
+	// `s.connectorSvc != nil` guard in buildRegistry.
+	if connectorSvc != nil {
+		s.connectorSvc = connectorSvc
+	}
 	return s
 }
 
@@ -157,7 +174,7 @@ func (s *AssistantService) Converse(
 		return agentic.ChatResult{}, fmt.Errorf("%w: caller org_id is required", ErrInvalidInput)
 	}
 
-	reg := s.buildRegistry(callerOrgID, callerRole, callerUserSub)
+	reg := s.buildRegistry(ctx, callerOrgID, callerRole, callerUserSub)
 	planner := chatPlanner{
 		ai:     s.ai,
 		orgID:  callerOrgID,
@@ -230,7 +247,7 @@ func (s *AssistantService) recordChatAudit(ctx context.Context, orgID uuid.UUID,
 // the model is never told a tool its role lacks exists (layer 4). The executors
 // themselves re-check MinRole (layer 3, assistant_tools.go), so a misfiled tier
 // is still safe.
-func (s *AssistantService) buildRegistry(orgID uuid.UUID, role, sub string) *agentic.AssistantRegistry {
+func (s *AssistantService) buildRegistry(ctx context.Context, orgID uuid.UUID, role, sub string) *agentic.AssistantRegistry {
 	reg := agentic.NewAssistantRegistry()
 
 	addIfAllowed := func(t agentic.Tool) {
@@ -282,6 +299,30 @@ func (s *AssistantService) buildRegistry(orgID uuid.UUID, role, sub string) *age
 		MinRole:  authz.RoleAdmin,
 		Executor: s.newGetOrgFinancialsExecutor(orgID, role, authz.RoleAdmin),
 	})
+
+	// --- connector tools (Phase 3b) — merged AFTER the internal ERP tools so
+	// internal names always win. The whole leg is FAIL-CLOSED: a connectors_config
+	// read error (or no connector service wired) mounts ZERO connector tools and
+	// never breaks chat. Tool names are namespaced (conn__<connector>__<tool>) and
+	// floored to admin by ToolsFor, so a collision is impossible and TryAdd's
+	// skip+log is a belt-and-suspenders guard. ---
+	if s.connectorSvc != nil {
+		connTools, err := s.connectorSvc.ToolsFor(ctx, connectors.Caller{OrgID: orgID, Role: role, Sub: sub})
+		if err != nil {
+			s.logger.WarnContext(ctx, "connector tools unavailable; serving internal tools only",
+				slog.Any("error", err))
+		} else {
+			for _, t := range connTools {
+				if !authz.RoleAtLeast(role, t.MinRole) {
+					continue // layer-4 role filter (floored at admin in ToolsFor)
+				}
+				if !reg.TryAdd(t) {
+					s.logger.WarnContext(ctx, "skipped duplicate/invalid connector tool",
+						slog.String("tool", t.Spec.Name))
+				}
+			}
+		}
+	}
 
 	return reg
 }

@@ -66,6 +66,45 @@ fi
 echo "  PASS: ${FORBIDDEN} imports no other internal/* package."
 echo ""
 
+# --- Check 3: connectors is leaf-ish (only imports internal/agentic) ----
+# internal/connectors is the integration seam: it produces agentic.Tool values
+# and must reach the rest of BuildOS only through ports it declares (implemented
+# by adapters in internal/service). The dependency arrow is
+# agentic <- connectors <- service; connectors importing internal/service (or
+# store/ai/worker) would invert the layering and risk an import cycle the moment
+# service holds a connectors.Connector. It MAY import internal/agentic.
+echo "Check 3: internal/connectors must import no internal/* except internal/agentic"
+CONNECTORS_INTERNAL_IMPORTS="$(go list -f '{{range .Imports}}{{.}}
+{{end}}{{range .TestImports}}{{.}}
+{{end}}' ./internal/connectors/... \
+    | sort -u \
+    | grep "^${MODULE}/internal/" \
+    | grep -v "^${MODULE}/internal/connectors" \
+    | grep -v "^${MODULE}/internal/agentic" || true)"
+if [[ -n "$CONNECTORS_INTERNAL_IMPORTS" ]]; then
+    echo "FAIL: internal/connectors imports forbidden internal/* packages:"
+    echo "$CONNECTORS_INTERNAL_IMPORTS" | sed 's/^/  > /'
+    echo ""
+    echo "  > internal/connectors may import ONLY stdlib + github.com/google/uuid"
+    echo "  > + internal/agentic. Reach internal/service capabilities through a"
+    echo "  > port interface DECLARED in internal/connectors and implemented by an"
+    echo "  > adapter in internal/service (arrow: agentic <- connectors <- service)."
+    exit 1
+fi
+echo "  PASS: internal/connectors imports only internal/agentic."
+echo ""
+
+# Defensive: the deterministic core must not pull in connectors either.
+echo "Check 3b: core packages must not depend on internal/connectors"
+# shellcheck disable=SC2086
+if echo "$DEPS" | grep -q "internal/connectors"; then
+    echo "FAIL: core packages transitively depend on internal/connectors:"
+    echo "$DEPS" | grep "internal/connectors" | sed 's/^/  > /'
+    exit 1
+fi
+echo "  PASS: core has no dependency on internal/connectors."
+echo ""
+
 echo "=== Isolation Lint Complete ==="
 echo "RESULT: PASSED"
 exit 0

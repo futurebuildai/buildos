@@ -60,7 +60,9 @@ func NewAssistantRegistry() *AssistantRegistry {
 }
 
 // Add registers a tool. It panics on an empty tool name or a duplicate name —
-// both are programmer errors at registry-build time, not runtime conditions.
+// both are programmer errors at registry-build time for the in-code internal
+// tools. (Tools from runtime-configured CONNECTORS use TryAdd instead, where a
+// name clash is a runtime condition that must never crash a request.)
 func (r *AssistantRegistry) Add(t Tool) {
 	if t.Spec.Name == "" {
 		panic("agentic: AssistantRegistry.Add called with empty tool name")
@@ -69,6 +71,28 @@ func (r *AssistantRegistry) Add(t Tool) {
 		panic(fmt.Sprintf("agentic: AssistantRegistry.Add duplicate tool name %q", t.Spec.Name))
 	}
 	r.tools[t.Spec.Name] = t
+}
+
+// TryAdd registers a tool if its name is non-empty and not already taken,
+// returning true on success and false (WITHOUT panicking) on an empty or
+// duplicate name. The connector-merge path uses this so a runtime-configured
+// connector advertising a clashing or malformed tool name can never crash
+// buildRegistry — it is skipped and logged by the caller instead.
+func (r *AssistantRegistry) TryAdd(t Tool) bool {
+	if t.Spec.Name == "" {
+		return false
+	}
+	if _, dup := r.tools[t.Spec.Name]; dup {
+		return false
+	}
+	r.tools[t.Spec.Name] = t
+	return true
+}
+
+// Has reports whether a tool name is already registered.
+func (r *AssistantRegistry) Has(name string) bool {
+	_, ok := r.tools[name]
+	return ok
 }
 
 // Specs returns every registered tool's spec, stable-sorted by name, for the

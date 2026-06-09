@@ -236,6 +236,30 @@ func TestAssistantRegistry_AddSpecsExecutorLen(t *testing.T) {
 	}
 }
 
+func TestAssistantRegistry_TryAddAndHas(t *testing.T) {
+	r := NewAssistantRegistry()
+	if r.Has("conn__x__t") {
+		t.Error("Has on an empty registry should be false")
+	}
+	if !r.TryAdd(Tool{Spec: ToolSpec{Name: "conn__x__t"}, Executor: &fakeExecutor{}}) {
+		t.Fatal("first TryAdd should succeed")
+	}
+	if !r.Has("conn__x__t") {
+		t.Error("Has should report the added tool")
+	}
+	// Duplicate name → false, NO panic (the connector-merge guard).
+	if r.TryAdd(Tool{Spec: ToolSpec{Name: "conn__x__t"}, Executor: &fakeExecutor{}}) {
+		t.Error("TryAdd of a duplicate name must return false")
+	}
+	// Empty name → false, NO panic.
+	if r.TryAdd(Tool{Spec: ToolSpec{Name: ""}, Executor: &fakeExecutor{}}) {
+		t.Error("TryAdd of an empty name must return false")
+	}
+	if r.Len() != 1 {
+		t.Fatalf("Len = %d, want 1 (the rejects must not have been added)", r.Len())
+	}
+}
+
 func TestAssistantRegistry_AddPanicsOnEmptyName(t *testing.T) {
 	defer func() {
 		if recover() == nil {

@@ -426,7 +426,7 @@ func TestAssistantIntegration_RoleToolMatrix(t *testing.T) {
 	svc := fx.service(&scriptedAssistantAI{})
 	for _, tc := range matrix {
 		t.Run("registry_"+tc.role, func(t *testing.T) {
-			reg := svc.buildRegistry(fx.orgA, tc.role, fx.subA)
+			reg := svc.buildRegistry(context.Background(), fx.orgA, tc.role, fx.subA)
 			if reg.Len() != len(tc.tools) {
 				t.Fatalf("role %q: got %d tools, want %d", tc.role, reg.Len(), len(tc.tools))
 			}
@@ -522,6 +522,7 @@ func TestAssistantIntegration_SoftFailNoKey(t *testing.T) {
 		fx.pkg.schedule, fx.pkg.budget, fx.pkg.procurement,
 		fx.pkg.projects, fx.pkg.feed, fx.pkg.pipeline,
 		nil, // config resolver — nil => Experience enabled-with-default
+		nil, // connector service — nil => no connector tools
 		NoopAuditRecorder{}, slog.New(slog.NewJSONHandler(io.Discard, nil)),
 	)
 

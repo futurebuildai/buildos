@@ -46,6 +46,7 @@ type RouterConfig struct {
 	IntegrationsService IntegrationsServicer // optional — when nil, /integrations/* routes don't mount (vault disabled)
 	AgentsService       AgentsServicer       // optional — when nil, /agents/* routes don't mount
 	AgentConfigService  AgentConfigServicer  // optional — when nil, /admin/agents/* routes don't mount (agent config registry)
+	ConnectorService    ConnectorServicer    // optional — when nil, /admin/connectors/* routes don't mount (connector registry)
 	Assistant           AssistantConverser   // optional — when nil, POST /agents/chat doesn't mount (no AI client)
 	IngestionService    InvoiceIngestor      // optional — when nil, the /invoices/ingest route doesn't mount (AI unconfigured)
 	Metrics             MetricsRecorder      // optional — when nil, /metrics doesn't mount and HTTP middleware is skipped
@@ -163,6 +164,10 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	if cfg.AgentConfigService != nil {
 		agentConfig = NewAgentConfigHandler(cfg.AgentConfigService)
 	}
+	var connectorAdmin *ConnectorHandler
+	if cfg.ConnectorService != nil {
+		connectorAdmin = NewConnectorHandler(cfg.ConnectorService)
+	}
 
 	// Auth middleware
 	authMiddleware := mw.Auth(cfg.Verifier, cfg.DevAuthMode, cfg.Logger)
@@ -238,6 +243,18 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		// --------------------------------------------------------
 		if agentConfig != nil {
 			MountAgentConfigRoutes(r, agentConfig)
+		}
+
+		// --------------------------------------------------------
+		// 0.7 Connector registry — admin-gated enable/config of the
+		//     integration connectors (Phase 3b). Default-OFF per org;
+		//     mounted under /api/v1/admin/connectors, OFF the pro tree
+		//     so the kill-switch is reachable regardless of plan tier.
+		//     RBAC (admin+) enforced inside MountConnectorRoutes;
+		//     behind the SetupGate.
+		// --------------------------------------------------------
+		if connectorAdmin != nil {
+			MountConnectorRoutes(r, connectorAdmin)
 		}
 
 		// --------------------------------------------------------

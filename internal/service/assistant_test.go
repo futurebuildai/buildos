@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -12,7 +14,28 @@ import (
 	"github.com/futurebuildai/buildos/internal/agentic"
 	"github.com/futurebuildai/buildos/internal/ai"
 	"github.com/futurebuildai/buildos/internal/authz"
+	"github.com/futurebuildai/buildos/internal/connectors"
 )
+
+// ---- fake connectorToolSource (Phase 3b buildRegistry merge tests) ------
+
+type fakeConnectorSource struct {
+	tools []agentic.Tool
+	err   error
+	calls int
+}
+
+func (f *fakeConnectorSource) ToolsFor(_ context.Context, _ connectors.Caller) ([]agentic.Tool, error) {
+	f.calls++
+	return f.tools, f.err
+}
+
+// noopExecutor satisfies agentic.ToolExecutor for merge tests.
+type noopExecutor struct{}
+
+func (noopExecutor) Execute(_ context.Context, _ json.RawMessage) (agentic.ToolResult, error) {
+	return agentic.ToolResult{Content: "{}"}, nil
+}
 
 // ---- fake assistantAI ---------------------------------------------------
 
@@ -70,6 +93,7 @@ func newTestAssistantService(t *testing.T, fake assistantAI) *AssistantService {
 		model:  defaultExperienceModel,
 		bounds: agentic.LoopBounds{},
 		audit:  NoopAuditRecorder{},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		// pool + services left nil — never reached in these unit tests.
 	}
 }
@@ -101,7 +125,7 @@ func TestAssistant_BuildRegistry_RoleFiltering(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.role, func(t *testing.T) {
-			reg := svc.buildRegistry(org, tc.role, "sub-1")
+			reg := svc.buildRegistry(context.Background(), org, tc.role, "sub-1")
 			if reg.Len() != len(tc.tools) {
 				t.Fatalf("role %q: got %d tools, want %d", tc.role, reg.Len(), len(tc.tools))
 			}
@@ -116,11 +140,69 @@ func TestAssistant_BuildRegistry_RoleFiltering(t *testing.T) {
 	}
 }
 
+// --- Phase 3b: connector-tool merge into buildRegistry ---
+
+func adminInternalToolCount(t *testing.T) int {
+	t.Helper()
+	svc := newTestAssistantService(t, &fakeAssistantAI{})
+	return svc.buildRegistry(context.Background(), uuid.New(), authz.RoleAdmin, "sub-1").Len()
+}
+
+func TestAssistant_BuildRegistry_MergesEnabledConnectorTool(t *testing.T) {
+	base := adminInternalToolCount(t)
+	svc := newTestAssistantService(t, &fakeAssistantAI{})
+	svc.connectorSvc = &fakeConnectorSource{tools: []agentic.Tool{{
+		Spec:     agentic.ToolSpec{Name: "conn__reference__glossary", Description: "d", InputSchema: json.RawMessage(`{}`)},
+		MinRole:  authz.RoleAdmin, // floored by ToolsFor in production
+		Executor: noopExecutor{},
+	}}}
+
+	reg := svc.buildRegistry(context.Background(), uuid.New(), authz.RoleAdmin, "sub-1")
+	if reg.Len() != base+1 {
+		t.Fatalf("admin registry = %d tools, want %d (internal + 1 connector)", reg.Len(), base+1)
+	}
+	if !reg.Has("conn__reference__glossary") {
+		t.Error("the enabled connector tool must be mounted for an admin caller")
+	}
+}
+
+func TestAssistant_BuildRegistry_ConnectorErrorFailsClosed(t *testing.T) {
+	base := adminInternalToolCount(t)
+	fake := &fakeConnectorSource{err: errors.New("connectors_config db down")}
+	svc := newTestAssistantService(t, &fakeAssistantAI{})
+	svc.connectorSvc = fake
+
+	// A connector resolve error must NOT break chat: serve internal tools only.
+	reg := svc.buildRegistry(context.Background(), uuid.New(), authz.RoleAdmin, "sub-1")
+	if fake.calls != 1 {
+		t.Fatalf("ToolsFor calls = %d, want 1", fake.calls)
+	}
+	if reg.Len() != base {
+		t.Fatalf("fail-closed registry = %d tools, want %d (internal only)", reg.Len(), base)
+	}
+}
+
+func TestAssistant_BuildRegistry_ConnectorToolRoleFiltered(t *testing.T) {
+	svc := newTestAssistantService(t, &fakeAssistantAI{})
+	svc.connectorSvc = &fakeConnectorSource{tools: []agentic.Tool{{
+		Spec:     agentic.ToolSpec{Name: "conn__reference__glossary", Description: "d", InputSchema: json.RawMessage(`{}`)},
+		MinRole:  authz.RoleAdmin, // connector tools are floored to admin
+		Executor: noopExecutor{},
+	}}}
+
+	// A superintendent caller is below the admin floor → the connector tool is
+	// filtered out by layer-4 (RoleAtLeast), same as the internal admin tools.
+	reg := svc.buildRegistry(context.Background(), uuid.New(), authz.RoleSuperintendent, "sub-1")
+	if reg.Has("conn__reference__glossary") {
+		t.Error("a connector tool floored at admin must NOT be visible to a superintendent")
+	}
+}
+
 // A field_worker meets no tool's MinRole (and is route-gated out anyway): the
 // registry is empty rather than panicking or exposing tools.
 func TestAssistant_BuildRegistry_FieldWorkerGetsNoTools(t *testing.T) {
 	svc := newTestAssistantService(t, &fakeAssistantAI{})
-	reg := svc.buildRegistry(uuid.New(), authz.RoleFieldWorker, "sub-1")
+	reg := svc.buildRegistry(context.Background(), uuid.New(), authz.RoleFieldWorker, "sub-1")
 	if reg.Len() != 0 {
 		t.Fatalf("field_worker registry Len = %d, want 0", reg.Len())
 	}
@@ -325,7 +407,7 @@ func TestAssistant_ChatPlanner_MapsResultAndStampsOrg(t *testing.T) {
 func TestAssistant_Converse_NilAI_ReturnsUnavailable(t *testing.T) {
 	// NewAssistantService with a nil *ai.Client leaves s.ai unset (typed-nil
 	// guard). Converse must soft-fail to ErrAssistantUnavailable, not panic.
-	svc := NewAssistantService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	svc := NewAssistantService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	_, err := svc.Converse(context.Background(), uuid.New(), authz.RoleAdmin, "sub-1", agentic.ChatInput{})
 	if !errors.Is(err, agentic.ErrAssistantUnavailable) {
 		t.Fatalf("nil AI client should yield ErrAssistantUnavailable, got %v", err)
