@@ -276,4 +276,3 @@ func TestFormatMoney_IntegerOnly(t *testing.T) {
 		}
 	}
 }
-

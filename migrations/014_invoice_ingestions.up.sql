@@ -9,7 +9,7 @@ CREATE TABLE invoice_ingestions (
     idempotency_key UUID NOT NULL,
     invoice_id      UUID NOT NULL REFERENCES invoices(id),
     feed_card_id    UUID NOT NULL REFERENCES feed_cards(id),
-    extracted_by    UUID NOT NULL,               -- users.id of the caller; no FK (cross-binary/author convention, see note)
+    extracted_by    UUID,                        -- users.id of the caller; nullable (NULL when the JWT sub is not a UUID, e.g. dev-auth) so we never store a misleading zero UUID; no FK
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (project_id, idempotency_key)         -- THE idempotency anchor
 );

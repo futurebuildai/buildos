@@ -59,10 +59,11 @@ type IngestionService struct {
 	ingStore  *store.InvoiceIngestionStore
 	feedStore *store.FeedCardsStore
 	audit     AuditRecorder
-	// mismatchToleranceCents is the fork-configured slack between the line
-	// sum and the declared total before the extraction is rejected. Default
-	// 0 (exact). A within-tolerance mismatch persists the declared total and
-	// bumps the review card to urgent.
+	// mismatchToleranceCents is the slack between the line sum and the declared
+	// total before the extraction is rejected. Fixed at 0 (exact) for Phase 2a;
+	// a per-fork/runtime configuration knob is a later refinement. A
+	// within-tolerance mismatch persists the declared total and bumps the
+	// review card to urgent.
 	mismatchToleranceCents int64
 }
 
@@ -324,9 +325,13 @@ func (s *IngestionService) IngestInvoiceFromDocument(
 		// enforcement point: on conflict the whole tx (invoice + card)
 		// rolls back. Because the conflicting INSERT is the last statement,
 		// the tx is not used again — no 25P02 poisoning, no in-tx read-back.
-		var extractedBy uuid.UUID
+		// callerUserSub is users.id (a UUID) for native JWTs; under dev-auth it
+		// can be any string. Store the parsed UUID when valid, else NULL — never
+		// a misleading zero UUID. The audit row carries the raw sub regardless,
+		// so the actual caller is still recorded.
+		var extractedBy *uuid.UUID
 		if uid, perr := uuid.Parse(callerUserSub); perr == nil {
-			extractedBy = uid
+			extractedBy = &uid
 		}
 		if err := s.ingStore.InsertInvoiceIngestion(ctx, tx, store.InsertInvoiceIngestionParams{
 			ProjectID:      in.ProjectID,

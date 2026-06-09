@@ -73,6 +73,7 @@ type Invoice struct {
 	DueDate       *time.Time `json:"due_date,omitempty"`
 	PaidDate      *time.Time `json:"paid_date,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
+	Source        string     `json:"source"` // provenance: "manual" | "ai_ingest" (migration 014)
 }
 
 // ProjectFinancial is a derived per-project aggregation: one row per

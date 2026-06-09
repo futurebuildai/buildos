@@ -8,8 +8,8 @@ import (
 
 	"github.com/google/uuid"
 
-	mw "github.com/futurebuildai/buildos/internal/api/middleware"
 	"github.com/futurebuildai/buildos/internal/ai"
+	mw "github.com/futurebuildai/buildos/internal/api/middleware"
 	"github.com/futurebuildai/buildos/internal/service"
 	"github.com/futurebuildai/buildos/internal/store"
 )
@@ -118,6 +118,12 @@ func (h *IngestHandler) writeIngestError(w http.ResponseWriter, r *http.Request,
 	case errors.Is(err, service.ErrInvoiceExtractionInvalid):
 		// 422 — fuzzy AI output failed the deterministic gate, or the
 		// document was an unsupported media type.
+		writeErrorResponse(w, r, http.StatusUnprocessableEntity, "EXTRACTION_INVALID", err.Error())
+	case errors.Is(err, service.ErrInvalidInput):
+		// 422 — the defensive createInvoiceTx chokepoint rejected the
+		// extracted content (bad currency / empty vendor / non-positive
+		// total): the same "unprocessable extracted content" class as the
+		// gate above, not a malformed client request.
 		writeErrorResponse(w, r, http.StatusUnprocessableEntity, "EXTRACTION_INVALID", err.Error())
 	case errors.Is(err, service.ErrNotFound):
 		// 404 — project not in caller's org (cross-tenant guard).

@@ -260,7 +260,7 @@ func (s *FinancialsStore) ListInvoices(ctx context.Context, tx pgx.Tx, projectID
 	rows, err := tx.Query(ctx, `
 		SELECT id, project_id, org_id, vendor_name, invoice_number,
 		       amount_cents, currency_code, wbs_code, status,
-		       due_date, paid_date, created_at
+		       due_date, paid_date, created_at, source
 		FROM invoices
 		WHERE project_id = $1
 		ORDER BY created_at DESC`, projectID)
@@ -275,7 +275,7 @@ func (s *FinancialsStore) ListInvoices(ctx context.Context, tx pgx.Tx, projectID
 		if err := rows.Scan(
 			&inv.ID, &inv.ProjectID, &inv.OrgID, &inv.VendorName, &inv.InvoiceNumber,
 			&inv.AmountCents, &inv.CurrencyCode, &inv.WBSCode, &inv.Status,
-			&inv.DueDate, &inv.PaidDate, &inv.CreatedAt,
+			&inv.DueDate, &inv.PaidDate, &inv.CreatedAt, &inv.Source,
 		); err != nil {
 			return nil, fmt.Errorf("scan invoices: %w", err)
 		}
@@ -312,13 +312,13 @@ func (s *FinancialsStore) CreateInvoice(ctx context.Context, tx pgx.Tx, p Create
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, 'manual'))
 		RETURNING id, project_id, org_id, vendor_name, invoice_number,
 		          amount_cents, currency_code, wbs_code, status,
-		          due_date, paid_date, created_at`,
+		          due_date, paid_date, created_at, source`,
 		p.ProjectID, p.OrgID, p.VendorName, p.InvoiceNumber,
 		p.AmountCents, p.CurrencyCode, p.WBSCode, p.DueDate, p.Source,
 	).Scan(
 		&inv.ID, &inv.ProjectID, &inv.OrgID, &inv.VendorName, &inv.InvoiceNumber,
 		&inv.AmountCents, &inv.CurrencyCode, &inv.WBSCode, &inv.Status,
-		&inv.DueDate, &inv.PaidDate, &inv.CreatedAt,
+		&inv.DueDate, &inv.PaidDate, &inv.CreatedAt, &inv.Source,
 	)
 	if err != nil {
 		return models.Invoice{}, fmt.Errorf("insert invoice: %w", err)
@@ -346,12 +346,12 @@ func (s *FinancialsStore) UpdateInvoice(ctx context.Context, tx pgx.Tx, p Update
 		WHERE id = $1
 		RETURNING id, project_id, org_id, vendor_name, invoice_number,
 		          amount_cents, currency_code, wbs_code, status,
-		          due_date, paid_date, created_at`,
+		          due_date, paid_date, created_at, source`,
 		p.ID, p.Status, p.PaidDate,
 	).Scan(
 		&inv.ID, &inv.ProjectID, &inv.OrgID, &inv.VendorName, &inv.InvoiceNumber,
 		&inv.AmountCents, &inv.CurrencyCode, &inv.WBSCode, &inv.Status,
-		&inv.DueDate, &inv.PaidDate, &inv.CreatedAt,
+		&inv.DueDate, &inv.PaidDate, &inv.CreatedAt, &inv.Source,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

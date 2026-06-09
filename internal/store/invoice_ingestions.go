@@ -23,9 +23,9 @@ type InsertInvoiceIngestionParams struct {
 	ProjectID      uuid.UUID
 	OrgID          uuid.UUID
 	IdempotencyKey uuid.UUID
-	InvoiceID      uuid.UUID // FK to the invoice created earlier in the SAME tx
-	FeedCardID     uuid.UUID // FK to the review card created earlier in the SAME tx
-	ExtractedBy    uuid.UUID // resolved users.id of the caller (sub)
+	InvoiceID      uuid.UUID  // FK to the invoice created earlier in the SAME tx
+	FeedCardID     uuid.UUID  // FK to the review card created earlier in the SAME tx
+	ExtractedBy    *uuid.UUID // resolved users.id of the caller (sub); nil → stored NULL (sub not UUID-parseable)
 }
 
 // InsertInvoiceIngestion claims the (project_id, idempotency_key) dedupe slot by
