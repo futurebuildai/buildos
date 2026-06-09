@@ -62,6 +62,11 @@ func isBlockedIP(ip net.IP) bool {
 	return false
 }
 
+// IsBlockedIP is the exported guard for a best-effort, write-time check (e.g. an
+// admin configuring an endpoint whose host is a literal private IP). The
+// authoritative guard remains the dial Control hook at connect time.
+func IsBlockedIP(ip net.IP) bool { return isBlockedIP(ip) }
+
 // egressControl is the net.Dialer.Control hook: it runs AFTER DNS resolution,
 // at connect time, with the actual ip:port about to be dialed. Rejecting a
 // blocked IP here is what defeats DNS-rebinding (re-resolution between a

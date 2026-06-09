@@ -3,8 +3,14 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
+	"net/url"
+	"regexp"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,38 +28,64 @@ import (
 const (
 	auditActionConnectorConfigUpdated = "connector.config.updated"
 	auditActionConnectorConfigReset   = "connector.config.reset"
+	auditActionConnectorToolsRefresh  = "connector.tools.refreshed"
 )
 
-// Effective-config source discriminators surfaced by ListEffective.
+// Connector kinds + effective-config source discriminators.
 const (
+	connectorKindBuiltin = "builtin"
+	connectorKindMCP     = "mcp"
+
 	connectorSourceDefault  = "default"  // no override row (disabled)
 	connectorSourceOverride = "override" // an explicit per-org row
 )
 
+// Refresh bounds — cached MCP tool metadata is attacker-influenced (rendered into
+// the model's tools[]), so it is hard-bounded at refresh time.
+const (
+	maxRefreshTools    = 64
+	maxToolDescBytes   = 4 * 1024
+	maxToolSchemaBytes = 16 * 1024
+)
+
+// ErrConnectorUnavailable is returned when an MCP refresh can't reach / parse the
+// server (unreachable, SSRF-blocked, protocol error). The handler maps it to a
+// 502-class response — a connector outage, not a 500.
+var ErrConnectorUnavailable = errors.New("connector: upstream unavailable")
+
+// mcpInstanceNameRE constrains an operator-chosen MCP instance name.
+var mcpInstanceNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{1,40}$`)
+
 // ConnectorService is the integration connector registry (Phase 3b). Two faces
-// over the connectors_config table + the in-code built-in connector catalog:
+// over connectors_config + connector_tools + the in-code built-in catalog:
 //
-//  1. Admin CRUD (ListEffective / Set / Reset) — the operator surface behind
+//  1. Admin CRUD (ListEffective / Set / Reset / RefreshTools) behind
 //     /api/v1/admin/connectors, one-tx-per-mutation + audit.
-//  2. ToolsFor — the per-request merge the Experience flow's buildRegistry
-//     consults: the ENABLED connectors' tools, namespaced and MinRole-floored at
-//     admin, ready to mount.
+//  2. ToolsFor — the per-request merge buildRegistry consults: the ENABLED
+//     connectors' tools, namespaced + MinRole-floored at admin.
 //
-// The built-in catalog is the existence authority: Set/Reset reject an unknown
-// connector (404); ToolsFor only ever mounts catalog connectors. Connectors are
-// DEFAULT-OFF: absence of a row ⇒ disabled.
+// Connectors are DEFAULT-OFF. Built-ins (kind=builtin) validate against the
+// in-code catalog; MCP instances (kind=mcp) are operator-created with an https
+// endpoint + a vault credential.
 type ConnectorService struct {
-	pool    *pgxpool.Pool
-	store   *store.ConnectorConfigStore
-	catalog map[string]connectors.Connector // by Name()
-	order   []string                        // catalog names, stable order
-	audit   AuditRecorder
-	logger  *slog.Logger
+	pool       *pgxpool.Pool
+	store      *store.ConnectorConfigStore
+	toolsStore *store.ConnectorToolsStore
+	catalog    map[string]connectors.Connector // built-ins, by Name()
+	order      []string                        // built-in names, stable order
+	secret     connectors.SecretResolver       // vault adapter (per-org connector creds)
+	egress     *http.Client                    // SSRF-guarded outbound client (shared)
+	breakers   *connectors.BreakerRegistry     // per-(org,endpoint) circuit breakers
+	clientVer  string
+	audit      AuditRecorder
+	logger     *slog.Logger
 }
 
-// NewConnectorService wires the store + the built-in connector catalog + audit.
-// A nil AuditRecorder falls back to the no-op; a nil logger becomes slog.Default().
-func NewConnectorService(pool *pgxpool.Pool, st *store.ConnectorConfigStore, audit AuditRecorder, logger *slog.Logger) *ConnectorService {
+// NewConnectorService wires the stores + built-in catalog + the per-org vault
+// secret resolver + audit. The SSRF-guarded egress client and the breaker
+// registry are constructed internally. A nil AuditRecorder/logger get safe
+// defaults; a nil SecretResolver leaves MCP calls unauthenticated.
+func NewConnectorService(pool *pgxpool.Pool, st *store.ConnectorConfigStore, toolsStore *store.ConnectorToolsStore, secret connectors.SecretResolver, audit AuditRecorder, logger *slog.Logger) *ConnectorService {
 	if audit == nil {
 		audit = NoopAuditRecorder{}
 	}
@@ -67,51 +99,67 @@ func NewConnectorService(pool *pgxpool.Pool, st *store.ConnectorConfigStore, aud
 		order = append(order, c.Name())
 	}
 	return &ConnectorService{
-		pool:    pool,
-		store:   st,
-		catalog: catalog,
-		order:   order,
-		audit:   audit,
-		logger:  logger,
+		pool:       pool,
+		store:      st,
+		toolsStore: toolsStore,
+		catalog:    catalog,
+		order:      order,
+		secret:     secret,
+		egress:     connectors.NewEgressClient(0),
+		breakers:   connectors.NewBreakerRegistry(connectors.BreakerConfig{}),
+		clientVer:  "1.0",
+		audit:      audit,
+		logger:     logger,
 	}
 }
 
 // ---- Face 1: admin CRUD ------------------------------------------------
 
-// EffectiveConnector is one connector's effective config for an org: the built-in
-// catalog metadata merged with any override row. Connectors are default-OFF, so
-// Enabled is false unless an explicit row enables it.
+// EffectiveConnector is one connector's effective config for an org: a built-in
+// (catalog default merged with any row) or an MCP instance (from its row).
 type EffectiveConnector struct {
-	Connector   string          `json:"connector"`
-	Description string          `json:"description"`
-	Enabled     bool            `json:"enabled"`
-	Config      json.RawMessage `json:"config"`
-	Source      string          `json:"source"` // "default" (no row) | "override"
-	UpdatedBy   string          `json:"updated_by,omitempty"`
-	UpdatedAt   *time.Time      `json:"updated_at,omitempty"`
+	Connector      string          `json:"connector"`
+	Kind           string          `json:"kind"`
+	Description    string          `json:"description"`
+	Enabled        bool            `json:"enabled"`
+	Config         json.RawMessage `json:"config"`
+	Endpoint       string          `json:"endpoint,omitempty"` // mcp only
+	ToolsCount     int             `json:"tools_count"`        // mcp only (cached)
+	ToolsFetchedAt *time.Time      `json:"tools_fetched_at,omitempty"`
+	Source         string          `json:"source"` // "default" | "override"
+	UpdatedBy      string          `json:"updated_by,omitempty"`
+	UpdatedAt      *time.Time      `json:"updated_at,omitempty"`
 }
 
 // SetConnectorInput is the validated input for Set. OrgID + UserSub come from
-// JWT claims (never the request body).
+// JWT claims (never the request body). Kind is "" (infer) / "builtin" / "mcp".
 type SetConnectorInput struct {
 	OrgID         uuid.UUID
 	ConnectorName string
+	Kind          string
 	Enabled       bool
 	Config        json.RawMessage
 	UserSub       string
 }
 
-// ListEffective returns every built-in connector with its effective config for
-// the org (default-OFF, or an override row). Catalog-driven, so an orphaned row
-// for a connector the binary no longer ships is simply not listed.
+// ListEffective returns every built-in connector + every MCP instance configured
+// for the org, with effective config. Built-ins default-OFF; MCP instances come
+// from their rows (with cached tool counts).
 func (s *ConnectorService) ListEffective(ctx context.Context, orgID uuid.UUID) ([]EffectiveConnector, error) {
-	var rows []models.ConnectorConfig
+	var (
+		rows   []models.ConnectorConfig
+		counts map[string]store.ConnectorToolStats
+	)
 	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		r, qErr := s.store.ListByOrg(ctx, tx, orgID)
 		if qErr != nil {
 			return qErr
 		}
-		rows = r
+		c, qErr := s.toolsStore.CountsByOrg(ctx, tx, orgID)
+		if qErr != nil {
+			return qErr
+		}
+		rows, counts = r, c
 		return nil
 	})
 	if err != nil {
@@ -123,15 +171,13 @@ func (s *ConnectorService) ListEffective(ctx context.Context, orgID uuid.UUID) (
 		byName[r.ConnectorName] = r
 	}
 
-	out := make([]EffectiveConnector, 0, len(s.order))
+	out := make([]EffectiveConnector, 0, len(s.order)+len(rows))
+	// Built-ins first (catalog order), default-OFF or overridden.
 	for _, name := range s.order {
 		c := s.catalog[name]
 		eff := EffectiveConnector{
-			Connector:   name,
-			Description: c.Description(),
-			Enabled:     false, // DEFAULT-OFF
-			Config:      json.RawMessage("{}"),
-			Source:      connectorSourceDefault,
+			Connector: name, Kind: connectorKindBuiltin, Description: c.Description(),
+			Enabled: false, Config: json.RawMessage("{}"), Source: connectorSourceDefault,
 		}
 		if row, ok := byName[name]; ok {
 			eff.Enabled = row.Enabled
@@ -143,44 +189,82 @@ func (s *ConnectorService) ListEffective(ctx context.Context, orgID uuid.UUID) (
 		}
 		out = append(out, eff)
 	}
+	// MCP instances (rows whose name is not a built-in), sorted by name.
+	var mcpNames []string
+	for _, r := range rows {
+		if _, isBuiltin := s.catalog[r.ConnectorName]; !isBuiltin && r.Kind == connectorKindMCP {
+			mcpNames = append(mcpNames, r.ConnectorName)
+		}
+	}
+	sort.Strings(mcpNames)
+	for _, name := range mcpNames {
+		row := byName[name]
+		ts := row.UpdatedAt
+		eff := EffectiveConnector{
+			Connector: name, Kind: connectorKindMCP, Description: "MCP server connector",
+			Enabled: row.Enabled, Config: defaultConfigJSON(row.Config), Endpoint: mcpEndpoint(row.Config),
+			Source: connectorSourceOverride, UpdatedBy: row.UpdatedBy, UpdatedAt: &ts,
+		}
+		if st, ok := counts[name]; ok {
+			eff.ToolsCount = st.Count
+			ft := st.FetchedAt
+			eff.ToolsFetchedAt = &ft
+		}
+		out = append(out, eff)
+	}
 	return out, nil
 }
 
-// Set upserts the override (enabled + config) for a connector. Validates the
-// connector is in the catalog (ErrNotFound → 404) and the config is a JSON object
-// (ErrInvalidInput → 400) BEFORE any DB write, then upserts + audits in one tx.
+// Set upserts a connector. A built-in name (in the catalog) toggles enable/config;
+// any other name is an MCP instance (kind=mcp) — validated for a sane instance
+// name + an https endpoint in config — created or updated. Validation runs BEFORE
+// any DB write; upsert + audit in one tx.
 func (s *ConnectorService) Set(ctx context.Context, in SetConnectorInput) (models.ConnectorConfig, error) {
 	if in.OrgID == uuid.Nil {
 		return models.ConnectorConfig{}, fmt.Errorf("%w: org_id is required", ErrInvalidInput)
 	}
-	if _, ok := s.catalog[in.ConnectorName]; !ok {
-		return models.ConnectorConfig{}, fmt.Errorf("%w: unknown connector %q", ErrNotFound, in.ConnectorName)
-	}
-	cfg, err := validateConnectorConfig(in.Config)
+
+	kind := connectorKindBuiltin
+	cfg, err := validateConfigObject(in.Config)
 	if err != nil {
 		return models.ConnectorConfig{}, err
+	}
+
+	_, isBuiltin := s.catalog[in.ConnectorName]
+	if isBuiltin && in.Kind == connectorKindMCP {
+		return models.ConnectorConfig{}, fmt.Errorf("%w: %q is a built-in connector, not an MCP instance", ErrInvalidInput, in.ConnectorName)
+	}
+	if !isBuiltin {
+		// An MCP instance. Only mcp instances are creatable (no other kinds).
+		if in.Kind != "" && in.Kind != connectorKindMCP {
+			return models.ConnectorConfig{}, fmt.Errorf("%w: only mcp connector instances can be created", ErrInvalidInput)
+		}
+		kind = connectorKindMCP
+		if !mcpInstanceNameRE.MatchString(in.ConnectorName) {
+			return models.ConnectorConfig{}, fmt.Errorf("%w: invalid connector name (use lowercase letters, digits, _ or -)", ErrInvalidInput)
+		}
+		endpoint, eErr := validateMCPEndpoint(in.Config)
+		if eErr != nil {
+			return models.ConnectorConfig{}, eErr
+		}
+		// Re-marshal a normalized config holding only the validated endpoint.
+		cfg, _ = json.Marshal(map[string]string{"endpoint": endpoint})
 	}
 
 	var out models.ConnectorConfig
 	err = pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		row, qErr := s.store.Upsert(ctx, tx, store.UpsertConnectorConfigParams{
-			OrgID:         in.OrgID,
-			ConnectorName: in.ConnectorName,
-			Enabled:       in.Enabled,
-			Config:        cfg,
-			UpdatedBy:     in.UserSub,
+			OrgID: in.OrgID, ConnectorName: in.ConnectorName, Kind: kind,
+			Enabled: in.Enabled, Config: cfg, UpdatedBy: in.UserSub,
 		})
 		if qErr != nil {
 			return qErr
 		}
 		out = row
 		s.audit.Record(ctx, tx, AuditEntry{
-			OrgID:        in.OrgID,
-			UserSub:      in.UserSub,
-			Action:       auditActionConnectorConfigUpdated,
-			ResourceType: AuditResourceConnectorConfig,
-			ResourceID:   row.ID,
-			Metadata:     marshalAudit(map[string]any{"connector": in.ConnectorName, "enabled": in.Enabled, "config": json.RawMessage(cfg)}),
+			OrgID: in.OrgID, UserSub: in.UserSub, Action: auditActionConnectorConfigUpdated,
+			ResourceType: AuditResourceConnectorConfig, ResourceID: row.ID,
+			Metadata: marshalAudit(map[string]any{"connector": in.ConnectorName, "kind": kind, "enabled": in.Enabled, "config": json.RawMessage(cfg)}),
 		})
 		return nil
 	})
@@ -190,114 +274,212 @@ func (s *ConnectorService) Set(ctx context.Context, in SetConnectorInput) (model
 	return out, nil
 }
 
-// Reset removes the override row for a connector, resetting it to default-OFF.
-// Idempotent: nil whether or not a row existed; audits (connector.config.reset)
-// only when a row was actually deleted. Validates the connector is in the catalog.
+// Reset removes the override row for a connector (and clears any cached MCP
+// tools), resetting it to default-OFF. Idempotent; audits only when a row was
+// deleted. A name that is neither a built-in nor an existing row is 404.
 func (s *ConnectorService) Reset(ctx context.Context, orgID uuid.UUID, connectorName, userSub string) error {
 	if orgID == uuid.Nil {
 		return fmt.Errorf("%w: org_id is required", ErrInvalidInput)
 	}
-	if _, ok := s.catalog[connectorName]; !ok {
-		return fmt.Errorf("%w: unknown connector %q", ErrNotFound, connectorName)
-	}
+	_, isBuiltin := s.catalog[connectorName]
 	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		affected, qErr := s.store.DeleteByName(ctx, tx, orgID, connectorName)
 		if qErr != nil {
 			return qErr
 		}
-		if affected == 0 {
-			return nil // idempotent: nothing to delete, nothing to audit
+		if affected == 0 && !isBuiltin {
+			return fmt.Errorf("%w: unknown connector %q", ErrNotFound, connectorName)
 		}
-		s.audit.Record(ctx, tx, AuditEntry{
-			OrgID:        orgID,
-			UserSub:      userSub,
-			Action:       auditActionConnectorConfigReset,
-			ResourceType: AuditResourceConnectorConfig,
-			ResourceID:   orgID,
-			Metadata:     marshalAudit(map[string]any{"connector": connectorName}),
-		})
+		// Clear any cached tools for the name (harmless when none / for built-ins).
+		if err := s.toolsStore.ReplaceForConnector(ctx, tx, orgID, connectorName, nil); err != nil {
+			return err
+		}
+		if affected > 0 {
+			s.audit.Record(ctx, tx, AuditEntry{
+				OrgID: orgID, UserSub: userSub, Action: auditActionConnectorConfigReset,
+				ResourceType: AuditResourceConnectorConfig, ResourceID: orgID,
+				Metadata: marshalAudit(map[string]any{"connector": connectorName}),
+			})
+		}
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return err
+		}
 		return fmt.Errorf("reset connector config: %w", err)
 	}
 	return nil
 }
 
+// RefreshTools connects to an MCP instance's server, lists its tools, bounds the
+// (attacker-influenced) metadata, and replaces the cached tool set + audits. An
+// unreachable/SSRF-blocked/malformed server yields ErrConnectorUnavailable
+// (502-class), never a 500. Only valid for kind=mcp.
+func (s *ConnectorService) RefreshTools(ctx context.Context, orgID uuid.UUID, connectorName, userSub string) (int, error) {
+	if orgID == uuid.Nil {
+		return 0, fmt.Errorf("%w: org_id is required", ErrInvalidInput)
+	}
+	var row models.ConnectorConfig
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		r, qErr := s.store.GetByName(ctx, tx, orgID, connectorName)
+		if qErr != nil {
+			return qErr
+		}
+		row = r
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return 0, fmt.Errorf("%w: unknown connector %q", ErrNotFound, connectorName)
+		}
+		return 0, fmt.Errorf("refresh: load connector: %w", err)
+	}
+	if row.Kind != connectorKindMCP {
+		return 0, fmt.Errorf("%w: %q is not an MCP connector", ErrInvalidInput, connectorName)
+	}
+	endpoint := mcpEndpoint(row.Config)
+	if endpoint == "" {
+		return 0, fmt.Errorf("%w: connector has no endpoint", ErrInvalidInput)
+	}
+
+	bearer := s.resolveSecret(ctx, orgID, connectorName)
+	client := connectors.NewMCPClient(connectors.MCPClientParams{HTTP: s.egress, Endpoint: endpoint, Bearer: bearer, ClientVersion: s.clientVer})
+	if err := client.Initialize(ctx); err != nil {
+		return 0, fmt.Errorf("%w: %v", ErrConnectorUnavailable, err)
+	}
+	remote, err := client.ListTools(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %v", ErrConnectorUnavailable, err)
+	}
+
+	rowsToCache := boundTools(remote)
+	err = pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if rErr := s.toolsStore.ReplaceForConnector(ctx, tx, orgID, connectorName, rowsToCache); rErr != nil {
+			return rErr
+		}
+		s.audit.Record(ctx, tx, AuditEntry{
+			OrgID: orgID, UserSub: userSub, Action: auditActionConnectorToolsRefresh,
+			ResourceType: AuditResourceConnectorConfig, ResourceID: row.ID,
+			Metadata: marshalAudit(map[string]any{"connector": connectorName, "tools": len(rowsToCache)}),
+		})
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("refresh: cache tools: %w", err)
+	}
+	return len(rowsToCache), nil
+}
+
 // ---- Face 2: the assistant merge --------------------------------------
 
 // ToolsFor returns the ENABLED connectors' tools for a caller, namespaced and
-// MinRole-floored at admin, ready to merge into the per-request registry. A
-// connectors_config read error is returned so buildRegistry can fail closed
-// (mount zero connector tools); a single connector whose BuildTools errors is
-// logged and skipped. Returns ONLY connector tools (never internal/agentic ones).
+// MinRole-floored at admin. A connectors_config read error is returned so
+// buildRegistry can fail closed; one bad connector is logged + skipped.
 func (s *ConnectorService) ToolsFor(ctx context.Context, c connectors.Caller) ([]agentic.Tool, error) {
-	var rows []models.ConnectorConfig
+	var (
+		rows  []models.ConnectorConfig
+		cache map[string][]connectors.ToolDef
+	)
 	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		r, qErr := s.store.ListByOrg(ctx, tx, c.OrgID)
 		if qErr != nil {
 			return qErr
 		}
 		rows = r
+		cache = make(map[string][]connectors.ToolDef)
+		for _, row := range rows {
+			if row.Enabled && row.Kind == connectorKindMCP {
+				tools, tErr := s.toolsStore.ListByConnector(ctx, tx, c.OrgID, row.ConnectorName)
+				if tErr != nil {
+					return tErr
+				}
+				cache[row.ConnectorName] = toToolDefs(tools)
+			}
+		}
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("resolve enabled connectors: %w", err)
 	}
 
-	enabled := make(map[string]bool, len(rows))
-	for _, r := range rows {
-		if r.Enabled {
-			enabled[r.ConnectorName] = true
-		}
-	}
-
 	var out []agentic.Tool
-	for _, name := range s.order {
-		if !enabled[name] {
-			continue // default-OFF / disabled
-		}
-		conn := s.catalog[name]
-		tools, bErr := conn.BuildTools(ctx, c)
-		if bErr != nil {
-			// One bad connector must not take down the whole leg.
-			s.logger.WarnContext(ctx, "connector BuildTools failed; skipping connector",
-				slog.String("connector", name), slog.Any("error", bErr))
+	for _, row := range rows {
+		if !row.Enabled {
 			continue
 		}
-		for _, t := range tools {
-			// Defense-in-depth for the connector seam (3b-ii external connectors):
-			// a tool with a nil executor or an empty/illegal name must never be
-			// mounted (it would panic on invocation / advertise a junk name).
-			if t.Executor == nil {
-				s.logger.WarnContext(ctx, "connector tool has a nil executor; dropping",
-					slog.String("connector", name), slog.String("tool", t.Spec.Name))
-				continue
-			}
-			if t.Spec.Name == "" {
-				s.logger.WarnContext(ctx, "connector tool has an empty name; dropping",
-					slog.String("connector", name))
-				continue
-			}
-			namespaced := connectors.NamespaceToolName(name, t.Spec.Name)
-			if !connectors.ValidToolName(namespaced) {
-				s.logger.WarnContext(ctx, "connector tool name invalid after namespacing; dropping",
-					slog.String("connector", name), slog.String("tool", t.Spec.Name))
-				continue
-			}
-			t.Spec.Name = namespaced
-			t.MinRole = floorConnectorMinRole(t.MinRole)
-			out = append(out, t)
+		conn := s.connectorForRow(row, cache[row.ConnectorName])
+		if conn == nil {
+			continue // orphan builtin row / unknown kind
 		}
+		tools, bErr := conn.BuildTools(ctx, c)
+		if bErr != nil {
+			s.logger.WarnContext(ctx, "connector BuildTools failed; skipping connector",
+				slog.String("connector", row.ConnectorName), slog.Any("error", bErr))
+			continue
+		}
+		out = append(out, s.namespaceAndFloor(ctx, row.ConnectorName, tools)...)
 	}
 	return out, nil
 }
 
+// connectorForRow returns the Connector to invoke for an enabled row: the catalog
+// built-in, or a freshly-hydrated mcp connector (endpoint + cached tools + secret
+// + per-(org,endpoint) breaker). Returns nil for an orphan/unknown row.
+func (s *ConnectorService) connectorForRow(row models.ConnectorConfig, cached []connectors.ToolDef) connectors.Connector {
+	if row.Kind == connectorKindMCP {
+		endpoint := mcpEndpoint(row.Config)
+		if endpoint == "" || len(cached) == 0 {
+			return nil // not yet refreshed / no endpoint → nothing to mount
+		}
+		return connectors.NewMCPConnector(connectors.MCPConnectorParams{
+			Name: row.ConnectorName, Endpoint: endpoint, CachedTools: cached,
+			Secret: s.secret, HTTP: s.egress, Breaker: s.breakers.Get(breakerKey(row.OrgID, endpoint)),
+			ClientVersion: s.clientVer,
+		})
+	}
+	return s.catalog[row.ConnectorName] // built-in (nil if orphan)
+}
+
+// namespaceAndFloor applies the connector tool guards: drop nil-executor/empty/
+// invalid names, namespace, floor MinRole to admin.
+func (s *ConnectorService) namespaceAndFloor(ctx context.Context, name string, tools []agentic.Tool) []agentic.Tool {
+	out := make([]agentic.Tool, 0, len(tools))
+	for _, t := range tools {
+		if t.Executor == nil || t.Spec.Name == "" {
+			s.logger.WarnContext(ctx, "connector tool has a nil executor or empty name; dropping",
+				slog.String("connector", name), slog.String("tool", t.Spec.Name))
+			continue
+		}
+		namespaced := connectors.NamespaceToolName(name, t.Spec.Name)
+		if !connectors.ValidToolName(namespaced) {
+			s.logger.WarnContext(ctx, "connector tool name invalid after namespacing; dropping",
+				slog.String("connector", name), slog.String("tool", t.Spec.Name))
+			continue
+		}
+		t.Spec.Name = namespaced
+		t.MinRole = floorConnectorMinRole(t.MinRole)
+		out = append(out, t)
+	}
+	return out
+}
+
 // ---- helpers -----------------------------------------------------------
 
+func (s *ConnectorService) resolveSecret(ctx context.Context, orgID uuid.UUID, name string) string {
+	if s.secret == nil {
+		return ""
+	}
+	if v, err := s.secret.ResolveConnectorSecret(ctx, orgID, name); err == nil {
+		return v
+	}
+	return ""
+}
+
+func breakerKey(orgID uuid.UUID, endpoint string) string { return orgID.String() + "|" + endpoint }
+
 // floorConnectorMinRole raises a connector tool's MinRole to admin when it
-// declares anything lower (or an unknown/empty role). A connector tool is never
-// available below admin in 3b (BuildOS cannot vouch for a connector's effects).
+// declares anything lower (or an unknown/empty role).
 func floorConnectorMinRole(declared string) string {
 	if authz.RoleRank(declared) < authz.RoleRank(authz.RoleAdmin) {
 		return authz.RoleAdmin
@@ -305,9 +487,82 @@ func floorConnectorMinRole(declared string) string {
 	return declared
 }
 
-// validateConnectorConfig enforces that the config is a JSON OBJECT (or empty),
-// returning the normalized raw bytes. 3b-i stores but does not interpret connector
-// config (forward-compat for 3b-ii), so this is just the shared object check.
-func validateConnectorConfig(raw json.RawMessage) ([]byte, error) {
-	return validateConfigObject(raw)
+// validateConnectorConfig enforces a JSON-object config (built-in path).
+func validateConnectorConfig(raw json.RawMessage) ([]byte, error) { return validateConfigObject(raw) }
+
+// validateMCPEndpoint extracts + validates config.endpoint as an https URL whose
+// host is not a literal blocked IP (best-effort; the dialer is the real guard).
+func validateMCPEndpoint(raw json.RawMessage) (string, error) {
+	var probe struct {
+		Endpoint string `json:"endpoint"`
+	}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &probe)
+	}
+	u, err := url.Parse(probe.Endpoint)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return "", fmt.Errorf("%w: config.endpoint must be an https URL", ErrInvalidInput)
+	}
+	if ip := net.ParseIP(u.Hostname()); ip != nil && connectors.IsBlockedIP(ip) {
+		return "", fmt.Errorf("%w: endpoint host is in a blocked (private/metadata) range", ErrInvalidInput)
+	}
+	return u.String(), nil
+}
+
+// mcpEndpoint reads config.endpoint ("" when absent).
+func mcpEndpoint(raw json.RawMessage) string {
+	var probe struct {
+		Endpoint string `json:"endpoint"`
+	}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &probe)
+	}
+	return probe.Endpoint
+}
+
+// boundTools clamps the attacker-influenced refreshed metadata: ≤ N tools, valid
+// names, truncated descriptions, object-only bounded schemas.
+func boundTools(remote []connectors.ToolDef) []store.ConnectorToolRow {
+	out := make([]store.ConnectorToolRow, 0, len(remote))
+	for _, t := range remote {
+		if len(out) >= maxRefreshTools {
+			break
+		}
+		if t.Name == "" || !connectors.ValidToolName(t.Name) {
+			continue // unusable remote name; skip
+		}
+		desc := t.Description
+		if len(desc) > maxToolDescBytes {
+			desc = desc[:maxToolDescBytes]
+		}
+		schema := []byte(t.InputSchema)
+		if len(schema) == 0 || len(schema) > maxToolSchemaBytes || !json.Valid(schema) || !isJSONObject(schema) {
+			schema = []byte("{}")
+		}
+		out = append(out, store.ConnectorToolRow{ToolName: t.Name, Description: desc, InputSchema: schema})
+	}
+	return out
+}
+
+func toToolDefs(rows []models.ConnectorTool) []connectors.ToolDef {
+	out := make([]connectors.ToolDef, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, connectors.ToolDef{Name: r.ToolName, Description: r.Description, InputSchema: r.InputSchema})
+	}
+	return out
+}
+
+// isJSONObject reports whether raw is a JSON object (first non-space byte '{').
+func isJSONObject(raw []byte) bool {
+	for _, b := range raw {
+		switch b {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '{':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
 }

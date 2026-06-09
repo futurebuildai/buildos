@@ -297,6 +297,20 @@ func (s *VaultService) ResendKey(ctx context.Context, orgID string) (string, err
 	return s.resolveActiveKey(ctx, orgID, ProviderResend)
 }
 
+// connectorProviderPrefix namespaces a connector instance's credential in the
+// vault as "connector:<name>", so it can never collide with the bare AI/email
+// providers (anthropic/resend) — the resolvers above look up only the bare names.
+const connectorProviderPrefix = "connector:"
+
+// ResolveConnectorSecret implements connectors.SecretResolver (Phase 3b-ii). It
+// returns the cleartext credential for an MCP connector instance, or "" when none
+// is configured / on any decrypt failure (SOFT-FAIL — the MCP call then runs
+// unauthenticated and soft-fails on a 401). The secret never reaches the agentic
+// leaf or the model.
+func (s *VaultService) ResolveConnectorSecret(ctx context.Context, orgID uuid.UUID, connectorName string) (string, error) {
+	return s.resolveActiveKey(ctx, orgID.String(), connectorProviderPrefix+connectorName)
+}
+
 // resolveActiveKey is the shared backing for AnthropicKey + ResendKey.
 // It parses orgID, looks up the active credential for the provider, and
 // decrypts it. Every failure mode that means "no usable key" SOFT-FAILS

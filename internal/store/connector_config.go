@@ -28,30 +28,38 @@ func NewConnectorConfigStore() *ConnectorConfigStore { return &ConnectorConfigSt
 type UpsertConnectorConfigParams struct {
 	OrgID         uuid.UUID
 	ConnectorName string
+	Kind          string // "" => keep existing on conflict / 'builtin' on insert
 	Enabled       bool
 	Config        []byte
 	UpdatedBy     string
 }
 
 // Upsert writes the row for an (org_id, connector_name) pair, inserting or (on
-// the UNIQUE conflict) fully replacing enabled + config. Returns the written row.
+// the UNIQUE conflict) fully replacing kind + enabled + config. Returns the
+// written row. An empty Kind defaults to 'builtin' on insert and is preserved on
+// conflict (COALESCE keeps the existing kind).
 func (s *ConnectorConfigStore) Upsert(ctx context.Context, tx pgx.Tx, p UpsertConnectorConfigParams) (models.ConnectorConfig, error) {
 	cfg := p.Config
 	if cfg == nil {
 		cfg = []byte("{}")
 	}
+	kind := p.Kind
+	if kind == "" {
+		kind = "builtin"
+	}
 	var c models.ConnectorConfig
 	err := tx.QueryRow(ctx, `
-		INSERT INTO connectors_config (org_id, connector_name, enabled, config, updated_by)
-		VALUES ($1, $2, $3, $4::jsonb, $5)
+		INSERT INTO connectors_config (org_id, connector_name, kind, enabled, config, updated_by)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6)
 		ON CONFLICT (org_id, connector_name) DO UPDATE SET
+			kind       = EXCLUDED.kind,
 			enabled    = EXCLUDED.enabled,
 			config     = EXCLUDED.config,
 			updated_by = EXCLUDED.updated_by,
 			updated_at = now()
-		RETURNING id, org_id, connector_name, enabled, config, updated_by, created_at, updated_at`,
-		p.OrgID, p.ConnectorName, p.Enabled, cfg, p.UpdatedBy,
-	).Scan(&c.ID, &c.OrgID, &c.ConnectorName, &c.Enabled, &c.Config, &c.UpdatedBy, &c.CreatedAt, &c.UpdatedAt)
+		RETURNING id, org_id, connector_name, kind, enabled, config, updated_by, created_at, updated_at`,
+		p.OrgID, p.ConnectorName, kind, p.Enabled, cfg, p.UpdatedBy,
+	).Scan(&c.ID, &c.OrgID, &c.ConnectorName, &c.Kind, &c.Enabled, &c.Config, &c.UpdatedBy, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return models.ConnectorConfig{}, fmt.Errorf("upsert connector config: %w", err)
 	}
@@ -63,11 +71,11 @@ func (s *ConnectorConfigStore) Upsert(ctx context.Context, tx pgx.Tx, p UpsertCo
 func (s *ConnectorConfigStore) GetByName(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, connectorName string) (models.ConnectorConfig, error) {
 	var c models.ConnectorConfig
 	err := tx.QueryRow(ctx, `
-		SELECT id, org_id, connector_name, enabled, config, updated_by, created_at, updated_at
+		SELECT id, org_id, connector_name, kind, enabled, config, updated_by, created_at, updated_at
 		FROM connectors_config
 		WHERE org_id = $1 AND connector_name = $2`,
 		orgID, connectorName,
-	).Scan(&c.ID, &c.OrgID, &c.ConnectorName, &c.Enabled, &c.Config, &c.UpdatedBy, &c.CreatedAt, &c.UpdatedAt)
+	).Scan(&c.ID, &c.OrgID, &c.ConnectorName, &c.Kind, &c.Enabled, &c.Config, &c.UpdatedBy, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return models.ConnectorConfig{}, ErrNotFound
@@ -80,7 +88,7 @@ func (s *ConnectorConfigStore) GetByName(ctx context.Context, tx pgx.Tx, orgID u
 // ListByOrg returns every connector row for an org, ordered by connector_name.
 func (s *ConnectorConfigStore) ListByOrg(ctx context.Context, tx pgx.Tx, orgID uuid.UUID) ([]models.ConnectorConfig, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT id, org_id, connector_name, enabled, config, updated_by, created_at, updated_at
+		SELECT id, org_id, connector_name, kind, enabled, config, updated_by, created_at, updated_at
 		FROM connectors_config
 		WHERE org_id = $1
 		ORDER BY connector_name`, orgID)
@@ -92,7 +100,7 @@ func (s *ConnectorConfigStore) ListByOrg(ctx context.Context, tx pgx.Tx, orgID u
 	var out []models.ConnectorConfig
 	for rows.Next() {
 		var c models.ConnectorConfig
-		if err := rows.Scan(&c.ID, &c.OrgID, &c.ConnectorName, &c.Enabled, &c.Config, &c.UpdatedBy, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.OrgID, &c.ConnectorName, &c.Kind, &c.Enabled, &c.Config, &c.UpdatedBy, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan connector config: %w", err)
 		}
 		out = append(out, c)

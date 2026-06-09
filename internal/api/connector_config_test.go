@@ -22,11 +22,16 @@ type mockConnectorService struct {
 	setErr     error
 	resetErr   error
 
-	lastListOrgID uuid.UUID
-	lastSetInput  service.SetConnectorInput
-	lastResetOrg  uuid.UUID
-	lastResetName string
-	lastResetSub  string
+	refreshCount int
+	refreshErr   error
+
+	lastListOrgID   uuid.UUID
+	lastSetInput    service.SetConnectorInput
+	lastResetOrg    uuid.UUID
+	lastResetName   string
+	lastResetSub    string
+	lastRefreshOrg  uuid.UUID
+	lastRefreshName string
 }
 
 func (m *mockConnectorService) ListEffective(_ context.Context, orgID uuid.UUID) ([]service.EffectiveConnector, error) {
@@ -40,6 +45,11 @@ func (m *mockConnectorService) Set(_ context.Context, in service.SetConnectorInp
 func (m *mockConnectorService) Reset(_ context.Context, orgID uuid.UUID, name, userSub string) error {
 	m.lastResetOrg, m.lastResetName, m.lastResetSub = orgID, name, userSub
 	return m.resetErr
+}
+
+func (m *mockConnectorService) RefreshTools(_ context.Context, orgID uuid.UUID, name, userSub string) (int, error) {
+	m.lastRefreshOrg, m.lastRefreshName = orgID, name
+	return m.refreshCount, m.refreshErr
 }
 
 func TestConnector_List_OK(t *testing.T) {
@@ -126,6 +136,48 @@ func TestConnector_Reset_Idempotent204(t *testing.T) {
 	}
 	if svc.lastResetName != "reference" || svc.lastResetOrg.String() != testOrgID || svc.lastResetSub != "test-sub" {
 		t.Errorf("Reset args = (%s, %s, %s)", svc.lastResetOrg, svc.lastResetName, svc.lastResetSub)
+	}
+}
+
+func TestConnector_Refresh_OK(t *testing.T) {
+	svc := &mockConnectorService{refreshCount: 5}
+	h := NewConnectorHandler(svc)
+	r := buildRequest(t, "POST", "/api/v1/admin/connectors/acme/refresh", testOrgID,
+		map[string]string{"connector": "acme"}, nil)
+	w := httptest.NewRecorder()
+	h.Refresh(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, body=%s", w.Code, w.Body.String())
+	}
+	if svc.lastRefreshName != "acme" || svc.lastRefreshOrg.String() != testOrgID {
+		t.Errorf("Refresh args = (%s, %s)", svc.lastRefreshOrg, svc.lastRefreshName)
+	}
+	if !strings.Contains(w.Body.String(), "5") {
+		t.Errorf("body should report the tools_count: %s", w.Body.String())
+	}
+}
+
+func TestConnector_Refresh_Unavailable_502(t *testing.T) {
+	svc := &mockConnectorService{refreshErr: service.ErrConnectorUnavailable}
+	h := NewConnectorHandler(svc)
+	r := buildRequest(t, "POST", "/api/v1/admin/connectors/acme/refresh", testOrgID,
+		map[string]string{"connector": "acme"}, nil)
+	w := httptest.NewRecorder()
+	h.Refresh(w, r)
+	if w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), "UPSTREAM_ERROR") {
+		t.Fatalf("status=%d body=%s, want 502 UPSTREAM_ERROR", w.Code, w.Body.String())
+	}
+}
+
+func TestConnector_Refresh_NotMCP_400(t *testing.T) {
+	svc := &mockConnectorService{refreshErr: service.ErrInvalidInput}
+	h := NewConnectorHandler(svc)
+	r := buildRequest(t, "POST", "/api/v1/admin/connectors/reference/refresh", testOrgID,
+		map[string]string{"connector": "reference"}, nil)
+	w := httptest.NewRecorder()
+	h.Refresh(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400, body=%s", w.Code, w.Body.String())
 	}
 }
 

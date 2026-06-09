@@ -20,6 +20,7 @@ import (
 	"github.com/futurebuildai/buildos/internal/api/middleware"
 	"github.com/futurebuildai/buildos/internal/auth"
 	"github.com/futurebuildai/buildos/internal/config"
+	"github.com/futurebuildai/buildos/internal/connectors"
 	"github.com/futurebuildai/buildos/internal/cryptobox"
 	"github.com/futurebuildai/buildos/internal/mailer"
 	"github.com/futurebuildai/buildos/internal/obs"
@@ -201,9 +202,15 @@ func run(logger *slog.Logger) error {
 	// Connector registry (Phase 3b). DB-backed per-org enable/config for the
 	// integration connectors (default-OFF). Two faces: the admin CRUD face wires
 	// into the router (/api/v1/admin/connectors), and the ToolsFor face injects
-	// into the assistant so enabled connector tools mount into chat. Always
-	// constructed (pool + store + in-code built-in catalog), so never nil.
-	connectorService := service.NewConnectorService(pool, store.NewConnectorConfigStore(), auditService, logger)
+	// into the assistant so enabled connector tools mount into chat. The vault
+	// supplies per-org MCP credentials (Phase 3b-ii); pass a nil SecretResolver
+	// (typed-nil-safe) when the vault is unconfigured so MCP calls run
+	// unauthenticated rather than dereferencing a nil VaultService.
+	var connectorSecret connectors.SecretResolver
+	if vaultService != nil {
+		connectorSecret = vaultService
+	}
+	connectorService := service.NewConnectorService(pool, store.NewConnectorConfigStore(), store.NewConnectorToolsStore(), connectorSecret, auditService, logger)
 
 	// Conversational ERP assistant (Phase 2c). Typed-nil-safe: a nil
 	// aiClient (vault/AI unconfigured) leaves the service's AI seam unset

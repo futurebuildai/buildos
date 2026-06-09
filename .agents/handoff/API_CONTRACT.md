@@ -750,14 +750,22 @@ is the existence authority (unknown connector ⇒ 404). Config is non-secret —
 
 ### PUT /api/v1/admin/connectors/{connector}
 - **Auth:** JWT (admin+)
-- **Body:** `{ enabled: bool, config?: object }` (`config` must be a JSON object; 3b-i stores but does not interpret it).
+- **Body:** `{ enabled: bool, kind?: "mcp", config?: object }`.
+  - A **built-in** name (e.g. `reference`) toggles enable/config; `config` must be a JSON object.
+  - **Any other name is an MCP server INSTANCE** (Phase 3b-ii): `kind` must be `mcp` (or omitted), the name must match `^[a-z0-9][a-z0-9_-]{1,40}$`, and `config` must carry `{"endpoint":"https://…"}` (https only; a host that is a literal private/metadata IP is rejected — the dial-time SSRF guard is authoritative). The instance is created or updated. Set its credential separately via `PUT /api/v1/integrations/connector:<name>`.
 - **Response:** `200 { data: { connector: ConnectorConfig } }`
-- **Errors:** `404 NOT_FOUND` (connector unknown to the catalog), `400 VALIDATION_ERROR` (config not an object).
+- **Errors:** `400 VALIDATION_ERROR` (bad config / endpoint / instance name, or `kind=mcp` on a built-in).
+
+### POST /api/v1/admin/connectors/{connector}/refresh
+- **Auth:** JWT (admin+) · **MCP instances only.**
+- **Purpose:** Connect to the MCP server (`initialize` + `tools/list`), bound the (untrusted) tool metadata, and replace the cached tool set the assistant mounts.
+- **Response:** `200 { data: { connector, tools_count } }`
+- **Errors:** `404 NOT_FOUND` (unknown connector), `400 VALIDATION_ERROR` (not an MCP connector), `502 UPSTREAM_ERROR` (server unreachable / SSRF-blocked / malformed).
 
 ### DELETE /api/v1/admin/connectors/{connector}
 - **Auth:** JWT (admin+)
-- **Response:** `204 No Content` — **idempotent** reset to default-OFF.
-- **Errors:** `404 NOT_FOUND` (connector unknown to the catalog).
+- **Response:** `204 No Content` — **idempotent** reset to default-OFF (clears an MCP instance's cached tools).
+- **Errors:** `404 NOT_FOUND` (connector neither a built-in nor an existing instance).
 
 ### EffectiveConnector Object
 ```json

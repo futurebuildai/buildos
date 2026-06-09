@@ -86,6 +86,7 @@ This file is the single source of truth for the project's technology choices. Al
 - **Native Identity:** BuildOS handles all authentication flows itself (claim, login, refresh, logout, password reset). It mints and validates its own RS256 JWTs and enforces local RBAC. No external identity provider.
 - **Transactional Email:** Resend — password-reset delivery (`internal/mailer`). API key set in-app via the encrypted integrations vault; absent key soft-fails.
 - **Standalone Deployment:** Each customer runs their own forked BuildOS repo as a self-contained spoke. No external proprietary service dependency.
+- **MCP connectors (Phase 3b-ii):** the MCP Streamable-HTTP client is **hand-rolled** (JSON-RPC 2.0 + a minimal SSE reader over `net/http`) in `internal/connectors` — **NO new dependency** (no `mcp-go`/SDK). Owner-approved 2026-06-09. All outbound connector egress goes through an SSRF-guarded `http.Client` (https-only + resolve-and-pin private-IP denylist via `net.Dialer.Control` + no redirects).
 - **pgvector:** Used for AI-powered features (semantic search, document similarity, recommendation). Vectors stored alongside relational data in the same PostgreSQL instance.
 - **Asynq:** Redis-backed task queue for background jobs (report generation, notification delivery, AI inference pipelines). No separate message broker needed.
 - **Flutter Scope:** Mobile app covers field-only surfaces. All administrative, planning, and management workflows are web-only.

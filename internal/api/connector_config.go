@@ -21,6 +21,7 @@ type ConnectorServicer interface {
 	ListEffective(ctx context.Context, orgID uuid.UUID) ([]service.EffectiveConnector, error)
 	Set(ctx context.Context, in service.SetConnectorInput) (models.ConnectorConfig, error)
 	Reset(ctx context.Context, orgID uuid.UUID, connectorName, userSub string) error
+	RefreshTools(ctx context.Context, orgID uuid.UUID, connectorName, userSub string) (int, error)
 }
 
 // ConnectorHandler exposes /api/v1/admin/connectors — the admin-gated integration
@@ -38,9 +39,12 @@ func NewConnectorHandler(svc ConnectorServicer) *ConnectorHandler {
 }
 
 // setConnectorRequest is the PUT body. Full-document semantics: enabled is
-// authoritative; an omitted/null config resets to the empty object.
+// authoritative; an omitted/null config resets to the empty object. kind is "" or
+// "mcp" (for an MCP instance); a built-in connector name ignores it. For an MCP
+// instance, config carries {"endpoint":"https://…"}.
 type setConnectorRequest struct {
 	Enabled bool            `json:"enabled"`
+	Kind    string          `json:"kind,omitempty"`
 	Config  json.RawMessage `json:"config,omitempty"`
 }
 
@@ -85,6 +89,7 @@ func (h *ConnectorHandler) Set(w http.ResponseWriter, r *http.Request) {
 	conn, err := h.svc.Set(r.Context(), service.SetConnectorInput{
 		OrgID:         orgID,
 		ConnectorName: connector,
+		Kind:          body.Kind,
 		Enabled:       body.Enabled,
 		Config:        body.Config,
 		UserSub:       claims.Sub,
@@ -94,6 +99,27 @@ func (h *ConnectorHandler) Set(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, r, http.StatusOK, map[string]any{"connector": conn})
+}
+
+// ---------- POST /api/v1/admin/connectors/{connector}/refresh ----------
+
+// Refresh connects to an MCP connector's server, lists its tools, and replaces
+// the cached set. 404 if the connector is unknown; 400 if it is not an MCP
+// connector; 502 if the server is unreachable / SSRF-blocked / malformed.
+func (h *ConnectorHandler) Refresh(w http.ResponseWriter, r *http.Request) {
+	orgID, ok := callerOrgIDFromClaims(w, r)
+	if !ok {
+		return
+	}
+	connector := chi.URLParam(r, "connector")
+	claims := mw.MustClaimsFromContext(r.Context())
+
+	count, err := h.svc.RefreshTools(r.Context(), orgID, connector, claims.Sub)
+	if err != nil {
+		writeConnectorError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, map[string]any{"connector": connector, "tools_count": count})
 }
 
 // ---------- DELETE /api/v1/admin/connectors/{connector} ----------
@@ -126,6 +152,10 @@ func writeConnectorError(w http.ResponseWriter, r *http.Request, err error) {
 		writeErrorResponse(w, r, http.StatusNotFound, "NOT_FOUND", err.Error())
 	case errors.Is(err, service.ErrInvalidInput):
 		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", err.Error())
+	case errors.Is(err, service.ErrConnectorUnavailable):
+		// An MCP server is unreachable / SSRF-blocked / malformed — a connector
+		// outage, not a server fault. 502 (not 500) so the operator retries.
+		writeErrorResponse(w, r, http.StatusBadGateway, "UPSTREAM_ERROR", "the connector's server is unreachable or returned an invalid response")
 	default:
 		writeErrorResponse(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "internal error")
 	}
@@ -140,5 +170,6 @@ func MountConnectorRoutes(r chi.Router, h *ConnectorHandler) {
 		r.Get("/", h.List)
 		r.Put("/{connector}", h.Set)
 		r.Delete("/{connector}", h.Reset)
+		r.Post("/{connector}/refresh", h.Refresh)
 	})
 }
