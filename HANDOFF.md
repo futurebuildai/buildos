@@ -257,18 +257,24 @@ govulncheck clean. PRs #9 onward also have CI green at merge time
 
 ## In flight
 
-**Phase 3b-ii — the MCP connector + egress security — is IN FLIGHT on branch `feat/phase-3b-ii-mcp-connector`.**
-The **security-critical `internal/connectors` MCP layer is DONE + fully unit-tested** (commit `7a79b6b`):
-the **SSRF egress guard** (`egress.go` — resolve-and-pin private-IP denylist via a `net.Dialer.Control`
-hook, refuses loopback/metadata/redirects, proven by tests), the hand-rolled **MCP Streamable-HTTP client**
-(`mcpclient.go` — initialize/session/tools-list/tools-call, JSON **and** SSE, full soft-fail matrix), a
-**per-(org,endpoint) circuit breaker** (`breaker.go`), and the **`mcpConnector`** (`mcp.go`). All gates
-green at the checkpoint (`make audit` incl. isolation 1+2+3, `go build` default+prod, `govulncheck`). The
-**remaining work is the service/store/admin-API/migration WIRING** (migration 018 + `connector_tools` cache
-+ `ConnectorService` mcp path + vault `SecretResolver` adapter + refresh endpoint) — it follows the 3b-i
-patterns and is enumerated in the spec's "Build status" section.
-[PHASE_3B_II_MCP_CONNECTOR.md](.agents/handoff/PHASE_3B_II_MCP_CONNECTOR.md). **NOT merged** — resume by
-implementing the remaining layer, then gates → review → merge.
+**Phase 3b-ii — the MCP connector + egress security — is COMPLETE on branch `feat/phase-3b-ii-mcp-connector`
+(4 commits: `7a79b6b` core, `29c61f1` wiring, `2f60deb` review fixes, + the docs flip), all local gates
+green + max-effort security review clean — NOT merged, ready for the owner merge decision.** An operator
+can point an `mcp` connector instance at an external MCP server (Streamable HTTP); its tools appear
+(namespaced, admin-floored, default-OFF, fail-closed) in the chat assistant. Built **no-new-dependency**:
+the **SSRF egress guard** (`egress.go` — https-only + resolve-and-pin private-IP denylist via a
+`net.Dialer.Control` hook validating the actual dialed IP, refuses loopback/metadata/redirects), the
+hand-rolled **MCP Streamable-HTTP client** (`mcpclient.go` — initialize/session/tools-list/tools-call, JSON
+**and** SSE, every failure soft), a **per-(org,endpoint) breaker** (`breaker.go`), the **`mcpConnector`**
+(`mcp.go`), **migration 018** (`connectors_config.kind` + the `connector_tools` cache), the
+`ConnectorService` mcp path (Set instances / `RefreshTools` / `ToolsFor`), the vault `SecretResolver`
+(provider `connector:<name>`), and the admin API (`PUT` kind / `POST .../refresh`). **Review:** a 61-agent
+security-focused `/code-review` found **0 critical/high and NO SSRF/egress bypass** → 6 fixes in `2f60deb`
+(blind-SSRF info-leak oracle, two attacker-triggerable 500s [dup-tool-name / UTF-8 truncation],
+stale-cache-on-endpoint-change, JSON-RPC id symmetry). **Gates green:** `make audit` ALL PASSED (isolation
+1+2+3, migration-018 lint, test+test-prod, bench) + `govulncheck` clean (default+prod) + full
+`make test-integration` exit 0 (incl. an **end-to-end SSRF-block** test). Spec:
+[PHASE_3B_II_MCP_CONNECTOR.md](.agents/handoff/PHASE_3B_II_MCP_CONNECTOR.md).
 
 **Phase 3b-i (connector framework) is COMPLETE — merged + pushed to `origin/main` (HEAD `608948c`).** The
 connector invocation seam was pre-hardened for 3b-ii in 3b-i (panic→soft-IsError recovery, nil-executor skip).

@@ -6,19 +6,13 @@
 
 ---
 
-## Build status (resume here)
+## Build status — COMPLETE (awaiting merge)
 
-**Branch `feat/phase-3b-ii-mcp-connector`. The `internal/connectors` MCP layer is DONE + fully unit-tested + isolation-clean (commit `7a79b6b`).** The remaining work is the service/store/admin-API/migration WIRING (follows the 3b-i patterns).
+**Branch `feat/phase-3b-ii-mcp-connector` — fully implemented, max-effort security-reviewed (0 critical/high, no SSRF bypass), all local gates green. Commits: `7a79b6b` (connectors core) + `29c61f1` (service/store/admin wiring) + `2f60deb` (review fixes). NOT merged.**
 
-- ✅ **DONE (committed):** `egress.go` (§3 SSRF guard), `mcpclient.go` (§4 Streamable-HTTP client), `breaker.go` (§5 per-(org,endpoint) breaker + registry), `mcp.go` (§5 `mcpConnector`), `connector.go` ports (`SecretResolver`, `ToolDef`). All with tests (egress IP table + loopback-refusal + redirect-refusal; MCP client json+sse + full soft-fail matrix; breaker state machine; connector executor happy/secret/soft-fail/breaker-trip).
-- ⬜ **REMAINING (the integration layer):**
-  1. **Migration 018** (§6): `connectors_config += kind`; new `connector_tools` table. + `make lint-migrations`.
-  2. **Model + store** (§1): `ConnectorConfig.Kind`; new `ConnectorTool` model; `ConnectorToolsStore` (replace-all + list per (org,connector)); `connector_config.go` store carries `kind`.
-  3. **Service** (§7): `ConnectorService` gains the egress client + `BreakerRegistry` + a `connectors.SecretResolver` + the tools store; `Set` accepts mcp instances (kind=mcp, validate https endpoint + instance-name charset); `RefreshTools(ctx,org,name)` (initialize+tools/list → bound → replace cache + audit `connector.tools.refreshed`); `ToolsFor` builds an `mcpConnector` per enabled mcp instance hydrated from the cache; `ListEffective` surfaces kind/endpoint/tools_count/fetched_at.
-  4. **Vault adapter** (§1): `VaultService.ResolveConnectorSecret(ctx,org,"<name>")` over provider `connector:<name>`; reserve the `connector:`/`anthropic`/`resend` names from shadowing.
-  5. **Admin API** (§7): `PUT` gains `kind`+`config`; new `POST /api/v1/admin/connectors/{connector}/refresh`; DTO surfaces kind/tools_count.
-  6. **System prompt** (§8): mark connector tool METADATA untrusted; **per-call audit** `connector.tool.called`.
-  7. **cmd/server wiring**; **API_CONTRACT.md** + **TECH_STACK.md** (no-new-dep note); integration tests (httptest stub MCP server, SSRF negatives, refresh→cache→ToolsFor, soft-fail matrix).
+All §1–§9 deliverables landed: the SSRF egress guard, the hand-rolled MCP Streamable-HTTP client (JSON + SSE), the per-(org,endpoint) breaker, the `mcpConnector`, migration 018 + the `connector_tools` cache, the `ConnectorService` mcp path (Set instances / `RefreshTools` / `ToolsFor` / `ListEffective`), the vault `SecretResolver` adapter, the admin API (`PUT` kind / `POST refresh`), the untrusted-metadata system-prompt line, cmd/server wiring, and tests (unit + integration incl. an **end-to-end SSRF block** + the soft-fail matrix). Review fixes in `2f60deb`: model info-leak (blind-SSRF oracle), duplicate-tool-name→500, UTF-8-truncation→500, stale-cache-on-endpoint-change, JSON-RPC id symmetry.
+
+**Deferred (documented, not blocking):** a dedicated per-call `connector.tool.called` audit row (the existing chat audit already records the namespaced tool name in its tool trace); tool-list cache TTL/auto-refresh (operator-driven only); OAuth2/mTLS/multi-header connector auth (single bearer in 3b-ii).
 
 ---
 
