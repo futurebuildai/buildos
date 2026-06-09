@@ -8,7 +8,7 @@ provenance — do not delete.
 
 ## ESC-002 — `RequirePlanTier(pro)` 402-walls every self-minted token (post-Brain stale gate)
 
-- **Status:** OPEN (raised 2026-06-08) — does NOT block Phase 3a; needs an owner decision
+- **Status:** RESOLVED 2026-06-09 (Phase 4 chunk 1) — owner chose **Option 2** (drop the vestigial pro gate). See "Resolution" below.
 - **Raised by:** Claude Code (surfaced by the Phase 3a ultraplan design-critique)
 - **Severity:** Functional (the AI `/api/v1/agents/*` surface is unreachable for all real callers)
 
@@ -61,6 +61,20 @@ separate change from Phase 3a.
 ### What is blocked
 Nothing in Phase 3a. This entry exists so the owner decides the gate's fate
 rather than the harness silently depending on an unreachable endpoint.
+
+### Resolution (2026-06-09, Phase 4 chunk 1 — owner chose Option 2)
+Dropped the vestigial `RequirePlanTier(pro)` gate. Removed all three usages in
+`internal/api/router.go` (the `/api/v1/agents` group, `/api/v1/agents/chat`, and
+`POST .../schedule/recommend-adjustments`) — **role gates (`RequireMinRole`) are
+retained**, only the billing-tier gate is gone. Deleted the now-dead
+`internal/api/middleware/plan.go` + `plan_test.go`. The `plan_tier` claim plumbing
+(`Claims.PlanTier`, the `Mint(..., planTier)` param, the dev-header 4th field,
+`organizations.plan_tier`) is **kept** so a tiering model can return from git
+history without a schema change. Regression guard:
+`TestNewRouter_AgentsSurface_RealTokenNotPlanWalled` mints a REAL RS256 token with
+`plan_tier=""` (the production shape) and asserts the agents surface is reachable
+(not 402) — the prior router tests used the dev-header bypass (defaults
+`plan_tier="enterprise"`), which masked the wall.
 
 ---
 

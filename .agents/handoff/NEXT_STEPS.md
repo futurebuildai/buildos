@@ -108,14 +108,29 @@ no redeploy), MCP connector seam, vault-backed credential UI. In dependency orde
   fixed); cloud ultrareview timed out (infra). Spec: [PHASE_3C_ADMIN_UI.md](./PHASE_3C_ADMIN_UI.md).
   **This completes Phase 3 (3a + 3b + 3c). Next: Phase 4 (P4 below).**
 
-**Adjacent (small, owner-decision): [ESC-002](./ESCALATION_LOG.md#esc-002)** — self-minted tokens carry
-`plan_tier=""` so `RequirePlanTier(pro)` 402-walls `/api/v1/agents/*`. Populate `plan_tier` at mint
-(`internal/service/auth.go:345,521`) or drop the now-billing-less pro gate (`internal/api/router.go`).
+**[ESC-002](./ESCALATION_LOG.md#esc-002) — RESOLVED (Phase 4 chunk 1; owner chose Option 2, drop the gate).**
+Built on `feat/phase-4-esc-002-drop-pro-gate`, awaiting review. Removed `RequirePlanTier(pro)` from
+`/api/v1/agents/*` (kept role gates); the AI surface is reachable for real tokens again. Spec:
+[PHASE_4_ESC_002.md](./PHASE_4_ESC_002.md).
 
 ### P4 — Phase 4: production-readiness for handoff
-Close Flutter field-app gaps (check-in/schedule/equipment), harden operator + field + harness workflows
-end-to-end, onboarding/deploy polish, security review, load/smoke. (Runs partly in parallel with P1–P3;
-absorbs the deprioritized Flutter widget/screen + live-E2E items from the old Tier-1b/Tier-3 lists.)
+A Phase-4 ultraplan (6-agent assessment, 2026-06-09) decomposed the phase + ordered the chunks (grounded in
+the actual code, which made the original "3 missing field screens" framing partly stale):
+1. **ESC-002 · drop the pro gate — BUILT, awaiting review (chunk 1).** Unblocks the `/api/v1/agents/*` AI
+   surface (402-walled for every real token); prerequisite for 4c load/security testing it. Spec above.
+2. **4a · Flutter field — NEXT candidate.** schedule_screen already exists (read-only Gantt); crew check-in
+   already works embedded in daily_log. Real gaps: extract a standalone **check-in** screen + the offline
+   affordance pattern (chunk 4a-i, mobile-only, no backend change), then **equipment** (4a-ii, CROSS-STACK +
+   gated on a product decision: is fleet field-visible? today field sync carries only Tasks+FeedCards and
+   `/fleet` is operator-only, so equipment needs a new field-scoped read endpoint in `internal/api/field.go`).
+   Entry: `mobile/lib/screens/`. Gates: `cd mobile && dart format + flutter analyze + flutter test (+golden)`.
+3. **4b · operator hardening.** Prometheus alerting rules (`prometheus-rules.yml`: 5xx spike, setup-gate
+   over-reject, AI soft-fail rate, DB pool exhaustion) + observability/deploy/recovery runbooks; then
+   error-path UX (Retry-After on 5xx/429, AI circuit-breaker, `cmd/migrate --dry-run`). Config+docs first
+   (no recompile), gateable via `make audit`. Parallel with 4a.
+4. **4c · security + load (FINAL gate).** k6 load harness (`scripts/k6/`, test-only dep — flag vs
+   TECH_STACK.md) + `/security-review` pass (5-layer RBAC matrix, PII scrubbing, SSRF posture, the now-
+   reachable agents-surface authZ). Runs after 4a/4b merge.
 
 ---
 

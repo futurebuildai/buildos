@@ -77,7 +77,7 @@ These mint the credentials the rest of the API requires, so they mount OUTSIDE t
 | HR endpoints | ✓ | ✓ | Read-only | ✗ |
 | Feed endpoints | ✓ | ✓ | ✓ | ✓ |
 | Field endpoints | ✓ | ✓ | ✓ | ✓ |
-| AI agent endpoints (`/agents/*`) | pro plan-tier + role gate per route | | | |
+| AI agent endpoints (`/agents/*`) | role gate per route (no plan-tier gate — ESC-002) | | | |
 
 **SetupGate:** every authenticated request to an org with `onboarding_complete=false` gets `403 SETUP_INCOMPLETE`, except the exempt prefixes `/api/v1/setup`, `/health`, `/ready`, `/metrics`.
 
@@ -578,16 +578,16 @@ ALL monetary fields follow the Composite Currency Pattern:
 
 ## 12. AI Agent Endpoints
 
-Native-AI-backed endpoints. BuildOS calls the Anthropic Messages API directly using the org's own key stored in the encrypted vault (BYOK). Gated by `plan_tier=pro` and up. When no key is configured, or the key is rejected by Anthropic, these endpoints **soft-fail** with `503 SERVICE_UNAVAILABLE` (`AI_UNCONFIGURED`-class) rather than erroring at boot — the server runs without keys.
+Native-AI-backed endpoints. BuildOS calls the Anthropic Messages API directly using the org's own key stored in the encrypted vault (BYOK). Gated by **role only** per route (the former `plan_tier=pro` gate was removed — ESC-002 — post-pivot billing is gone). When no key is configured, or the key is rejected by Anthropic, these endpoints **soft-fail** with `503 SERVICE_UNAVAILABLE` (`AI_UNCONFIGURED`-class) rather than erroring at boot — the server runs without keys.
 
 ### POST /api/v1/agents/daily-briefing
-- **Auth:** JWT (pro plan-tier)
+- **Auth:** JWT (any authenticated role)
 - **Purpose:** Generate a morning briefing for the authenticated caller. Synchronous; the mobile app calls this on launch.
 - **Response:** `200 { data: { briefing: { ... } } }`
 - **Errors:** `503 SERVICE_UNAVAILABLE` (no AI key configured), `429 RATE_LIMITED` (provider throttled), `502 UPSTREAM_ERROR` (provider transient / 5xx).
 
 ### POST /api/v1/projects/{projectID}/schedule/recommend-adjustments
-- **Auth:** JWT (superintendent+, pro plan-tier)
+- **Auth:** JWT (superintendent+)
 - **Purpose:** Ask the AI client to suggest task duration nudges, apply them, and re-run CPM physics so floats/critical-path stay coherent.
 - **Response:** `200 { adjustments, applied_deltas, skipped_rationale_only }`
   - If deltas applied but the CPM re-run was deferred, still returns `200` with the applied deltas (the next `/schedule/recalculate` catches up).

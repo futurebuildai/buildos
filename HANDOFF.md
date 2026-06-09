@@ -259,12 +259,29 @@ govulncheck clean. PRs #9 onward also have CI green at merge time
 
 ## In flight
 
-**Phase 3c — the admin config web UI — is COMPLETE: merged (fast-forward) into local `main` (HEAD
-`11f108d`), built + reviewed via the full ultra-loop (9-agent design critique → 10-agent build → 64-agent
-max review, all findings fixed). See the top "Last shipped" entry for the full record. NOT yet pushed —
-local `main` is 2 commits ahead of `origin/main` (`b7f5e11`); push when ready. The cloud `/code-review ultra`
-failed on an infra 30-min timeout (no findings) and was not retried. This completes Phase 3 (3a config
-registry + 3b connector seam + 3c admin UI). NEXT: Phase 4 (production-readiness).**
+**Phase 4 chunk 1 — ESC-002: drop the vestigial `RequirePlanTier(pro)` gate — is BUILT on branch
+`feat/phase-4-esc-002-drop-pro-gate` (committed, NOT pushed/merged). All local Go gates green; awaiting
+owner review → merge.** Owner-chosen Option 2 (drop the gate). Post-pivot billing is gone (ESC-001), so the
+`pro` tier gate had no backing system and 402-walled the entire `/api/v1/agents/*` AI surface for every real
+self-minted token (`plan_tier=""` ranks as free) — masked in CI only because the dev-header bypass defaults
+to `enterprise`. Removed all three `RequirePlanTier(pro)` usages in `router.go` (agents group, chat,
+recommend-adjustments) **keeping the role gates**; deleted dead `middleware/plan.go`+`plan_test.go`; kept the
+`plan_tier` claim plumbing so tiering can return from git history. New regression guard
+`TestNewRouter_AgentsSurface_RealTokenNotPlanWalled` mints a REAL `plan_tier=""` RS256 token and proves the
+agents surface is reachable (200, not 402). Docs: ESCALATION_LOG resolution + API_CONTRACT §12. Gates:
+`make audit` ALL PASSED + `make lint-isolation` + build/vet clean (default/prod/integration). Spec:
+[PHASE_4_ESC_002.md](.agents/handoff/PHASE_4_ESC_002.md). **This unblocks the AI chat the Phase-3 agents
+govern + is a prerequisite for 4c's load/security testing of that surface.** Built via a Phase-4 ultraplan
+workflow (6-agent assessment + synthesis) that decomposed the phase + recommended this chunk first; the rest
+(4a Flutter field, 4b operator hardening, 4c security+load) follow.
+
+---
+
+**Phase 3c — the admin config web UI — is COMPLETE: merged (fast-forward) + PUSHED to `origin/main`
+(HEAD `adefe14`).** Built + reviewed via the full ultra-loop (9-agent design critique → 10-agent build →
+64-agent max review, all 6 findings fixed). Full record in the top "Last shipped" entry. The cloud
+`/code-review ultra` failed on an infra 30-min timeout (no findings). This completes Phase 3 (3a config
+registry + 3b connector seam + 3c admin UI).
 
 ---
 

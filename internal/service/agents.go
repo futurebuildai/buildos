@@ -114,10 +114,10 @@ type DailyBriefing struct {
 
 // GenerateDailyBriefing assembles the caller's open tasks + recent
 // active feed cards and dispatches the typed daily_briefing Maestro
-// task. Brain owns the prompt template; BuildOS only assembles the
-// structured context. The caller's plan tier is enforced by middleware
-// (RequirePlanTier), not here — keeping the service free of HTTP
-// concerns.
+// task. BuildOS assembles the structured context and owns the prompt.
+// Role-based access is enforced at the route (RequireMinRole), not here
+// — keeping the service free of HTTP concerns. (The pro-tier plan gate
+// was removed in ESC-002.)
 //
 // On success, writes an audit row recording the invocation. The audit
 // write happens AFTER the AI call so failed invocations don't leave a

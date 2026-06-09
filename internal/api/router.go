@@ -275,13 +275,14 @@ func NewRouter(cfg RouterConfig) http.Handler {
 					r.Get("/gantt", schedule.Gantt)
 
 					// Maestro-driven duration adjustments. Same role
-					// gate as /recalculate (CPM-affecting); plus
-					// pro-tier plan gate (consumes metered AI tokens).
+					// gate as /recalculate (CPM-affecting). The pro-tier
+					// plan gate was removed (ESC-002): post-pivot billing
+					// is gone (ESC-001), so the gate had no backing system
+					// and 402-walled every real self-minted token.
 					// Mounts only when AgentsService is wired —
 					// matches the conditional under /api/v1/agents.
 					if agents != nil {
 						r.With(mw.RequireMinRole(mw.RoleSuperintendent)).
-							With(mw.RequirePlanTier(mw.PlanTierPro)).
 							Post("/recommend-adjustments", agents.RecommendScheduleAdjustments)
 					}
 				})
@@ -389,13 +390,16 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		})
 
 		// --------------------------------------------------------
-		// 3.6 AI Agents — native-AI-backed endpoints. Pro tier and up.
-		//      Each agent is a separate route so we can gate them
-		//      individually if pricing tiers diverge.
+		// 3.6 AI Agents — native-AI-backed endpoints. Authenticated
+		//      (any role; daily-briefing is for the caller themselves).
+		//      The pro-tier plan gate was removed (ESC-002): post-pivot
+		//      billing is gone (ESC-001), so the gate had no backing
+		//      system and 402-walled every real self-minted token. Each
+		//      agent is a separate route so per-route gates can diverge
+		//      later if a tiering model returns.
 		// --------------------------------------------------------
 		if agents != nil {
 			r.Route("/api/v1/agents", func(r chi.Router) {
-				r.Use(mw.RequirePlanTier(mw.PlanTierPro))
 				r.Post("/daily-briefing", agents.DailyBriefing)
 			})
 		}
@@ -406,15 +410,14 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		// independently. The bounded Claude tool-use loop runs read-only
 		// tools scoped to the caller's org+role.
 		//
-		// Route gates: RequireMinRole(superintendent) — field_worker has no
-		// conversational surface in 2c — plus RequirePlanTier(pro) (consumes
-		// the org's metered Anthropic key). RBAC invariant #1 (caller
-		// org/role/sub sealed into per-request executor closures) is enforced
-		// in AssistantService.Converse; the handler reads identity from claims
-		// only.
+		// Route gate: RequireMinRole(superintendent) — field_worker has no
+		// conversational surface in 2c. (The pro-tier plan gate was removed —
+		// ESC-002 — since post-pivot billing is gone; role gates stay.) RBAC
+		// invariant #1 (caller org/role/sub sealed into per-request executor
+		// closures) is enforced in AssistantService.Converse; the handler reads
+		// identity from claims only.
 		if assistant != nil {
 			r.With(mw.RequireMinRole(mw.RoleSuperintendent)).
-				With(mw.RequirePlanTier(mw.PlanTierPro)).
 				Post("/api/v1/agents/chat", assistant.Converse)
 		}
 

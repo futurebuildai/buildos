@@ -1,9 +1,13 @@
 package api
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/futurebuildai/buildos/internal/auth"
 )
 
 // TestNewRouter_BootsWithSetupService is a regression guard for a chi
@@ -156,5 +160,58 @@ func TestNewRouter_VaultRoutesSkippedWhenNil(t *testing.T) {
 			t.Fatalf("GET %s with vault disabled = %d, want %d (body=%s)",
 				target, rec.Code, http.StatusNotFound, rec.Body.String())
 		}
+	}
+}
+
+// TestNewRouter_AgentsSurface_RealTokenNotPlanWalled is the ESC-002 regression
+// guard. Production tokens are minted with an EMPTY plan_tier (internal/service/
+// auth.go); the removed RequirePlanTier(pro) gate ranked an empty tier as "free"
+// and returned 402 UPGRADE_REQUIRED for the entire /api/v1/agents/* surface — so
+// no real caller could reach AI chat / daily-briefing. The other router tests use
+// the DEV_AUTH_MODE=header bypass, which defaults plan_tier to "enterprise" and
+// thus MASKED the wall. This test mints a REAL RS256 token with plan_tier="" and
+// the lowest role, runs it through real JWT verification (DevAuthMode unset), and
+// proves the agents surface is reachable (NOT 402). If the pro gate is ever
+// re-added without populating plan_tier, this test fails.
+func TestNewRouter_AgentsSurface_RealTokenNotPlanWalled(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	iss, err := auth.NewTokenIssuer(key, "kid-test", "buildos", "buildos")
+	if err != nil {
+		t.Fatalf("NewTokenIssuer: %v", err)
+	}
+	ver, err := auth.NewVerifier(&key.PublicKey, "buildos", "buildos")
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	// A real production-shape token: empty plan_tier, lowest role.
+	token, _, err := iss.Mint("real-sub", "11111111-1111-1111-1111-111111111111", "field_worker", "")
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+
+	// Real JWT verification (NOT the dev header). AgentsService non-nil so the
+	// /api/v1/agents/daily-briefing route mounts; SetupService nil so SetupGate
+	// is skipped and the route stays reachable.
+	handler := NewRouter(RouterConfig{
+		Verifier:      ver,
+		AgentsService: &mockAgentsService{},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agents/daily-briefing", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusPaymentRequired {
+		t.Fatalf("agents surface 402-walled a real plan_tier=\"\" token — ESC-002 regressed (body=%s)",
+			rec.Body.String())
+	}
+	// Gate gone → a real token reaches the handler (the mock returns 200).
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/v1/agents/daily-briefing with a real token = %d, want %d (body=%s)",
+			rec.Code, http.StatusOK, rec.Body.String())
 	}
 }

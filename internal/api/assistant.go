@@ -16,9 +16,9 @@ import (
 // caller identity from JWT CLAIMS (never the body), validate + cap the
 // client-supplied (untrusted) history, build an agentic.ChatInput, and call the
 // AssistantConverser. RBAC is enforced structurally downstream (the executor
-// closures are caller-bound) and at the route (RequireMinRole(superintendent) +
-// RequirePlanTier(pro)); the handler adds the route floor's plan/role gates via
-// router.go and never reads identity from the request body.
+// closures are caller-bound) and at the route (RequireMinRole(superintendent);
+// the pro-tier plan gate was removed in ESC-002); the handler adds the route
+// floor's role gate via router.go and never reads identity from the request body.
 
 // chatRequest is the POST /api/v1/agents/chat request body. History is
 // CLIENT-SUPPLIED and UNTRUSTED — only user/assistant prose turns are accepted,
@@ -83,7 +83,8 @@ func NewAssistantHandler(svc AssistantConverser) *AssistantHandler {
 //
 // POST /api/v1/agents/chat
 //
-// Route gates (router.go): RequireMinRole(superintendent) + RequirePlanTier(pro).
+// Route gate (router.go): RequireMinRole(superintendent). (The pro-tier plan
+// gate was removed in ESC-002 — post-pivot billing is gone.)
 //
 // RBAC invariant #1: caller org/role/sub are read from JWT CLAIMS here and
 // passed to the service — NEVER from the request body. The model-supplied tool
