@@ -43,13 +43,17 @@ tx → surface.
 **Verify:** integration test (ephemeral PG) proving a slip → AI-reasoned cross-module cascade as
 actionable feed cards; `make audit` + bench gates + the new isolation gate green.
 
-### P2 — Phase 2: the four harness roles on the substrate (▶ ACTIVE — next chunk; start with 2a Ingestion)
+### P2 — Phase 2: the four harness roles on the substrate (▶ ACTIVE — 2a done; 2b next)
 Dependency-ordered, each its own PR-sized chunk:
-1. **Ingestion** — wire the orphaned `InvoiceExtract` (`internal/ai`) → persist an `invoices` row +
-   emit a review feed card (first pipeline). Then field/photo/text intake.
-2. **Experience** — conversational assistant over the ERP via the harness tool layer.
-3. **Foresight** — cross-module risk/recommendation agents (procurement criticality, schedule risk,
-   budget burn) surfaced as feed cards.
+1. **Ingestion** — ✅ DONE (`f83d135`, local `main`, not pushed). `POST /api/v1/projects/{id}/invoices/ingest`
+   → `ai.InvoiceExtract` → validated `invoices` row (`source=ai_ingest`) + review feed card, idempotent via
+   the `invoice_ingestions` outbox. Spec: [PHASE_2A_INGESTION.md](./PHASE_2A_INGESTION.md). Deferred to a
+   later chunk: raw upload / PDF rasterization / async River trigger (the trigger that promotes the agentic
+   port, §11) / relational line-item persistence.
+2. **Experience** — ▶ NEXT candidate: conversational assistant over the ERP via the harness tool layer
+   (generalize `ai.Client.callTool` into a tool registry; RBAC-scoped tool exposure).
+3. **Foresight** — ▶ NEXT candidate: cross-module risk/recommendation agents (procurement criticality,
+   schedule risk, budget burn) surfaced as feed cards, riding the Phase-1 orchestrator pattern.
 
 ### P3 — Phase 3: configurability + integration/MCP layer
 DB-backed agent/connector registry, admin config surface (enable + tune agents/integrations post-deploy,
