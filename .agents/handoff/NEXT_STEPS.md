@@ -43,7 +43,7 @@ tx → surface.
 **Verify:** integration test (ephemeral PG) proving a slip → AI-reasoned cross-module cascade as
 actionable feed cards; `make audit` + bench gates + the new isolation gate green.
 
-### P2 — Phase 2: the four harness roles on the substrate (▶ ACTIVE — 2a + 2b done; 2c Experience next)
+### P2 — Phase 2: the four harness roles on the substrate (✅ COMPLETE — 2a + 2b + 2c all done & pushed)
 Dependency-ordered, each its own PR-sized chunk:
 1. **Ingestion** — ✅ DONE (`f83d135`, local `main`, not pushed). `POST /api/v1/projects/{id}/invoices/ingest`
    → `ai.InvoiceExtract` → validated `invoices` row (`source=ai_ingest`) + review feed card, idempotent via
@@ -54,9 +54,25 @@ Dependency-ordered, each its own PR-sized chunk:
    metrics (procurement/schedule/budget) → AI materiality judgment → DEDUPED risk feed cards (migration 015
    `subject_code` skip-if-active dedup). Spec: [PHASE_2B_FORESIGHT.md](./PHASE_2B_FORESIGHT.md). Deferred to
    Phase 3: auto-expire reaper for resolved risks; "foresight active" health surface.
-3. **Experience** — ▶ NEXT (the last Phase-2 role): conversational assistant over the ERP via the harness
-   tool layer — generalize `ai.Client.callTool` into an RBAC-scoped tool registry; a chat endpoint that
-   plans + executes tool calls grounded in the deterministic core.
+3. **Experience** — ✅ DONE (`60a99f0` + `e1f37db`, pushed to `origin/main`). `POST /api/v1/agents/chat`
+   runs a bounded Claude tool-use loop over 8 READ-ONLY, caller-scoped ERP tools (new `internal/authz`
+   ladder; agentic `Tool`/`Assistant` ports; `ai.RunToolLoop`). 5-layer structural RBAC. Spec:
+   [PHASE_2C_EXPERIENCE.md](./PHASE_2C_EXPERIENCE.md).
+   **2c fast-follows (deferred from the backstop review — none are hazards; all gates were green):**
+   - **(A)** `ai.RunToolLoop` `finalize()` rebuilds the synthesis turn from the original request history,
+     dropping the loop's tool context when the model emits zero text across all iterations (rare; degraded
+     synthesis only). Fix: pass the accumulated `msgs` — mind the Anthropic API nuance (consecutive-role
+     turns; sending historical `tool_use` without `tools[]`; or use `tool_choice:{type:"none"}`).
+   - **(B)** `MaxResultBytes` is checked PRE-execution (`chatloop.go` ~line 225) so the first tool result
+     can overshoot the cumulative "hard ceiling" by its own size (bounded in practice by
+     `assistantToolMaxPerPage=50`). Fix: account result bytes post-execution.
+   - **(D)** `buildRegistry` writes each tool's `MinRole` twice (the `Tool.MinRole` field + the executor's
+     `minRole` arg — identical literals, adjacent lines). Single-source via a helper to kill future drift
+     (the role×tool matrix integration test covers the behavior today).
+   - **(E)** `get_org_financials` fail-fast drops a successful `GetProjectFinancials` if `GetARAging`
+     errors. Consider returning the partial result instead of only the error.
+   - Larger deferrals (per spec): mutating/act tools (behind human-confirmation), server-persisted
+     conversations (migration 016/017), and SSE streaming.
 
 ### P3 — Phase 3: configurability + integration/MCP layer
 DB-backed agent/connector registry, admin config surface (enable + tune agents/integrations post-deploy,
