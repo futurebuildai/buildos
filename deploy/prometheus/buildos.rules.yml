@@ -1,29 +1,28 @@
-# BuildOS Prometheus recording + alerting rules (Phase 4b-i).
+# BuildOS Prometheus recording + alerting rules (Phase 4b-i + 4b-ii).
 #
 # Load into Prometheus via `rule_files:` (and route the alerts through
 # Alertmanager). Validate before deploying:
 #
 #     promtool check rules deploy/prometheus/buildos.rules.yml
 #
-# Every expression references ONLY the four metrics BuildOS actually emits from
+# Every expression references ONLY the five metrics BuildOS actually emits from
 # internal/obs/metrics.go (custom registry — there are NO go_*/process_* or
 # db-pool metrics; see deploy/prometheus/README.md and the observability
 # runbook for the surface + known instrumentation gaps):
 #
-#   buildos_http_requests_total{route,method,status}     status ∈ 2xx/3xx/4xx/5xx/1xx/0xx
-#   buildos_http_request_duration_seconds{route,method}  (histogram → _bucket/_sum/_count)
-#   buildos_ai_requests_total{kind,model,outcome}        outcome ∈ success/error
-#   buildos_ai_request_duration_seconds{kind,model}      (histogram)
+#   buildos_http_requests_total{route,method,status}     status ∈ 2xx/3xx/4xx/5xx/1xx/0xx   (server)
+#   buildos_http_request_duration_seconds{route,method}  (histogram → _bucket/_sum/_count)  (server)
+#   buildos_ai_requests_total{kind,model,outcome}        outcome ∈ success/error            (server + worker)
+#   buildos_ai_request_duration_seconds{kind,model}      (histogram)                        (server + worker)
+#   buildos_river_job_runs_total{kind,outcome}           outcome ∈ success/error/discarded  (worker)
 #
-# Scrape surface: the SERVER (cmd/server) only — it is the single process that
-# wires obs.NewMetrics() (HTTP middleware + the AI client + the /metrics route).
-# The WORKER (cmd/worker) serves NO /metrics and emits nothing today, so there
-# are NO River job alerts here: buildos_river_job_runs_total is registered in
-# metrics.go but ObserveJob has no caller, so it is always zero — alerting on it
-# would be a dead rule (false confidence). Wiring worker observability (a worker
-# /metrics listener + ObserveJob via River middleware) is a Go follow-up; see
-# the observability runbook "instrumentation gaps". `up` is synthesized by
-# Prometheus per scrape target (job `buildos-server`; see the README).
+# Scrape surface: BOTH processes expose /metrics — the SERVER (cmd/server: HTTP
+# middleware + the AI client) and, since 4b-ii, the WORKER (cmd/worker: a
+# /metrics listener + River job-outcome subscription wiring ObserveJob, plus the
+# AI client for worker-side delay_cascade/foresight). `outcome="error"` on River
+# is ATTEMPT-level (River retries up to its policy; each failed attempt is an
+# event; a terminal give-up is `discarded`). `up` is synthesized by Prometheus
+# per scrape target (jobs `buildos-server` + `buildos-worker`; see the README).
 #
 # Thresholds are conservative defaults TUNED FOR A LOW-TRAFFIC, SINGLE-TENANT
 # FORK (one builder's deployment): ratio alerts carry a minimum-traffic floor so
@@ -66,9 +65,15 @@ groups:
             / clamp_min(sum(rate(buildos_ai_requests_total[10m])), 1e-9)
       - record: buildos:ai_request_duration_seconds:p95
         expr: histogram_quantile(0.95, sum by (le) (rate(buildos_ai_request_duration_seconds_bucket[10m])))
+      - record: buildos:river_jobs:rate10m
+        expr: sum(rate(buildos_river_job_runs_total[10m]))
+      - record: buildos:river_error_ratio:rate10m
+        expr: |
+          sum(rate(buildos_river_job_runs_total{outcome="error"}[10m]))
+            / clamp_min(sum(rate(buildos_river_job_runs_total[10m])), 1e-9)
 
   # ---------------------------------------------------------------------------
-  # Availability — the server scrape target is up and serving.
+  # Availability — both scrape targets (server + worker) are up and serving.
   # ---------------------------------------------------------------------------
   - name: buildos-availability
     rules:
@@ -88,6 +93,24 @@ groups:
             misconfigured. Check the orchestrator (pod restarts / OOMKilled),
             then /health (liveness) and /ready (DB).
           runbook_url: "https://github.com/futurebuildai/buildos/blob/main/docs/observability-runbook.md#buildosserverdown"
+
+      - alert: BuildOSWorkerDown
+        # The worker runs ALL background jobs (briefings, notifications,
+        # cascades, rollups, foresight). If it's down, the API still serves but
+        # nothing scheduled happens — a silent functional outage.
+        expr: up{job="buildos-worker"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "BuildOS worker ({{ $labels.instance }}) is down"
+          description: >
+            Prometheus has failed to scrape the buildos-worker target
+            {{ $labels.instance }} for >2m. Background jobs (daily briefings,
+            field notifications, delay cascades, corporate rollups, foresight
+            sweeps) are NOT running — the API still serves but scheduled work has
+            stopped. Check the orchestrator, then the worker's /health + /ready.
+          runbook_url: "https://github.com/futurebuildai/buildos/blob/main/docs/observability-runbook.md#buildosworkerdown"
 
   # ---------------------------------------------------------------------------
   # HTTP API — 5xx rate + latency. (4xx is client-driven; see the warning rule.)
@@ -224,8 +247,49 @@ groups:
             AI endpoints. Usually upstream; check the provider status page.
           runbook_url: "https://github.com/futurebuildai/buildos/blob/main/docs/observability-runbook.md#buildosailatencyp95high"
 
-  # NOTE: there is deliberately NO buildos-jobs / River alert group. The worker
-  # emits no metrics and serves no /metrics, and buildos_river_job_runs_total is
-  # never incremented (ObserveJob has no caller). Until worker observability is
-  # wired (a Go follow-up), background-job failures are visible only via logs,
-  # Sentry, and the River job tables — see the observability runbook.
+  # ---------------------------------------------------------------------------
+  # River background jobs (worker; wired in 4b-ii). Failures and — worse —
+  # discards (retries exhausted → the work silently did not happen: a missed
+  # briefing, an unsent notification, a dropped delay-cascade).
+  # ---------------------------------------------------------------------------
+  - name: buildos-jobs
+    rules:
+      - alert: BuildOSRiverJobErrorRateHigh
+        # outcome="error" is ATTEMPT-level (River retries), so transient blips
+        # self-heal; a sustained ratio means a systemic failure. Floor ~1 run/10m.
+        expr: |
+          buildos:river_error_ratio:rate10m > 0.20
+            and buildos:river_jobs:rate10m > 0.0017
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "BuildOS River job error-attempt rate high ({{ $value | humanizePercentage }})"
+          description: >
+            >20% of River job-run ATTEMPTS errored over 10m (River retries, so a
+            retried-then-successful job still emits error attempts). A sustained
+            rate is systemic — DB, a downstream API, or a bug. Break down by kind:
+            sum by (kind) (rate(buildos_river_job_runs_total{outcome="error"}[10m]))
+            and inspect the River job tables for the args + last error.
+          runbook_url: "https://github.com/futurebuildai/buildos/blob/main/docs/observability-runbook.md#buildosriverjoberrorratehigh"
+
+      - alert: BuildOSRiverJobsDiscarded
+        # A discard = River gave up after exhausting retries. The job's effect
+        # never happened and won't retry. Fires on any discard in the last 15m.
+        # CAVEAT: buildos_river_job_runs_total is fed by River's subscription
+        # channel, which is buffered + NON-BLOCKING — under burst an event can
+        # drop, so this absolute (>0) signal is BEST-EFFORT and may UNDERCOUNT.
+        # The River job tables (state='discarded') are the source of truth;
+        # reconcile against them periodically (esp. after a worker restart/burst).
+        expr: increase(buildos_river_job_runs_total{outcome="discarded"}[15m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "BuildOS River discarded a job (retries exhausted): {{ $labels.kind }}"
+          description: >
+            A {{ $labels.kind }} job was DISCARDED — its effect (briefing,
+            notification, cascade, rollup, etc.) did not happen and won't retry.
+            Inspect the River job table for the failure, fix the root cause, and
+            re-enqueue if the work still matters.
+          runbook_url: "https://github.com/futurebuildai/buildos/blob/main/docs/observability-runbook.md#buildosriverjobsdiscarded"

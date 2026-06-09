@@ -264,22 +264,27 @@ govulncheck clean. PRs #9 onward also have CI green at merge time
 ## In flight
 
 **Phase 4 is IN PROGRESS.** Chunks 1 (ESC-002) and 4b-i (alerting + runbooks) are merged + pushed
-(`origin/main` `ff22d74`; both in "Last shipped"). A Phase-4 ultraplan (6-agent assessment, 2026-06-09)
-decomposed the phase against the actual code (which made the plan doc's "3 missing field screens" framing
-partly stale). Remaining chunks (see NEXT_STEPS §P4 for entry points):
-- **4b-ii · worker observability — NEXT (a Go change; surfaced by 4b-i).** Add a `/metrics` listener to
-  `cmd/worker` + wire `ObserveJob` via a River middleware (then re-add a `buildos-jobs` alert group to
-  `deploy/prometheus/buildos.rules.yml`); optionally export `pgxpool.Stat()` as `buildos_db_pool_*` + a
-  per-error-code / SetupGate-rejection counter. Background jobs (briefings, notifications, cascades,
-  foresight) are currently invisible to Prometheus.
+(`origin/main` `ff22d74`; both in "Last shipped"). **Chunk 4b-ii (worker observability) is BUILT on branch
+`feat/phase-4b-ii-worker-observability` (committed, NOT pushed/merged); all gates green; awaiting owner
+review.** A Phase-4 ultraplan (6-agent assessment, 2026-06-09) decomposed the phase against the actual code.
+Remaining chunks (see NEXT_STEPS §P4 for entry points):
+- **4b-ii · worker observability — BUILT on branch, awaiting review.** `cmd/worker` now builds
+  `obs.NewMetrics()`, serves `/metrics` + `/health` + `/ready` on `$PORT`, wires the worker AI client to
+  `buildos_ai_*`, and records River job outcomes into `buildos_river_job_runs_total` via a River event
+  subscription (`internal/worker/metrics.go`: `jobOutcome` + `ObserveJobMetrics`, unit-tested). Re-added the
+  `buildos-jobs` alert group + `BuildOSWorkerDown` + the worker scrape job, and reversed the 4b-i "worker has
+  no metrics" framing across the rules + 3 docs. 3-lens adversarial verification: Go design sound (verified
+  vs River source), docs clean; 2 medium findings fixed (HTTP bind error now fails fast; the dropped-event
+  best-effort caveat now operator-facing). Spec: [PHASE_4B_II_WORKER_OBS.md](.agents/handoff/PHASE_4B_II_WORKER_OBS.md).
 - **4a · Flutter field.** `schedule_screen` already exists (read-only Gantt); crew check-in already works
   embedded in `daily_log`. Real gaps: extract a standalone **check-in** screen + the offline affordance
   pattern (4a-i, mobile-only, no backend), then **equipment** (4a-ii, CROSS-STACK + a product decision: is
   fleet field-visible? today field sync carries only Tasks+FeedCards, `/fleet` is operator-only, so equipment
   needs a new field-scoped read endpoint in `internal/api/field.go`). Gates: `cd mobile && dart format +
   flutter analyze + flutter test (+golden)` (Flutter 3.41.3 confirmed installed locally).
-- **4b-ii · operator hardening (remaining)** — worker observability (above), then error-path UX (Retry-After
-  on 5xx/429, AI circuit-breaker surfacing, `cmd/migrate --dry-run`).
+- **4b-iii · error-path UX (remaining hardening)** — Retry-After on 5xx/429, AI circuit-breaker surfacing,
+  `cmd/migrate --dry-run`. Plus the small metric follow-ups 4b-ii surfaced (`pgxpool.Stat()` →
+  `buildos_db_pool_*`; a per-error-code/SetupGate counter; a worker queue-depth gauge).
 - **4c · security + load** (k6 + `/security-review`) — FINAL gate, after 4a/4b.
 
 ---

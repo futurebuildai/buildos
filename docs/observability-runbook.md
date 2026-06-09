@@ -18,7 +18,7 @@ fork can run with none of them and add them later (`internal/obs`).
 
 | Signal | Surface | Enabled by | Notes |
 |---|---|---|---|
-| **Metrics** | `GET /metrics` (Prometheus) | server only (the worker emits none) | Custom registry — four emitted `buildos_*` metrics (see the README table). Unauth; restrict by network policy. |
+| **Metrics** | `GET /metrics` (Prometheus) | server + worker (both expose `/metrics`) | Custom registry — five emitted `buildos_*` metrics (see the README table). Unauth; restrict by network policy. |
 | **Logs** | stdout, JSON (slog) | always | Every record carries the correlation trio (§2). Scrape into Loki/CloudWatch/etc. |
 | **Traces** | OTLP → collector | `OTEL_EXPORTER_OTLP_ENDPOINT` | Every inbound request is a span (`otelhttp`); default sample rate 0.1. Empty endpoint ⇒ no-op exporter but W3C propagation still stamps `trace_id` into logs. |
 | **Errors** | Sentry | `SENTRY_DSN` | Panics + tagged exceptions. PII scrubbed in `BeforeSend` via the `internal/pii` catalog (Restricted fields redacted). |
@@ -38,18 +38,12 @@ log via the `*Context` slog variants so the trio is present.
 ## 3. The metric surface + known gaps
 
 See [`deploy/prometheus/README.md`](../deploy/prometheus/README.md#the-metric-surface-what-buildos-emits)
-for the four emitted metrics and their labels. **Only the server is scraped** — these
-things you **cannot** alert on today (each needs a Go change — tracked as follow-ups,
-out of scope for the config-only 4b-i chunk):
+for the five emitted metrics and their labels. **Both the server and the worker are
+scraped** (4b-ii wired worker observability — a `/metrics` listener + `ObserveJob` via
+a River event subscription, so `buildos_river_job_runs_total` is now real, plus the
+worker's AI client now feeds `buildos_ai_*`). Two things still **cannot** be alerted on
+(each needs a Go change — tracked follow-ups):
 
-- **Worker / background jobs (the biggest gap).** `cmd/worker` runs every River job —
-  daily briefings, field notifications, delay cascades, corporate rollups, foresight
-  sweeps — but serves **no `/metrics`**, and `buildos_river_job_runs_total` is
-  registered yet **never incremented** (`ObserveJob` has no caller). So job
-  failures/discards and worker-side AI calls are **invisible to Prometheus**. Until
-  it's wired (a worker `/metrics` listener + `ObserveJob` via a River middleware),
-  watch background jobs through **logs**, **Sentry**, and the **River job tables**
-  directly. *This is the highest-value next 4b sub-chunk.*
 - **DB connection-pool exhaustion** — pgxpool's `Stat()` (acquired/idle/total conns,
   acquire wait) is not exported as a metric. Proxy signals: `/ready` failing (it
   `Ping`s the pool), rising HTTP p95, and `BuildOSHTTP5xxRateHigh`.
@@ -57,11 +51,19 @@ out of scope for the config-only 4b-i chunk):
   `SETUP_INCOMPLETE` until onboarding completes, but HTTP `status` is class-only
   (`4xx`), so this shows only as elevated 4xx (`BuildOSHTTP4xxRateElevated`), not a
   dedicated signal. Confirm via logs (`action`/error code) or `/audit?action_prefix=setup.`.
+- **Worker alive but not draining jobs** — `BuildOSWorkerDown` catches a dead/unscraped
+  worker, but a worker that is up (`up==1`) yet stuck (River queue wedged, advisory-lock
+  contention, a jammed job pool) emits no job events, so the River ratios go *stale*
+  rather than spike and nothing pages. Detecting this needs a queue-depth / oldest-
+  available-job gauge (a Go follow-up). For now, watch the River job tables for a
+  growing `available` backlog.
+- **River metrics are best-effort** — `buildos_river_job_runs_total` is fed by River's
+  buffered, non-blocking subscription, so it can undercount under burst; the River job
+  tables are the source of truth (see `BuildOSRiverJobsDiscarded`).
 
-> **Follow-up to close these (one small Go chunk each):** a worker `/metrics` server
-> + `ObserveJob` wiring (then re-add a `buildos-jobs` alert group); export
-> `pgxpool.Stat()` as `buildos_db_pool_*` gauges; add a per-error-code (or
-> SetupGate-rejection) counter. Filed against Phase 4b.
+> **Follow-up to close these (one small Go chunk each):** export `pgxpool.Stat()` as
+> `buildos_db_pool_*` gauges; add a per-error-code (or SetupGate-rejection) counter; a
+> queue-depth/oldest-available gauge for the worker-stuck case. Filed against Phase 4b.
 
 ---
 
@@ -72,15 +74,22 @@ moves on any alert: check the orchestrator (pod restarts / OOMKilled / recent
 deploy), `/ready` (DB), Sentry, and the logs for the route/kind named in the alert.
 
 ### BuildOSServerDown
-**Critical.** Prometheus can't scrape the target for >2m.
+**Critical.** Prometheus can't scrape the **server** target for >2m.
 1. Is the process up? (`kubectl get pods` / your orchestrator — look for crashloop,
    OOMKilled, recent rollout.)
 2. Is `/health` (liveness) 200? If the process is up but `/health` is unreachable,
    suspect the network policy / service routing.
 3. Is `/ready` 200? A failing `/ready` means the **DB ping failed** — the process is
    alive but can't serve; check the database (see the DR runbook) and `DATABASE_URL`.
-4. If only the **worker** target is down, the API still serves but background jobs
-   (briefings, notifications, cascades) stop — escalate but it's not a full outage.
+
+### BuildOSWorkerDown
+**Critical.** Prometheus can't scrape the **worker** target for >2m. The API still
+serves, but **every background job has stopped** — daily briefings, field
+notifications, delay cascades, corporate rollups, foresight sweeps — so this is a
+silent functional outage, not a cosmetic one. Same triage as the server: orchestrator
+(crashloop/OOMKilled/rollout), then the worker's `/health` (liveness) and `/ready` (DB
+ping). Jobs that didn't run are not lost — River re-runs scheduled/periodic work once
+the worker is back; check the River job tables for a backlog.
 
 ### BuildOSHTTP5xxRateHigh
 **Critical.** >5% of HTTP responses are 5xx over 5m.
@@ -131,9 +140,25 @@ degraded; the rest of the ERP is unaffected.
 upstream — check Anthropic status. Sustained, it risks request timeouts on the
 synchronous AI endpoints.
 
-> **No River/worker alerts yet** — background-job failures are not alertable today
-> (§3). Watch them via logs, Sentry, and the River job tables until worker
-> observability is wired.
+### BuildOSRiverJobErrorRateHigh
+**Warning.** >20% of River job-run **attempts** errored over 10m. The metric counts
+*attempts*, not jobs — River retries, so a retried-then-successful job still emits
+error attempts; a sustained ratio is systemic (DB, a downstream API, or a bug). Break
+down by kind: `sum by (kind) (rate(buildos_river_job_runs_total{outcome="error"}[10m]))`,
+then inspect the River job tables for the failing args + last error.
+
+### BuildOSRiverJobsDiscarded
+**Warning** (but it means a lost effect). River exhausted all retries and **gave up** —
+the job's effect (a briefing, a field notification, a delay cascade, a rollup) did
+**not** happen and won't retry. Find the discarded job in the River tables, fix the
+root cause, and **re-enqueue** if the work still matters. A steady trickle of discards
+is a bug to fix, not noise to mute.
+
+> **Caveat — best-effort.** This alert is fed by River's buffered, non-blocking event
+> subscription, so a discard event can drop under burst and the alert can miss. The
+> **River job tables (`state = 'discarded'`) are the source of truth** — reconcile
+> against them periodically (and after any worker restart/burst) rather than trusting
+> the alert to catch every discard.
 
 ---
 

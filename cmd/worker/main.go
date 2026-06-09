@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/futurebuildai/buildos/internal/agentic"
 	"github.com/futurebuildai/buildos/internal/ai"
@@ -66,6 +69,12 @@ func run(logger *slog.Logger) error {
 	defer pool.Close()
 
 	logger.Info("database connected for worker", "max_conns", cfg.DBPoolMax)
+
+	// Process-level metrics for the worker (Phase 4b-ii). One Prometheus
+	// registry per process — wired into the AI client (so worker-side AI calls
+	// are counted), the River job-outcome subscription, and a small /metrics +
+	// probe HTTP server below.
+	metrics := obs.NewMetrics()
 
 	// Real audit service for worker mutations that warrant a trail.
 	// Used by the delay-cascade workspace below so every cascade feed
@@ -129,7 +138,7 @@ func run(logger *slog.Logger) error {
 			return fmt.Errorf("building vault cipher: %w", err)
 		}
 		vaultService := service.NewVaultService(pool, store.NewIntegrationCredentialStore(), cipher, auditService, logger, nil)
-		aiClient, err = ai.NewClient(ai.Config{KeyResolver: vaultService})
+		aiClient, err = ai.NewClient(ai.Config{KeyResolver: vaultService, Metrics: metrics})
 		if err != nil {
 			return fmt.Errorf("building ai client: %w", err)
 		}
@@ -216,6 +225,28 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("creating worker registry: %w", err)
 	}
 
+	// Observability (Phase 4b-ii): record every job's terminal outcome into
+	// buildos_river_job_runs_total via a River event subscription, and serve
+	// /metrics + /health + /ready on PORT. Subscribe before Start so no early
+	// completion is missed; the stop func is deferred so it runs on any return.
+	stopJobMetrics := registry.ObserveJobMetrics(metrics, logger)
+	defer stopJobMetrics()
+
+	httpSrv := newWorkerHTTPServer(":"+cfg.Port, metrics, pool)
+	httpErrCh := make(chan error, 1)
+	go func() {
+		// ListenAndServe blocks until Shutdown (→ ErrServerClosed, ignored) or a
+		// bind failure — e.g. PORT already in use when the worker is co-located
+		// with the server on one host. Surface the bind error (below, via the
+		// select) so the worker fails LOUDLY rather than silently running with no
+		// observability surface. In production the two roles are separate pods,
+		// each with its own PORT, so this never fires.
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			httpErrCh <- err
+		}
+	}()
+	logger.Info("worker observability up", "addr", ":"+cfg.Port, "paths", "/metrics /health /ready")
+
 	// River semantics: a cancelled Start(ctx) is a HARD stop — in-flight
 	// jobs have their contexts cancelled, then the client waits for
 	// them to return. We want a GRACEFUL shutdown: stop fetching new
@@ -235,10 +266,13 @@ func run(logger *slog.Logger) error {
 		}
 	}()
 
-	// Block until either River errors out on its own or we get SIGTERM.
+	// Block until River errors out on its own, the observability server fails to
+	// bind (fail-fast — don't run blind), or we get SIGTERM.
 	select {
 	case err := <-startErrCh:
 		return fmt.Errorf("river worker error: %w", err)
+	case err := <-httpErrCh:
+		return fmt.Errorf("worker metrics/probe server: %w", err)
 	case <-ctx.Done():
 		logger.Info("shutdown signal received, draining in-flight jobs")
 	}
@@ -254,8 +288,41 @@ func run(logger *slog.Logger) error {
 			"error", err, "timeout_seconds", 30)
 	}
 
+	// Stop serving /metrics + probes after the jobs have drained.
+	httpShutdownCtx, httpCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer httpCancel()
+	if err := httpSrv.Shutdown(httpShutdownCtx); err != nil {
+		logger.Warn("worker http server shutdown did not complete", "error", err)
+	}
+
 	logger.Info("worker stopped gracefully")
 	return nil
+}
+
+// newWorkerHTTPServer builds the worker's observability HTTP server: Prometheus
+// /metrics plus k8s probes — /health (liveness, no DB) and /ready (readiness,
+// pings the pool). Mirrors the server's probe semantics (internal/api): a DB
+// blip should fail readiness (pull from rotation) without killing liveness.
+// Unauthenticated by convention; restrict /metrics at the network layer.
+func newWorkerHTTPServer(addr string, metrics *obs.Metrics, pool *pgxpool.Pool) *http.Server {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", metrics.Handler())
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := pool.Ping(ctx); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("not ready"))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ready"))
+	})
+	return &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 }
 
 // cascadeOrchestratorFactory satisfies worker.CascadeOrchestrator. The AI key

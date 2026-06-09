@@ -12,31 +12,29 @@ alert means + first response) and [`docs/deploy-runbook.md`](../../docs/deploy-r
 
 ## The metric surface (what BuildOS emits)
 
-Only the **server** (`cmd/server`) exposes `/metrics` — it is the single process that
-wires `obs.NewMetrics()`. The **worker** (`cmd/worker`) serves no HTTP and emits no
-metrics today. So there is **one scrape target** (`buildos-server`). Metrics come
-from a **custom registry** (`internal/obs/metrics.go`) — there are **no** `go_*` /
-`process_*` / DB-pool metrics. The actually-emitted set is four:
+**Both** processes expose `/metrics` — the **server** (`cmd/server`: HTTP middleware +
+the AI client) and, since 4b-ii, the **worker** (`cmd/worker`: a /metrics listener +
+River job-outcome subscription + the AI client). So there are **two scrape targets**
+(`buildos-server`, `buildos-worker`). Metrics come from a **custom registry**
+(`internal/obs/metrics.go`) — there are **no** `go_*` / `process_*` / DB-pool metrics.
+The actually-emitted set is five:
 
-| Metric | Type | Labels |
-|---|---|---|
-| `buildos_http_requests_total` | counter | `route`, `method`, `status` (`2xx`/`3xx`/`4xx`/`5xx`/`1xx`/`0xx`) |
-| `buildos_http_request_duration_seconds` | histogram | `route`, `method` |
-| `buildos_ai_requests_total` | counter | `kind`, `model`, `outcome` (`success`/`error`) — server-side AI only |
-| `buildos_ai_request_duration_seconds` | histogram | `kind`, `model` |
+| Metric | Type | Labels | Emitted by |
+|---|---|---|---|
+| `buildos_http_requests_total` | counter | `route`, `method`, `status` (`2xx`/…/`5xx`) | server |
+| `buildos_http_request_duration_seconds` | histogram | `route`, `method` | server |
+| `buildos_ai_requests_total` | counter | `kind`, `model`, `outcome` (`success`/`error`) | server + worker |
+| `buildos_ai_request_duration_seconds` | histogram | `kind`, `model` | server + worker |
+| `buildos_river_job_runs_total` | counter | `kind`, `outcome` (`success`/`error`/`discarded`) | worker |
 
-`route` is the **chi route pattern** (e.g. `/api/v1/projects/{projectID}`), not the
-raw URL — cardinality is bounded. `buildos_ai_*` covers only **server-side** AI calls
-(chat / daily-briefing / recommend-adjustments / invoice-ingest); AI work done in the
-worker (`delay_cascade`, `foresight`) is **not** counted (the worker has no metrics).
+`route` is the **chi route pattern** (e.g. `/api/v1/projects/{projectID}`), not the raw
+URL — cardinality is bounded. `buildos_ai_*` now covers AI calls from **both** the
+server (chat / daily-briefing / recommend-adjustments / invoice-ingest) and the worker
+(`delay_cascade`, `foresight`). `buildos_river_job_runs_total`'s `outcome="error"` is
+**attempt-level** (River retries; each failed attempt is an event; a terminal give-up
+is `discarded`).
 
-> **Instrumentation gaps (known follow-ups, each requires a Go change — out of scope
-> for this config-only chunk):**
-> - **Worker / background-job observability.** `cmd/worker` serves no `/metrics`, and
->   `buildos_river_job_runs_total` is registered but **never incremented**
->   (`ObserveJob` has no caller) — so job failures/discards and worker-side AI are
->   invisible to Prometheus. Needs a worker `/metrics` listener + `ObserveJob` wired
->   via a River middleware. **This is the highest-value next 4b sub-chunk.**
+> **Instrumentation gaps (known follow-ups, each requires a Go change):**
 > - **DB connection-pool exhaustion** — pgxpool's `Stat()` is not exported. Proxy:
 >   `/ready` (it pings the pool) + the 5xx rate.
 > - **SetupGate over-rejection** — HTTP `status` is class-only, so a 403
@@ -52,15 +50,19 @@ rule_files:
   - /etc/prometheus/rules/buildos.rules.yml   # mount buildos.rules.yml here
 
 scrape_configs:
-  - job_name: buildos-server                  # MUST be this name — the rules use
-    metrics_path: /metrics                    # up{job="buildos-server"}
+  - job_name: buildos-server                  # MUST be these names — the rules use
+    metrics_path: /metrics                    # up{job="buildos-server"} / "buildos-worker"
     static_configs:
       - targets: ["buildos-server:8080"]      # or k8s SD; one target per replica
-  # No buildos-worker job — the worker exposes no /metrics (see the gaps note above).
+  - job_name: buildos-worker
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["buildos-worker:8080"]      # worker listens on $PORT too (separate pod)
 ```
 
-The `BuildOSServerDown` alert matches `up{job="buildos-server"}`, so the server scrape
-job MUST be named `buildos-server`.
+The `BuildOSServerDown` / `BuildOSWorkerDown` alerts match `up{job="buildos-server"}` /
+`up{job="buildos-worker"}`, so the scrape jobs MUST be named `buildos-server` and
+`buildos-worker`.
 
 `/metrics` is unauthenticated (Prometheus convention). **Restrict it at the
 network layer** — a k8s NetworkPolicy / LB ACL allowing only the Prometheus

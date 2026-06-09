@@ -133,11 +133,14 @@ the actual code, which made the original "3 missing field screens" framing partl
      4 `buildos_*` metrics are emitted (server-only); `buildos_river_job_runs_total` is never incremented and
      the worker serves no `/metrics`. Shipped as documented gaps. Spec:
      [PHASE_4B_I_ALERTING.md](./PHASE_4B_I_ALERTING.md).
-   - **4b-ii · worker observability — NEW, Go change (surfaced by 4b-i; highest-value next 4b step).** Add a
-     `/metrics` listener to `cmd/worker` + wire `ObserveJob` via a River middleware (then re-add a
-     `buildos-jobs` alert group); export `pgxpool.Stat()` as `buildos_db_pool_*`; add a per-error-code (or
-     SetupGate-rejection) counter. Background jobs are currently invisible to Prometheus.
-   - **4b-iii · error-path UX** — Retry-After on 5xx/429, AI circuit-breaker surfacing, `cmd/migrate --dry-run`.
+   - **4b-ii · worker observability — BUILT on `feat/phase-4b-ii-worker-observability`, awaiting review.**
+     `cmd/worker` serves `/metrics`+`/health`+`/ready` and records River job outcomes into
+     `buildos_river_job_runs_total` (event subscription) + the worker AI client feeds `buildos_ai_*`; re-added
+     the `buildos-jobs` alert group + `BuildOSWorkerDown` + the worker scrape job. Spec:
+     [PHASE_4B_II_WORKER_OBS.md](./PHASE_4B_II_WORKER_OBS.md).
+   - **4b-iii · error-path UX + metric follow-ups** — Retry-After on 5xx/429, AI circuit-breaker surfacing,
+     `cmd/migrate --dry-run`; plus `pgxpool.Stat()` → `buildos_db_pool_*`, a per-error-code/SetupGate counter,
+     and a worker queue-depth / oldest-available-job gauge (the "worker alive but stuck" gap).
 4. **4c · security + load (FINAL gate).** k6 load harness (`scripts/k6/`, test-only dep — flag vs
    TECH_STACK.md) + `/security-review` pass (5-layer RBAC matrix, PII scrubbing, SSRF posture, the now-
    reachable agents-surface authZ). Runs after 4a/4b merge.

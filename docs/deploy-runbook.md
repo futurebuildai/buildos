@@ -24,9 +24,9 @@ binary by **`BUILDOS_ROLE`** (default `server`):
 | `migrate` | `bin/migrate` | Applies River internal migrations then `migrations/NNN_*.up.sql`, then exits. |
 
 Run **server** and **worker** as separate long-lived deployments off the same image
-+ env. Run **migrate** as a one-shot Job/init step (§4). Only the **server** exposes
-`/metrics` (and `/health`, `/ready`); the worker serves no HTTP today (its
-observability is a known gap — see the observability runbook §3).
++ env. Run **migrate** as a one-shot Job/init step (§4). **Both** the server and the
+worker expose `/metrics`, `/health`, and `/ready` on `$PORT` (the worker's HTTP +
+job-outcome metrics were wired in 4b-ii) — scrape and probe both.
 
 The image is built `-tags=prod` (D8 hardening): the dev `X-Dev-Auth` bypass is a
 no-op, and **the server refuses to start if `DEV_AUTH_MODE` is set** — fail fast
@@ -80,8 +80,8 @@ readinessProbe:
   failureThreshold: 3
 ```
 
-(The worker serves no HTTP at all — no `/health`/`/ready`/`/metrics`; gate it on
-process liveness only. A worker `/metrics` + probes is a tracked follow-up.)
+(The worker exposes the same `/health`, `/ready`, and `/metrics` on `$PORT`, so probe
++ scrape it the same way as the server.)
 
 ## 4. Rollouts & migrations
 
@@ -129,7 +129,11 @@ mid-drain:
 
 ## 6. `/metrics` exposure
 
-`/metrics` is unauthenticated (Prometheus convention) and mounts when the metrics
-registry is wired. **Restrict it at the network layer** — a NetworkPolicy / LB ACL
-allowing only the Prometheus scraper. Scrape config + the alert rules:
+Both the server and the worker serve `/metrics` (unauthenticated, Prometheus
+convention) on `$PORT`. They are separate pods in production, each with its own `PORT`,
+so there's no conflict — but if you **co-locate them on one host** (docker-compose,
+local dev), give them **distinct `PORT` values**, or the worker's HTTP listener fails
+to bind (it fails fast + loud, rather than running blind). **Restrict `/metrics` at the
+network layer** — a NetworkPolicy / LB ACL allowing only the Prometheus scraper. Scrape
+config (two jobs: `buildos-server`, `buildos-worker`) + the alert rules:
 [`deploy/prometheus/README.md`](../deploy/prometheus/README.md).
