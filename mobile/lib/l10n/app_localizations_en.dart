@@ -175,4 +175,41 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get retry => 'Retry';
+
+  @override
+  String get projectLabel => 'Project';
+
+  @override
+  String get crewOnSite => 'Crew on site';
+
+  @override
+  String get crewMemberName => 'Name';
+
+  @override
+  String get crewMemberRole => 'Role (optional)';
+
+  @override
+  String get addCrewMember => 'Add crew member';
+
+  @override
+  String get removeCrewMember => 'Remove crew member';
+
+  @override
+  String get checkInNotes => 'Notes (optional)';
+
+  @override
+  String get updateLocation => 'Update';
+
+  @override
+  String get offlineWillQueue =>
+      'Offline — this check-in will queue and sync later.';
+
+  @override
+  String get submitCheckIn => 'Submit check-in';
+
+  @override
+  String get checkInQueued => 'Check-in queued — will sync when online.';
+
+  @override
+  String get checkInNeedsCrew => 'Add at least one crew member.';
 }

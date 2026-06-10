@@ -119,12 +119,16 @@ the actual code, which made the original "3 missing field screens" framing partl
 1. **ESC-002 · drop the pro gate — DONE: merged + PUSHED to `origin/main` (HEAD `8a1fcc3`).** Unblocked the
    `/api/v1/agents/*` AI surface end-to-end (backend + web console); prerequisite for 4c load/security
    testing it. Spec: [PHASE_4_ESC_002.md](./PHASE_4_ESC_002.md).
-2. **4a · Flutter field — NEXT candidate.** schedule_screen already exists (read-only Gantt); crew check-in
-   already works embedded in daily_log. Real gaps: extract a standalone **check-in** screen + the offline
-   affordance pattern (chunk 4a-i, mobile-only, no backend change), then **equipment** (4a-ii, CROSS-STACK +
-   gated on a product decision: is fleet field-visible? today field sync carries only Tasks+FeedCards and
-   `/fleet` is operator-only, so equipment needs a new field-scoped read endpoint in `internal/api/field.go`).
-   Entry: `mobile/lib/screens/`. Gates: `cd mobile && dart format + flutter analyze + flutter test (+golden)`.
+2. **4a · Flutter field.**
+   - **4a-i · standalone check-in + offline affordance — BUILT on `feat/phase-4a-i-field-checkin`, awaiting
+     review.** New `CheckInScreen` (crew roster name+role, GPS, notes, offline-queued) + reusable
+     `FbDashedBorder` (amber dashed affordance), wired into the More tab; the crew-less stub extracted out of
+     `daily_log`. 9 widget tests + a golden; mobile gates green. Spec:
+     [PHASE_4A_I_FIELD_CHECKIN.md](./PHASE_4A_I_FIELD_CHECKIN.md).
+   - **4a-ii · equipment — CROSS-STACK, gated on a product decision** (is fleet field-visible? today field
+     sync carries only Tasks+FeedCards and `/fleet` is operator-only, so equipment needs a new field-scoped
+     read endpoint in `internal/api/field.go`). Entry: `mobile/lib/screens/`. Gates: `cd mobile && dart
+     format + flutter analyze + flutter test (+golden)`.
 3. **4b · operator hardening.**
    - **4b-i · alerting rules + runbooks — DONE: merged + PUSHED (`origin/main` `ff22d74`).**
      `deploy/prometheus/buildos.rules.yml` (8 alerts) + `deploy/prometheus/README.md` +

@@ -415,6 +415,78 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Retry'**
   String get retry;
+
+  /// No description provided for @projectLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Project'**
+  String get projectLabel;
+
+  /// No description provided for @crewOnSite.
+  ///
+  /// In en, this message translates to:
+  /// **'Crew on site'**
+  String get crewOnSite;
+
+  /// No description provided for @crewMemberName.
+  ///
+  /// In en, this message translates to:
+  /// **'Name'**
+  String get crewMemberName;
+
+  /// No description provided for @crewMemberRole.
+  ///
+  /// In en, this message translates to:
+  /// **'Role (optional)'**
+  String get crewMemberRole;
+
+  /// No description provided for @addCrewMember.
+  ///
+  /// In en, this message translates to:
+  /// **'Add crew member'**
+  String get addCrewMember;
+
+  /// No description provided for @removeCrewMember.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove crew member'**
+  String get removeCrewMember;
+
+  /// No description provided for @checkInNotes.
+  ///
+  /// In en, this message translates to:
+  /// **'Notes (optional)'**
+  String get checkInNotes;
+
+  /// No description provided for @updateLocation.
+  ///
+  /// In en, this message translates to:
+  /// **'Update'**
+  String get updateLocation;
+
+  /// No description provided for @offlineWillQueue.
+  ///
+  /// In en, this message translates to:
+  /// **'Offline — this check-in will queue and sync later.'**
+  String get offlineWillQueue;
+
+  /// No description provided for @submitCheckIn.
+  ///
+  /// In en, this message translates to:
+  /// **'Submit check-in'**
+  String get submitCheckIn;
+
+  /// No description provided for @checkInQueued.
+  ///
+  /// In en, this message translates to:
+  /// **'Check-in queued — will sync when online.'**
+  String get checkInQueued;
+
+  /// No description provided for @checkInNeedsCrew.
+  ///
+  /// In en, this message translates to:
+  /// **'Add at least one crew member.'**
+  String get checkInNeedsCrew;
 }
 
 class _AppLocalizationsDelegate

@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 
@@ -8,9 +7,9 @@ import '../l10n/app_localizations.dart';
 import '../providers/app_providers.dart';
 import '../theme/app_theme.dart';
 
-/// Daily Log capture (UX field flows): work summary + weather + safety, an
-/// optional geotagged photo, and a one-tap crew check-in. Everything is queued
-/// to the outbox, so it submits with no signal and drains later.
+/// Daily Log capture (UX field flows): work summary + weather + safety, plus an
+/// optional photo. Everything is queued to the outbox, so it submits with no
+/// signal and drains later. (Crew check-in is its own screen — CheckInScreen.)
 class DailyLogScreen extends ConsumerStatefulWidget {
   const DailyLogScreen({super.key});
 
@@ -26,7 +25,6 @@ class _DailyLogScreenState extends ConsumerState<DailyLogScreen> {
 
   String? _projectId;
   final List<String> _photoPaths = [];
-  Position? _position;
   bool _capturing = false;
 
   @override
@@ -47,28 +45,10 @@ class _DailyLogScreenState extends ConsumerState<DailyLogScreen> {
         imageQuality: 80,
       );
       if (shot != null) {
-        await _captureLocation();
         setState(() => _photoPaths.add(shot.path));
       }
     } finally {
       if (mounted) setState(() => _capturing = false);
-    }
-  }
-
-  Future<void> _captureLocation() async {
-    try {
-      var perm = await Geolocator.checkPermission();
-      if (perm == LocationPermission.denied) {
-        perm = await Geolocator.requestPermission();
-      }
-      if (perm == LocationPermission.denied ||
-          perm == LocationPermission.deniedForever) {
-        return;
-      }
-      final pos = await Geolocator.getCurrentPosition();
-      if (mounted) setState(() => _position = pos);
-    } catch (_) {
-      // Location is best-effort; the log still submits without it.
     }
   }
 
@@ -89,11 +69,6 @@ class _DailyLogScreenState extends ConsumerState<DailyLogScreen> {
           : _weather.text.trim(),
       safetyIncidents: _safety.text.trim().isEmpty ? null : _safety.text.trim(),
     );
-    await sync.queueCheckin(
-      projectId: projectId,
-      gpsLat: _position?.latitude,
-      gpsLng: _position?.longitude,
-    );
 
     if (!mounted) return;
     _summary.clear();
@@ -101,7 +76,6 @@ class _DailyLogScreenState extends ConsumerState<DailyLogScreen> {
     _safety.clear();
     setState(() {
       _photoPaths.clear();
-      _position = null;
     });
     ScaffoldMessenger.of(
       context,
@@ -168,29 +142,6 @@ class _DailyLogScreenState extends ConsumerState<DailyLogScreen> {
                   style: const TextStyle(color: FbColors.textSecondary),
                 ),
               ),
-            Padding(
-              padding: const EdgeInsets.only(top: FbSizes.gapSmall),
-              child: Row(
-                children: [
-                  Icon(
-                    _position != null
-                        ? Icons.location_on
-                        : Icons.location_off_outlined,
-                    size: 18,
-                    color: _position != null
-                        ? FbColors.gableGreen
-                        : FbColors.slate,
-                  ),
-                  const SizedBox(width: 6),
-                  Text(
-                    _position != null
-                        ? l10n.locationCaptured
-                        : l10n.locationUnavailable,
-                    style: const TextStyle(color: FbColors.textSecondary),
-                  ),
-                ],
-              ),
-            ),
             const SizedBox(height: 24),
             FilledButton(
               onPressed: _projectId == null ? null : () => _submit(l10n),

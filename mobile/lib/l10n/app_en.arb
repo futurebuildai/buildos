@@ -72,5 +72,17 @@
   "scheduleTitle": "Schedule",
   "scheduleReadOnly": "Read-only on the field app.",
   "loading": "Loading…",
-  "retry": "Retry"
+  "retry": "Retry",
+  "projectLabel": "Project",
+  "crewOnSite": "Crew on site",
+  "crewMemberName": "Name",
+  "crewMemberRole": "Role (optional)",
+  "addCrewMember": "Add crew member",
+  "removeCrewMember": "Remove crew member",
+  "checkInNotes": "Notes (optional)",
+  "updateLocation": "Update",
+  "offlineWillQueue": "Offline — this check-in will queue and sync later.",
+  "submitCheckIn": "Submit check-in",
+  "checkInQueued": "Check-in queued — will sync when online.",
+  "checkInNeedsCrew": "Add at least one crew member."
 }

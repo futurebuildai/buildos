@@ -175,4 +175,42 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get retry => 'Reintentar';
+
+  @override
+  String get projectLabel => 'Proyecto';
+
+  @override
+  String get crewOnSite => 'Cuadrilla en el sitio';
+
+  @override
+  String get crewMemberName => 'Nombre';
+
+  @override
+  String get crewMemberRole => 'Función (opcional)';
+
+  @override
+  String get addCrewMember => 'Agregar miembro';
+
+  @override
+  String get removeCrewMember => 'Quitar miembro';
+
+  @override
+  String get checkInNotes => 'Notas (opcional)';
+
+  @override
+  String get updateLocation => 'Actualizar';
+
+  @override
+  String get offlineWillQueue =>
+      'Sin conexión — este registro se pondrá en cola y se sincronizará después.';
+
+  @override
+  String get submitCheckIn => 'Enviar registro';
+
+  @override
+  String get checkInQueued =>
+      'Registro en cola — se sincronizará al conectarse.';
+
+  @override
+  String get checkInNeedsCrew => 'Agregue al menos un miembro de la cuadrilla.';
 }

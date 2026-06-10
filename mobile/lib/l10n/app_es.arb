@@ -52,5 +52,17 @@
   "scheduleTitle": "Cronograma",
   "scheduleReadOnly": "Solo lectura en la app de campo.",
   "loading": "Cargando…",
-  "retry": "Reintentar"
+  "retry": "Reintentar",
+  "projectLabel": "Proyecto",
+  "crewOnSite": "Cuadrilla en el sitio",
+  "crewMemberName": "Nombre",
+  "crewMemberRole": "Función (opcional)",
+  "addCrewMember": "Agregar miembro",
+  "removeCrewMember": "Quitar miembro",
+  "checkInNotes": "Notas (opcional)",
+  "updateLocation": "Actualizar",
+  "offlineWillQueue": "Sin conexión — este registro se pondrá en cola y se sincronizará después.",
+  "submitCheckIn": "Enviar registro",
+  "checkInQueued": "Registro en cola — se sincronizará al conectarse.",
+  "checkInNeedsCrew": "Agregue al menos un miembro de la cuadrilla."
 }

@@ -276,12 +276,15 @@ Remaining chunks (see NEXT_STEPS §P4 for entry points):
   no metrics" framing across the rules + 3 docs. 3-lens adversarial verification: Go design sound (verified
   vs River source), docs clean; 2 medium findings fixed (HTTP bind error now fails fast; the dropped-event
   best-effort caveat now operator-facing). Spec: [PHASE_4B_II_WORKER_OBS.md](.agents/handoff/PHASE_4B_II_WORKER_OBS.md).
-- **4a · Flutter field.** `schedule_screen` already exists (read-only Gantt); crew check-in already works
-  embedded in `daily_log`. Real gaps: extract a standalone **check-in** screen + the offline affordance
-  pattern (4a-i, mobile-only, no backend), then **equipment** (4a-ii, CROSS-STACK + a product decision: is
-  fleet field-visible? today field sync carries only Tasks+FeedCards, `/fleet` is operator-only, so equipment
-  needs a new field-scoped read endpoint in `internal/api/field.go`). Gates: `cd mobile && dart format +
-  flutter analyze + flutter test (+golden)` (Flutter 3.41.3 confirmed installed locally).
+- **4a · Flutter field.** **4a-i (standalone check-in + offline affordance) is BUILT on branch
+  `feat/phase-4a-i-field-checkin` (committed, NOT pushed/merged); all mobile gates green; awaiting review** —
+  new `CheckInScreen` (crew roster name+role, GPS, notes, offline-queued) + a reusable `FbDashedBorder` (the
+  amber dashed offline affordance), wired into the More tab, with the crew-less stub extracted out of
+  `daily_log`; 9 widget tests + a golden; 3-lens verification, 5 findings fixed. Spec:
+  [PHASE_4A_I_FIELD_CHECKIN.md](.agents/handoff/PHASE_4A_I_FIELD_CHECKIN.md). Then **equipment** (4a-ii,
+  CROSS-STACK + a product decision: is fleet field-visible? today field sync carries only Tasks+FeedCards,
+  `/fleet` is operator-only, so equipment needs a new field-scoped read endpoint in `internal/api/field.go`).
+  Gates: `cd mobile && dart format + flutter analyze + flutter test (+golden)` (Flutter 3.41.3 local).
 - **4b-iii · error-path UX (remaining hardening)** — Retry-After on 5xx/429, AI circuit-breaker surfacing,
   `cmd/migrate --dry-run`. Plus the small metric follow-ups 4b-ii surfaced (`pgxpool.Stat()` →
   `buildos_db_pool_*`; a per-error-code/SetupGate counter; a worker queue-depth gauge).
