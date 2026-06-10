@@ -1,6 +1,6 @@
 # Phase 4a-i — standalone field Check-in screen + the offline affordance pattern
 
-**Status:** BUILT on `feat/phase-4a-i-field-checkin` (committed, not pushed/merged). **Mobile-only — ZERO backend change** (the `/api/v1/field/checkin` endpoint + `queueCheckin` already existed). All mobile gates green. Awaiting owner review → merge.
+**Status:** DONE — merged (fast-forward) + PUSHED to `origin/main` (HEAD `4f7698e`). **Mobile-only — ZERO backend change.** Built + verified via the ultra-loop (3-lens adversarial verification + `/code-review max`, 12 findings fixed total).
 Plan: [PHASES_2-4_ULTRALOOP_PLAN.md](./PHASES_2-4_ULTRALOOP_PLAN.md) §"Phase 4 · 4a". Binding UX: [frontend/UX_CORE_SCREENS.md](./frontend/UX_CORE_SCREENS.md) §0.3, [frontend/DESIGN_SYSTEM_COMPONENTS.md](./frontend/DESIGN_SYSTEM_COMPONENTS.md) §8/§8.1/§9.
 
 ## Why

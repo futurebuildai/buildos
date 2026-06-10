@@ -120,8 +120,7 @@ the actual code, which made the original "3 missing field screens" framing partl
    `/api/v1/agents/*` AI surface end-to-end (backend + web console); prerequisite for 4c load/security
    testing it. Spec: [PHASE_4_ESC_002.md](./PHASE_4_ESC_002.md).
 2. **4a · Flutter field.**
-   - **4a-i · standalone check-in + offline affordance — BUILT on `feat/phase-4a-i-field-checkin`, awaiting
-     review.** New `CheckInScreen` (crew roster name+role, GPS, notes, offline-queued) + reusable
+   - **4a-i · standalone check-in + offline affordance — DONE: merged + PUSHED (`origin/main` `4f7698e`).** New `CheckInScreen` (crew roster name+role, GPS, notes, offline-queued) + reusable
      `FbDashedBorder` (amber dashed affordance), wired into the More tab; the crew-less stub extracted out of
      `daily_log`. 9 widget tests + a golden; mobile gates green. Spec:
      [PHASE_4A_I_FIELD_CHECKIN.md](./PHASE_4A_I_FIELD_CHECKIN.md).
