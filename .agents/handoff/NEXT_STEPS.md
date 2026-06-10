@@ -145,7 +145,7 @@ the actual code, which made the original "3 missing field screens" framing partl
    - **4b-iii · error-path UX + metric follow-ups** — Retry-After on 5xx/429, AI circuit-breaker surfacing,
      `cmd/migrate --dry-run`; plus `pgxpool.Stat()` → `buildos_db_pool_*`, a per-error-code/SetupGate counter,
      and a worker queue-depth / oldest-available-job gauge (the "worker alive but stuck" gap).
-4. **4c · security + load (FINAL gate) — BUILT on `feat/phase-4c-security-load`, awaiting review.** An
+4. **4c · security + load (FINAL gate) — DONE: merged + PUSHED (`origin/main` `495f7e4`). PHASE 4 COMPLETE.** An
    8-surface multi-agent security audit (no critical; 2 HIGH fixed — SSRF in invoice `document_url`, the
    XFF-spoof rate-limit bypass) + `scripts/k6/` load harness. Posture report: `docs/security-posture.md`;
    spec `.agents/handoff/PHASE_4C_SECURITY_LOAD.md`. Closes Phase 4. Tracked follow-ups in the posture doc

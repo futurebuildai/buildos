@@ -1,6 +1,6 @@
 # Phase 4c — security review + load harness (FINAL Phase-4 gate)
 
-**Status:** BUILT on `feat/phase-4c-security-load` (committed, not pushed/merged). All gates green. Awaiting owner review → merge.
+**Status:** DONE — merged (fast-forward) + PUSHED to `origin/main` (HEAD `495f7e4`). Built + reviewed via the ultra-loop (security-audit workflow + `/code-review max`). **CLOSES Phase 4.**
 Deliverables: a security-review pass (8-surface multi-agent audit + fixes) and a k6 load harness. Posture report: [docs/security-posture.md](../../docs/security-posture.md).
 
 ## What this is
