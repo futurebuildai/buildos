@@ -118,6 +118,7 @@ func (s *FieldStore) ListAllocatedEquipment(ctx context.Context, tx pgx.Tx, p Li
 		JOIN fleet_assets fa ON fa.id = ea.asset_id
 		JOIN projects p ON p.id = ea.project_id
 		WHERE p.org_id = $1
+		  AND fa.org_id = $1   -- the asset's own org too (defense in depth)
 		  AND $3::date >= ea.start_date
 		  AND $3::date <  ea.end_date
 		  AND ea.project_id IN (

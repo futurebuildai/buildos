@@ -358,6 +358,16 @@ void main() {
       final cached = await db.allCachedEquipment();
       expect(cached.length, 1);
       expect(cached.single.id, 'eq-1');
+
+      // A malformed/partial 200 that OMITS the equipment key must NOT wipe the
+      // cache (only an explicit empty array clears it).
+      api.getScript.add({
+        'tasks': <dynamic>[],
+        'feed_cards': <dynamic>[],
+        'server_time': '2026-06-04T12:00:00Z',
+      });
+      await sync.pull();
+      expect((await db.allCachedEquipment()).length, 1); // unchanged
     },
   );
 

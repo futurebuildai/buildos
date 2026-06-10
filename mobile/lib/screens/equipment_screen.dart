@@ -76,13 +76,21 @@ class _EquipmentCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
     // Status is never colour-only — each colour is paired with a dot + text.
+    // 'unavailable' uses textSecondary (≥7:1), not the muted slate token, which
+    // is sub-AA on the dark card (sunlight-readability is a field a11y rule).
     final (Color color, String label) = switch (asset.status) {
       'available' => (FbColors.gableGreen, l10n.equipmentStatusAvailable),
       'maintenance' => (FbColors.amber, l10n.equipmentStatusMaintenance),
-      'unavailable' => (FbColors.slate, l10n.equipmentStatusUnavailable),
+      'unavailable' => (
+        FbColors.textSecondary,
+        l10n.equipmentStatusUnavailable,
+      ),
       _ => (FbColors.textSecondary, asset.status),
     };
-    final df = DateFormat.MMMd();
+    // Locale-aware months (ES → Spanish), and format the UTC value directly: the
+    // dates are calendar DATEs (midnight UTC), so .toLocal() would roll them back
+    // a day in every Americas timezone.
+    final df = DateFormat.MMMd(Localizations.localeOf(context).toString());
 
     return Card(
       child: Padding(
@@ -163,7 +171,9 @@ class _EquipmentCard extends StatelessWidget {
                 ),
                 const SizedBox(width: 6),
                 Text(
-                  '${l10n.equipmentOnSite}: ${df.format(asset.startDate.toLocal())} – ${df.format(asset.endDate.toLocal())}',
+                  // end_date is EXCLUSIVE ([start, end)) — show end-1 as the
+                  // inclusive last on-site day. UTC fields, no .toLocal().
+                  '${l10n.equipmentOnSite}: ${df.format(asset.startDate)} – ${df.format(asset.endDate.subtract(const Duration(days: 1)))}',
                   style: const TextStyle(color: FbColors.textSecondary),
                 ),
               ],

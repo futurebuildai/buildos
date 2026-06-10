@@ -48,7 +48,9 @@ void main() {
     expect(find.text('excavator'), findsOneWidget); // type
     expect(find.text('Available'), findsOneWidget); // status (available)
     expect(find.text('SN SN-9'), findsOneWidget); // serial (placeholder)
-    expect(find.textContaining('On site'), findsOneWidget); // allocation window
+    // Window: start..end, with end shown INCLUSIVE (end_date is exclusive, so
+    // a [Jun 10, Jun 20) allocation reads "Jun 10 – Jun 19"). UTC, no day-shift.
+    expect(find.text('On site: Jun 10 – Jun 19'), findsOneWidget);
   });
 
   testWidgets('maps each status to its localized label (never colour-only)', (

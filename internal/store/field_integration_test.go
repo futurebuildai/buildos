@@ -304,6 +304,9 @@ func TestFieldStore_ListAllocatedEquipment(t *testing.T) {
 			if e.AssetType != "excavator" || e.Status != "available" {
 				t.Errorf("unexpected type/status: %s/%s", e.AssetType, e.Status)
 			}
+			if e.SerialNumber == nil || *e.SerialNumber != "Excavator-SN" {
+				t.Errorf("serial = %v, want Excavator-SN", e.SerialNumber)
+			}
 			if !e.StartDate.Equal(start) || !e.EndDate.Equal(end) {
 				t.Errorf("window = [%s,%s), want [%s,%s)", e.StartDate, e.EndDate, start, end)
 			}
