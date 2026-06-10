@@ -304,7 +304,8 @@ transport the existing task already supports and **defers raw upload + PDF to 2b
 | `422` | extraction invalid (bad currency, total ≤ 0, vendor empty, line-sum mismatch beyond tolerance) **or** unsupported media type |
 | `400` | bad JSON, missing/invalid `idempotency_key`, neither-or-both of `document_url`/`text` |
 | `503` | AI unconfigured (`ai.ErrUnconfigured`) — pipeline degraded, nothing written |
-| `502/500` | AI transport error (timeout, 5xx, circuit open) |
+| `502` | AI transport error (timeout, 5xx — non-circuit) |
+| `503` | AI circuit-open (breaker open, remaining window in Retry-After) |
 
 ---
 

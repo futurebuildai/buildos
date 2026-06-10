@@ -641,7 +641,8 @@ Rationale (VISION exact/fuzzy + recommend-only philosophy): the experience role 
 | No Anthropic key | `ai.ErrUnconfigured` → `agentic.ErrAssistantUnavailable` | **503** SERVICE_UNAVAILABLE |
 | Worker/no-AI binary (nil client) | `agentic.ErrAssistantUnavailable` | **503** |
 | Rate limited | `ai.ErrRateLimited` | **429** RATE_LIMITED |
-| Transient / circuit open | `ai.ErrTransient` / `ai.ErrCircuitOpen` | **502** UPSTREAM_ERROR |
+| Transient | `ai.ErrTransient` | **502** UPSTREAM_ERROR |
+| Circuit open | `ai.ErrCircuitOpen` | **503** AI_CIRCUIT_OPEN (Retry-After) |
 | Bad stored key | `*ai.HTTPError` 401 | **503** |
 | Project not found (rare, tool-level surfaces as IsError, but if a hard error bubbles) | `service.ErrNotFound` | **404** |
 | Bad request body / oversize history | `service.ErrInvalidInput` (handler-level 400) | **400** VALIDATION_ERROR |
@@ -762,7 +763,7 @@ Documented explicitly: **injection can mislead prose but not breach authz.**
 ## Appendix A — verified ground truth (load-bearing facts checked against the code)
 
 - `internal/ai/client.go:400` `callTool` forces a single tool (`ToolChoice{Type:"tool"}`); `messages()` (`:220`) does retry + breaker + per-org key via `ContextWithOrgID`/`orgIDFromCtx` (`:462`/`:469`); `contentBlock` (`:155`) has `ID`/`Name`/`Input` for `tool_use` and needs `ToolUseID`/`Content`/`IsError` added for `tool_result`. `defaultModel = "claude-opus-4-6"` (`:24`).
-- `internal/api/agents.go:120` `writeServiceError` already maps `ai.ErrUnconfigured`→503, `ErrRateLimited`→429, `ErrTransient`/`ErrCircuitOpen`→502, `*ai.HTTPError{401}`→503, `ErrAgents*Unavailable`→503, `ErrNotFound`→404, `ErrInvalidInput`→400. Extractable verbatim.
+- `internal/api/agents.go` + `internal/api/invoice_ingest.go` `writeAIServiceError` now maps `ai.ErrUnconfigured`→503, `ErrRateLimited`→429, `ErrTransient`→502, `ErrCircuitOpen`→503 (with Retry-After), `*ai.HTTPError{401}`→503, `ErrAgents*Unavailable`→503, `ErrNotFound`→404, `ErrInvalidInput`→400. Both error writers thread the metric observer + Retry-After header via shared helpers.
 - `internal/api/router.go:355` agents block mounts under `if agents != nil` with `RequirePlanTier(pro)`. Financials gates: `/financials` `RequireMinRole(superintendent)` (`:292`); `/financials/ar-aging` + `/financials/projects` `RequireRole(owner,admin)` (`:294`,`:295`); `/projects/{id}/budgets` `RequireRole(owner,admin)` (`:254`).
 - `internal/service/budget.go`: `GetProjectBudgets(ctx, projectID, callerOrgID)` (`:54`, `VerifyProjectInOrg`); `GetARAging(ctx, orgID, currencyCode)` (`:107`, **no role**); `GetProjectFinancials(ctx, orgID, currencyCode)` (`:126`, **no role**); `GetOrgFinancialsSummary(ctx, orgID, currencyCode)` (`:80`, **no role**).
 - `internal/service/schedule.go`: `GetGantt(ctx, projectID, callerOrgID)` (`:221`, `VerifyProjectInOrg`); `ListProjectTasks(ctx, ListProjectTasksInput{ProjectID,OrgID,...})` (`:272`).

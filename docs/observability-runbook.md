@@ -18,7 +18,7 @@ fork can run with none of them and add them later (`internal/obs`).
 
 | Signal | Surface | Enabled by | Notes |
 |---|---|---|---|
-| **Metrics** | `GET /metrics` (Prometheus) | server + worker (both expose `/metrics`) | Custom registry — five emitted `buildos_*` metrics (see the README table). Unauth; restrict by network policy. |
+| **Metrics** | `GET /metrics` (Prometheus) | server + worker (both expose `/metrics`) | Custom registry — nine emitted `buildos_*` metrics (see the README table). Unauth; restrict by network policy. |
 | **Logs** | stdout, JSON (slog) | always | Every record carries the correlation trio (§2). Scrape into Loki/CloudWatch/etc. |
 | **Traces** | OTLP → collector | `OTEL_EXPORTER_OTLP_ENDPOINT` | Every inbound request is a span (`otelhttp`); default sample rate 0.1. Empty endpoint ⇒ no-op exporter but W3C propagation still stamps `trace_id` into logs. |
 | **Errors** | Sentry | `SENTRY_DSN` | Panics + tagged exceptions. PII scrubbed in `BeforeSend` via the `internal/pii` catalog (Restricted fields redacted). |

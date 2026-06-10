@@ -600,7 +600,8 @@ Native-AI-backed endpoints. BuildOS calls the Anthropic Messages API directly us
 | No Anthropic key set for the org | 503 | `SERVICE_UNAVAILABLE` |
 | Anthropic rejected the stored key (401 upstream) | 503 | `SERVICE_UNAVAILABLE` |
 | Provider rate limited | 429 | `RATE_LIMITED` |
-| Provider transient / circuit-open / 5xx | 502 | `UPSTREAM_ERROR` |
+| Provider transient / 5xx (non-circuit) | 502 | `UPSTREAM_ERROR` |
+| Provider circuit-open | 503 | `AI_CIRCUIT_OPEN` (Retry-After set) |
 
 ---
 

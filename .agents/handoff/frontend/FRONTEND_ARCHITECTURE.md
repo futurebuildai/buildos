@@ -275,14 +275,15 @@ This is the central pivot-specific UX pattern. Because AI and email are BYOK, a 
 
 **Client rules:**
 1. **Proactive capability gating.** On login, the client fetches `GET /api/v1/capabilities` and caches it in `capabilityStore`. AI-driven affordances (Generate Briefing, Extract Invoice, Recommend Adjustments, Recommend Vendors, Tribunal Review) render in a **disabled "AI not configured"** state with a one-click deep link to `/settings/integrations/anthropic` (owner/admin) or an explanatory tooltip (other roles) when `ai_configured == false`. This avoids letting users trigger an action that can only 503.
-2. **Reactive soft-fail.** If a capability flips between fetch and call (race), an AI call returns `503 AI_UNCONFIGURED`. The client shows a non-destructive inline notice ("AI isn't set up yet — add an Anthropic key in Settings → Integrations"), **not** a red error toast, and refreshes `capabilityStore`. Distinguish this clearly from `502/503` transient upstream errors (`ai: upstream transient` / circuit-open), which DO get a retry affordance and a normal error toast.
+2. **Reactive soft-fail.** If a capability flips between fetch and call (race), an AI call returns `503 AI_UNCONFIGURED`. The client shows a non-destructive inline notice ("AI isn't set up yet — add an Anthropic key in Settings → Integrations"), **not** a red error toast, and refreshes `capabilityStore`. Distinguish this clearly from transient AI errors: `502 UPSTREAM_ERROR` (provider 5xx / timeout — retry without special Retry-After handling) and `503 AI_CIRCUIT_OPEN` (breaker open — respect the Retry-After header), which DO get a retry affordance and a normal error toast.
 3. **Email is invisible-soft.** A flow that triggers email (e.g. password reset request) always shows the same neutral confirmation regardless of whether `resend` is configured (avoids account enumeration + matches `ErrMailerUnconfigured` being non-fatal). Owner/admin separately see a Settings warning if `email_configured == false`.
 4. **Error taxonomy mapping** (client must branch on the machine code, not the HTTP status alone):
 
 | Server code | HTTP | Client treatment |
 |---|---|---|
 | `AI_UNCONFIGURED` | 503 | Soft notice + deep link to integrations; refresh capabilities. Not an error toast. |
-| `SERVICE_UNAVAILABLE` (AI transient/circuit) | 502/503 | Error toast + Retry. |
+| `UPSTREAM_ERROR` (AI transient/5xx) | 502 | Error toast + Retry. |
+| `AI_CIRCUIT_OPEN` (breaker open) | 503 | Error toast + Retry (respect Retry-After header). |
 | `RATE_LIMITED` | 429 | Toast with backoff hint; auto-retry honoring `Retry-After`. |
 | `SETUP_INCOMPLETE` | 403 | Redirect to `/setup`. |
 | `UNAUTHORIZED` | 401 | 401-interceptor (§4.2). |

@@ -142,14 +142,17 @@ the actual code, which made the original "3 missing field screens" framing partl
      `buildos_river_job_runs_total` (event subscription) + the worker AI client feeds `buildos_ai_*`; re-added
      the `buildos-jobs` alert group + `BuildOSWorkerDown` + the worker scrape job. Spec:
      [PHASE_4B_II_WORKER_OBS.md](./PHASE_4B_II_WORKER_OBS.md).
-   - **4b-iii · error-path UX + metric follow-ups** — Retry-After on 5xx/429, AI circuit-breaker surfacing,
-     `cmd/migrate --dry-run`; plus `pgxpool.Stat()` → `buildos_db_pool_*`, a per-error-code/SetupGate counter,
-     and a worker queue-depth / oldest-available-job gauge (the "worker alive but stuck" gap).
+   - **4b-iii · error-path UX + metric follow-ups — DONE: merged + PUSHED (`origin/main` `698f40b`). CLOSES PHASE 4.**
+     AI circuit-breaker → 503 + Retry-After (split from `ErrTransient`→502), shared Retry-After helpers for 5xx/429,
+     `cmd/migrate --dry-run`; plus `pgxpool.Stat()` → `buildos_db_pool_*`, a per-error-code counter
+     (`buildos_http_error_responses_total`), and a worker queue-depth / oldest-available-job gauge (the "worker
+     alive but stuck" gap) + the `BuildOSWorkerQueueBacklog` alert. Spec: [PHASE_4B_III_ERROR_UX.md](./PHASE_4B_III_ERROR_UX.md).
 4. **4c · security + load (FINAL gate) — DONE: merged + PUSHED (`origin/main` `495f7e4`). PHASE 4 COMPLETE.** An
    8-surface multi-agent security audit (no critical; 2 HIGH fixed — SSRF in invoice `document_url`, the
    XFF-spoof rate-limit bypass) + `scripts/k6/` load harness. Posture report: `docs/security-posture.md`;
-   spec `.agents/handoff/PHASE_4C_SECURITY_LOAD.md`. Closes Phase 4. Tracked follow-ups in the posture doc
-   (per-account lockout, per-(org,user) AI throttle, deployment TLS/HSTS + TRUSTED_PROXY_CIDRS).
+   spec `.agents/handoff/PHASE_4C_SECURITY_LOAD.md`. Closes 4a/4b-i/4b-ii/4c; Phase 4 is closed by 4b-iii (above).
+   Tracked follow-ups in the posture doc (per-account lockout, per-(org,user) AI throttle, deployment TLS/HSTS +
+   TRUSTED_PROXY_CIDRS, audit-log free-text PII, web vite/esbuild bump).
 
 ---
 

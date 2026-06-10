@@ -13,7 +13,7 @@
 
 ## Config/docs (re-added what 4b-i deferred)
 - **`deploy/prometheus/buildos.rules.yml`:** re-added the river recording rules + the `buildos-jobs` group (`BuildOSRiverJobErrorRateHigh` — error *attempt* ratio >20%/10m + floor; `BuildOSRiverJobsDiscarded` — `increase(...discarded[15m])>0`, with a **best-effort caveat**) + `BuildOSWorkerDown` (`up{job="buildos-worker"}==0`, 2m, critical). 11 alerts, 9 records.
-- **README + observability + deploy runbooks:** both processes scraped (jobs `buildos-server` + `buildos-worker`); five emitted metrics; `buildos_ai_*` now server+worker; worker probes; the dropped-event caveat + the "worker alive but not draining jobs" known gap.
+- **README + observability + deploy runbooks:** both processes scraped (jobs `buildos-server` + `buildos-worker`); five emitted metrics (since extended to nine in 4b-iii — per-error-code counter + pool/queue-depth gauges); `buildos_ai_*` now server+worker; worker probes; the dropped-event caveat + the "worker alive but not draining jobs" gap (closed in 4b-iii by the queue-depth gauge).
 
 ## Verification (3-lens adversarial pass)
 Go correctness: **sound** (verified vs River source — no leak, double-cancel safe, correct shutdown ordering, complete mapping, thread-safe). Docs accuracy: **clean** (every PromQL/anchor/link/claim verified). Two medium findings, both fixed: (1) the worker HTTP bind error was swallowed in the goroutine → now fails fast + a co-located-`PORT` note in the deploy runbook; (2) the dropped-event risk (River's non-blocking channel can drop a discard event → missed page) was code-only → now an operator-facing caveat in the rules file + runbook pointing at the River job tables as source of truth.

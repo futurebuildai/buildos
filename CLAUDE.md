@@ -31,6 +31,7 @@ make lint-migrations-test # regression suite for the migration linter itself
 make db-up              # docker compose up -d db (Postgres 16, port 5433)
 make db-down
 make migrate            # runs migrations up against $DATABASE_URL
+make migrate-dry-run    # lists pending migrations without applying
 make migrate-down       # rolls back
 make bench-physics      # CPM benchmarks through tools/bench-gate (CI hard gate)
 make docker-build       # multi-stage distroless image; entrypoint dispatches by BUILDOS_ROLE
@@ -154,7 +155,7 @@ Adding new dev-only auth paths? Tag them `//go:build !prod` and ship a `prod` st
 Three independent layers, all turn-on-when-configured (empty config = no-op, no error):
 
 - **Sentry** — panics + tagged exception capture. `SENTRY_DSN` enables. PII is scrubbed via `BeforeSend` using the `internal/pii` classification catalog (see "PII handling" below).
-- **Prometheus `/metrics`** — HTTP request count + duration (chi route pattern, not raw URL — bounded cardinality), native AI request count + duration by task kind + model + outcome, River job runs by kind + outcome. Mount unauth (Prometheus convention); restrict via network policy.
+- **Prometheus `/metrics`** — HTTP request count + duration (chi route pattern, not raw URL — bounded cardinality), HTTP error responses by error code + status class, native AI request count + duration by task kind + model + outcome, River job runs by kind + outcome, DB pool connection gauges (acquired/idle/total/max), and River queue depth + oldest-available-job age. Mount unauth (Prometheus convention); restrict via network policy.
 - **OpenTelemetry traces** — `OTEL_EXPORTER_OTLP_ENDPOINT` enables. Router stack mounts `otelhttp.NewHandler` (every inbound request is a span). Default sample rate 0.1.
 
 `internal/obs.CorrelatingHandler` wraps the JSON slog handler so every log record carries the standard correlation trio: `request_id` (from chi), `trace_id` + `span_id` (from active OTel span). Egress wrappers should always log via `*Context` variants (`InfoContext`, `WarnContext`, etc.) so the trio gets stamped.
