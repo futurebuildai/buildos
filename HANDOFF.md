@@ -283,8 +283,8 @@ Claude-native command center for Grant + feedback loop) → **3** PRR-001 + 3-br
 security remediation (lockout + AI throttle) → cutover. Full plan text: in the 2026-06-09 session log /
 owner's ultraplan approval message.
 
-- **Phase 0a — same-origin SPA serving: BUILT + REVIEWED, awaiting owner review/merge.** Branch
-  `feature/phase-0a-spa-serving` @ `4a7547e` (NOT merged, NOT pushed — owner's call per working agreement).
+- **Phase 0a — same-origin SPA serving: ✅ MERGED (fast-forward) + PUSHED to origin** (`4a7547e` + docs
+  `f7b4fd6`; owner approved 2026-06-10; the `workflow`-scope push concern didn't materialize).
   `internal/api/spa.go` (NotFound catch-all: SPA fallback + CSP/no-cache on HTML, immutable hashed assets,
   JSON-404 `/api/*` guard — note chi propagates root NotFound into subrouters; the `r.URL.Path` guard is
   load-bearing), `WEB_DIST_DIR` (config + boot fail-fast validation), Dockerfile `node:20-alpine` webbuilder
