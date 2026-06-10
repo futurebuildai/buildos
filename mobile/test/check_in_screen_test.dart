@@ -169,6 +169,27 @@ void main() {
   });
 
   testWidgets(
+    'an over-long note (>4096 bytes) blocks submit (not silently lost)',
+    (tester) async {
+      final sync = _RecordingSync();
+      await tester.pumpWidget(_harness(sync));
+      await tester.pumpAndSettle();
+      final fields = find.byType(TextFormField);
+      await tester.enterText(fields.at(0), 'Sam'); // name
+      await tester.enterText(fields.at(2), 'x' * 4097); // 4097 bytes > 4096 cap
+      await tester.tap(find.text('Submit check-in'));
+      await tester.pumpAndSettle();
+      // Validator blocks it client-side with an error, rather than queueing a
+      // check-in the backend will 400 + the outbox parks (silent loss).
+      expect(sync.checkins, isEmpty);
+      expect(
+        find.text('Notes are too long. Shorten and try again.'),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets(
     'multi-project: the dropdown selection is the submitted project',
     (tester) async {
       final sync = _RecordingSync();

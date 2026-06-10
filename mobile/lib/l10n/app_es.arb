@@ -64,5 +64,6 @@
   "offlineWillQueue": "Sin conexión — este registro se pondrá en cola y se sincronizará después.",
   "submitCheckIn": "Enviar registro",
   "checkInQueued": "Registro en cola — se sincronizará al conectarse.",
-  "checkInNeedsCrew": "Agregue al menos un miembro de la cuadrilla."
+  "checkInNeedsCrew": "Agregue al menos un miembro de la cuadrilla.",
+  "notesTooLong": "Las notas son demasiado largas. Acórtelas e intente de nuevo."
 }

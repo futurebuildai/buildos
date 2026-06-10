@@ -212,4 +212,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get checkInNeedsCrew => 'Add at least one crew member.';
+
+  @override
+  String get notesTooLong => 'Notes are too long. Shorten and try again.';
 }

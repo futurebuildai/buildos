@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
@@ -7,6 +9,11 @@ import '../providers/app_providers.dart';
 import '../theme/app_theme.dart';
 import '../widgets/fb_dashed_border.dart';
 import '../widgets/fb_sync_chip.dart';
+import 'sync_status_screen.dart';
+
+/// Backend cap on notes — internal/service/field.go caps at 4096 BYTES (Go
+/// len()), so the screen validates utf8 byte length, not char count.
+const int kMaxNotesBytes = 4096;
 
 /// Standalone crew check-in (Phase 4a-i — extracted from the Daily Log): who is
 /// on site (name + role), the site GPS, and optional notes. Everything is queued
@@ -91,8 +98,13 @@ class _CheckInScreenState extends ConsumerState<CheckInScreen> {
   }
 
   Future<void> _submit(AppLocalizations l10n) async {
+    // Synchronous double-submit guard: setState only SCHEDULES a rebuild, so a
+    // second tap in the same frame would still see the button enabled.
+    if (_submitting) return;
     final projectId = _projectId;
-    if (projectId == null || !(_formKey.currentState?.validate() ?? false)) {
+    if (projectId == null ||
+        projectId.isEmpty ||
+        !(_formKey.currentState?.validate() ?? false)) {
       return;
     }
     final crew = _crewPayload();
@@ -129,20 +141,38 @@ class _CheckInScreenState extends ConsumerState<CheckInScreen> {
     final online = ref.watch(onlineProvider).value ?? true;
     final tasks = ref.watch(tasksProvider).value ?? const [];
     final projectIds = {for (final t in tasks) t.projectId}.toList();
-    _projectId ??= projectIds.isNotEmpty ? projectIds.first : null;
+    // Reconcile against the LIVE project set every build — a background sync can
+    // invalidate tasksProvider while this screen is open (HomeShell stays mounted
+    // underneath and auto-syncs on reconnect/push), so a plain `??=` would leave
+    // a stale or no-longer-listed selection: submitting against the wrong project
+    // (silent) or tripping the dropdown's value-in-items assert. Empty ids (a
+    // malformed cache row → ProjectTask.fromJson default "") are not submittable.
+    if (_projectId == null || !projectIds.contains(_projectId)) {
+      _projectId = projectIds.isNotEmpty ? projectIds.first : null;
+    }
+    final canSubmit =
+        _projectId != null && _projectId!.isNotEmpty && !_submitting;
 
     final submit = FilledButton(
-      onPressed: _projectId == null || _submitting ? null : () => _submit(l10n),
+      onPressed: canSubmit ? () => _submit(l10n) : null,
       child: Text(l10n.submitCheckIn),
     );
 
     return Scaffold(
       appBar: AppBar(
         title: Text(l10n.crewCheckIn),
-        actions: const [
+        actions: [
           Padding(
-            padding: EdgeInsets.only(right: FbSizes.gap),
-            child: Center(child: FbSyncChip()),
+            padding: const EdgeInsets.only(right: FbSizes.gap),
+            child: Center(
+              child: FbSyncChip(
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const SyncStatusScreen(),
+                  ),
+                ),
+              ),
+            ),
           ),
         ],
       ),
@@ -221,11 +251,6 @@ class _CheckInScreenState extends ConsumerState<CheckInScreen> {
                 alignment: Alignment.centerLeft,
                 child: TextButton.icon(
                   onPressed: _addCrew,
-                  // Field tap floor (the theme floors filled/outlined buttons
-                  // but not text buttons).
-                  style: TextButton.styleFrom(
-                    minimumSize: const Size(0, FbSizes.touchTarget),
-                  ),
                   icon: const Icon(Icons.add_circle_outline),
                   label: Text(l10n.addCrewMember),
                 ),
@@ -237,7 +262,15 @@ class _CheckInScreenState extends ConsumerState<CheckInScreen> {
                 controller: _notes,
                 minLines: 2,
                 maxLines: 4,
-                maxLength: 4096,
+                // Validate BYTES, not a char maxLength: the backend caps notes
+                // at 4096 BYTES (Go len()), so a 4096-char maxLength would let a
+                // multibyte (accented/emoji) note pass here and then 400 + park
+                // silently on drain. utf8-encode to match the server exactly.
+                // (A validator also avoids the maxLength "0/4096" counter chrome.)
+                validator: (v) =>
+                    (v != null && utf8.encode(v).length > kMaxNotesBytes)
+                    ? l10n.notesTooLong
+                    : null,
                 decoration: InputDecoration(labelText: l10n.checkInNotes),
               ),
 
@@ -266,9 +299,6 @@ class _CheckInScreenState extends ConsumerState<CheckInScreen> {
                   ),
                   TextButton(
                     onPressed: _captureLocation,
-                    style: TextButton.styleFrom(
-                      minimumSize: const Size(0, FbSizes.touchTarget),
-                    ),
                     child: Text(l10n.updateLocation),
                   ),
                 ],

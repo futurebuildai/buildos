@@ -87,7 +87,13 @@ class _DailyLogScreenState extends ConsumerState<DailyLogScreen> {
     final l10n = AppLocalizations.of(context);
     final tasks = ref.watch(tasksProvider).value ?? const [];
     final projectIds = {for (final t in tasks) t.projectId}.toList();
-    _projectId ??= projectIds.isNotEmpty ? projectIds.first : null;
+    // Reconcile against the live set, not a one-time `??=`: a background sync can
+    // invalidate tasksProvider while this tab is open, leaving a stale selection
+    // (a daily log filed against the wrong project) or tripping the dropdown's
+    // value-in-items assert. See CheckInScreen for the same fix.
+    if (_projectId == null || !projectIds.contains(_projectId)) {
+      _projectId = projectIds.isNotEmpty ? projectIds.first : null;
+    }
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(FbSizes.gap),

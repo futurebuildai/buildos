@@ -67,6 +67,8 @@ class _DashedBorderPainter extends CustomPainter {
     // Defensive: in release builds the constructor assert is stripped, so guard
     // the walk invariant here too — a non-advancing step would spin forever.
     if (dashLength <= 0 || gapLength < 0) return;
+    // A child smaller than the stroke would make a negative-extent rect.
+    if (size.width <= strokeWidth || size.height <= strokeWidth) return;
     final paint = Paint()
       ..color = color
       ..strokeWidth = strokeWidth

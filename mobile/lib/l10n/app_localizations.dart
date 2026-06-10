@@ -487,6 +487,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Add at least one crew member.'**
   String get checkInNeedsCrew;
+
+  /// No description provided for @notesTooLong.
+  ///
+  /// In en, this message translates to:
+  /// **'Notes are too long. Shorten and try again.'**
+  String get notesTooLong;
 }
 
 class _AppLocalizationsDelegate

@@ -126,6 +126,14 @@ ThemeData buildFieldTheme() {
         ),
       ),
     ),
+    // Text buttons get the same 56px field floor as filled/outlined — glove-
+    // friendly targets are a binding rule for ALL field controls, and Material's
+    // default (~36-48px) is sub-spec.
+    textButtonTheme: TextButtonThemeData(
+      style: TextButton.styleFrom(
+        minimumSize: const Size(0, FbSizes.touchTarget),
+      ),
+    ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
       fillColor: FbColors.slateSteelRaised,

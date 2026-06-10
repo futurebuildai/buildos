@@ -213,4 +213,8 @@ class AppLocalizationsEs extends AppLocalizations {
 
   @override
   String get checkInNeedsCrew => 'Agregue al menos un miembro de la cuadrilla.';
+
+  @override
+  String get notesTooLong =>
+      'Las notas son demasiado largas. Acórtelas e intente de nuevo.';
 }

@@ -84,5 +84,6 @@
   "offlineWillQueue": "Offline — this check-in will queue and sync later.",
   "submitCheckIn": "Submit check-in",
   "checkInQueued": "Check-in queued — will sync when online.",
-  "checkInNeedsCrew": "Add at least one crew member."
+  "checkInNeedsCrew": "Add at least one crew member.",
+  "notesTooLong": "Notes are too long. Shorten and try again."
 }
