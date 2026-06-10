@@ -164,6 +164,157 @@ func TestFieldStore_ListAssignedTasks(t *testing.T) {
 	})
 }
 
+// seedFleetAsset inserts a fleet_assets row and returns its id.
+func seedFleetAsset(t *testing.T, ctx context.Context, pool poolExec, orgID uuid.UUID, name, assetType string) uuid.UUID {
+	t.Helper()
+	var id uuid.UUID
+	err := pool.QueryRow(ctx, `
+		INSERT INTO fleet_assets (org_id, name, asset_type, serial_number, status)
+		VALUES ($1, $2, $3, $4, 'available') RETURNING id`,
+		orgID, name, assetType, name+"-SN",
+	).Scan(&id)
+	if err != nil {
+		t.Fatalf("seed fleet asset %s: %v", name, err)
+	}
+	return id
+}
+
+// seedAllocation inserts an equipment_allocations row for [start, end).
+func seedAllocation(t *testing.T, ctx context.Context, pool poolExec, assetID, projectID uuid.UUID, start, end time.Time) {
+	t.Helper()
+	var id uuid.UUID
+	err := pool.QueryRow(ctx, `
+		INSERT INTO equipment_allocations (asset_id, project_id, start_date, end_date)
+		VALUES ($1, $2, $3, $4) RETURNING id`,
+		assetID, projectID, start, end,
+	).Scan(&id)
+	if err != nil {
+		t.Fatalf("seed allocation: %v", err)
+	}
+}
+
+func TestFieldStore_ListAllocatedEquipment(t *testing.T) {
+	pool := testdb.NewPool(t)
+	s := NewFieldStore()
+	ctx := context.Background()
+
+	today := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	active := func() (time.Time, time.Time) {
+		return time.Date(2026, 6, 10, 0, 0, 0, 0, time.UTC), time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+	}
+
+	orgA := uuid.New()
+	orgB := uuid.New()
+	userA := uuid.New()
+	userB := uuid.New()
+	testdb.SeedOrg(t, pool, orgA, "Org A")
+	testdb.SeedOrg(t, pool, orgB, "Org B")
+	testdb.SeedUser(t, pool, userA, orgA)
+	testdb.SeedUser(t, pool, userB, orgA)
+
+	projMine := uuid.New()      // A: userA has an open task
+	projNotMine := uuid.New()   // A: only userB has a task
+	projCompleted := uuid.New() // A: userA's only task is completed
+	projB := uuid.New()         // B: cross-org
+	testdb.SeedProject(t, pool, projMine, orgA, "Mine")
+	testdb.SeedProject(t, pool, projNotMine, orgA, "Not Mine")
+	testdb.SeedProject(t, pool, projCompleted, orgA, "Completed")
+	testdb.SeedProject(t, pool, projB, orgB, "Cross Org")
+
+	seedFieldTask(t, ctx, pool, projMine, userA, "mine-open")
+	seedFieldTask(t, ctx, pool, projNotMine, userB, "notmine-open")
+	// userA assigned to projCompleted but the task is completed → not an active site.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO project_tasks (project_id, wbs_code, name, duration_days, assigned_crew, status)
+		VALUES ($1, 'done', 'done', 1, ARRAY[$2]::uuid[], 'completed')`, projCompleted, userA); err != nil {
+		t.Fatalf("seed completed task: %v", err)
+	}
+	// A STALE cross-org assignment: userA's id sits in a task's assigned_crew in
+	// Org B. The org filter MUST keep Org B's equipment out of Org A's result.
+	seedFieldTask(t, ctx, pool, projB, userA, "crossorg-open")
+
+	start, end := active()
+	assetMine := seedFleetAsset(t, ctx, pool, orgA, "Excavator", "excavator")
+	seedAllocation(t, ctx, pool, assetMine, projMine, start, end) // SHOWN
+
+	assetNotMine := seedFleetAsset(t, ctx, pool, orgA, "Grader", "grader")
+	seedAllocation(t, ctx, pool, assetNotMine, projNotMine, start, end) // not my project
+
+	assetCompleted := seedFleetAsset(t, ctx, pool, orgA, "Crane", "crane")
+	seedAllocation(t, ctx, pool, assetCompleted, projCompleted, start, end) // my task completed
+
+	assetPast := seedFleetAsset(t, ctx, pool, orgA, "Compactor", "compactor")
+	seedAllocation(t, ctx, pool, assetPast, projMine,
+		time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 6, 10, 0, 0, 0, 0, time.UTC)) // ended (end exclusive, today=15)
+
+	assetFuture := seedFleetAsset(t, ctx, pool, orgA, "Loader", "loader")
+	seedAllocation(t, ctx, pool, assetFuture, projMine,
+		time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC), time.Date(2026, 6, 25, 0, 0, 0, 0, time.UTC)) // not started
+
+	assetOrgB := seedFleetAsset(t, ctx, pool, orgB, "B-Excavator", "excavator")
+	seedAllocation(t, ctx, pool, assetOrgB, projB, start, end) // other org
+
+	list := func(uid uuid.UUID) []string {
+		var names []string
+		err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+			rows, err := s.ListAllocatedEquipment(ctx, tx, ListAllocatedEquipmentParams{
+				UserID: uid, OrgID: orgA, Today: today,
+			})
+			if err != nil {
+				return err
+			}
+			for _, e := range rows {
+				names = append(names, e.Name)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("list equipment: %v", err)
+		}
+		return names
+	}
+
+	t.Run("userA sees only the active asset on their own project", func(t *testing.T) {
+		got := list(userA)
+		if len(got) != 1 || got[0] != "Excavator" {
+			t.Errorf("userA equipment = %v, want [Excavator] (excludes not-mine, completed-site, past, future, cross-org)", got)
+		}
+	})
+
+	t.Run("userB sees only the asset on their own project", func(t *testing.T) {
+		got := list(userB)
+		if len(got) != 1 || got[0] != "Grader" {
+			t.Errorf("userB equipment = %v, want [Grader]", got)
+		}
+	})
+
+	t.Run("field-safe projection carries the allocation window, not org_id", func(t *testing.T) {
+		err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+			rows, err := s.ListAllocatedEquipment(ctx, tx, ListAllocatedEquipmentParams{UserID: userA, OrgID: orgA, Today: today})
+			if err != nil {
+				return err
+			}
+			if len(rows) != 1 {
+				t.Fatalf("want 1 row")
+			}
+			e := rows[0]
+			if e.ID != assetMine {
+				t.Errorf("id = %s, want %s", e.ID, assetMine)
+			}
+			if e.AssetType != "excavator" || e.Status != "available" {
+				t.Errorf("unexpected type/status: %s/%s", e.AssetType, e.Status)
+			}
+			if !e.StartDate.Equal(start) || !e.EndDate.Equal(end) {
+				t.Errorf("window = [%s,%s), want [%s,%s)", e.StartDate, e.EndDate, start, end)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
 func TestFieldStore_ReportProgress_Idempotency(t *testing.T) {
 	pool := testdb.NewPool(t)
 	s := NewFieldStore()

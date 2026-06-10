@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../database/app_database.dart';
+import '../models/equipment_asset.dart';
 import '../models/project_task.dart';
 import '../models/user.dart';
 import '../services/api_client.dart';
@@ -130,6 +131,29 @@ final tasksProvider = FutureProvider<List<ProjectTask>>((ref) async {
   return tasks;
 });
 
+// ---- Equipment list (server-wins full-replace cache) --------------------
+
+/// Reads the cached equipment allocated to the caller's active sites
+/// (Phase 4a-ii, read-only), sorted by name.
+final equipmentProvider = FutureProvider<List<EquipmentAsset>>((ref) async {
+  final db = ref.watch(databaseProvider);
+  final rows = await db.allCachedEquipment();
+  final list = [
+    for (final r in rows)
+      EquipmentAsset(
+        id: r.id,
+        name: r.name,
+        assetType: r.assetType,
+        status: r.status,
+        serialNumber: r.serialNumber,
+        startDate: r.startDate,
+        endDate: r.endDate,
+      ),
+  ];
+  list.sort((a, b) => a.name.compareTo(b.name));
+  return list;
+});
+
 // ---- Sync orchestration -------------------------------------------------
 
 class SyncUiState {
@@ -166,6 +190,7 @@ class SyncController extends Notifier<SyncUiState> {
     try {
       await ref.read(syncServiceProvider).syncNow();
       ref.invalidate(tasksProvider);
+      ref.invalidate(equipmentProvider);
       final meta = await ref.read(databaseProvider).loadSyncMeta();
       state = SyncUiState(syncing: false, lastSyncedAt: meta?.lastSyncedAt);
     } on ApiError catch (e) {

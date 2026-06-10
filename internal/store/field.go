@@ -83,6 +83,73 @@ func (s *FieldStore) ListAssignedTasks(ctx context.Context, tx pgx.Tx, p ListAss
 	return out, rows.Err()
 }
 
+// ListAllocatedEquipmentParams scopes a /field/sync equipment pull. Today is
+// the "as of" instant; only its calendar date (UTC) is used to decide which
+// allocations are active.
+type ListAllocatedEquipmentParams struct {
+	UserID uuid.UUID
+	OrgID  uuid.UUID
+	Today  time.Time
+}
+
+// ListAllocatedEquipment returns the field-safe projection of fleet assets
+// currently allocated to a project the caller is assigned to. The caller's
+// project set is derived the same way the task pull derives visibility —
+// projects where the caller is in assigned_crew on a NON-completed task — so a
+// field worker sees only equipment on the sites they are actively working, not
+// the org's whole fleet.
+//
+// This is a FULL-SET read (no Since/delta): relevance pivots on the allocation
+// window and the asset status, neither of which is captured by a created_at
+// delta, and neither table has updated_at. The caller refreshes its whole
+// equipment cache each sync.
+//
+// Org isolation: equipment_allocations has no org_id, so it flows through the
+// projects join on the allocation (p.org_id = $1) AND the org-scoped subquery
+// (tp.org_id = $1) — defense in depth, mirroring ListAssignedTasks.
+func (s *FieldStore) ListAllocatedEquipment(ctx context.Context, tx pgx.Tx, p ListAllocatedEquipmentParams) ([]models.FieldEquipment, error) {
+	// Bind the date as an unambiguous 'YYYY-MM-DD' string so the [start,end)
+	// window comparison doesn't depend on the DB session timezone.
+	today := p.Today.UTC().Format("2006-01-02")
+	q := `
+		SELECT fa.id, fa.name, fa.asset_type, fa.serial_number, fa.status,
+		       ea.start_date, ea.end_date
+		FROM equipment_allocations ea
+		JOIN fleet_assets fa ON fa.id = ea.asset_id
+		JOIN projects p ON p.id = ea.project_id
+		WHERE p.org_id = $1
+		  AND $3::date >= ea.start_date
+		  AND $3::date <  ea.end_date
+		  AND ea.project_id IN (
+		    SELECT t.project_id
+		    FROM project_tasks t
+		    JOIN projects tp ON tp.id = t.project_id
+		    WHERE tp.org_id = $1
+		      AND t.status <> 'completed'
+		      AND $2::uuid = ANY(t.assigned_crew)
+		  )
+		ORDER BY fa.name ASC, fa.id ASC`
+
+	rows, err := tx.Query(ctx, q, p.OrgID, p.UserID, today)
+	if err != nil {
+		return nil, fmt.Errorf("query field sync equipment: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]models.FieldEquipment, 0)
+	for rows.Next() {
+		var e models.FieldEquipment
+		if err := rows.Scan(
+			&e.ID, &e.Name, &e.AssetType, &e.SerialNumber, &e.Status,
+			&e.StartDate, &e.EndDate,
+		); err != nil {
+			return nil, fmt.Errorf("scan field sync equipment: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // ReportProgressParams is the input for inserting a task_progress row.
 type ReportProgressParams struct {
 	TaskID          uuid.UUID

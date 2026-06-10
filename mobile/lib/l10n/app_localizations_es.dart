@@ -217,4 +217,27 @@ class AppLocalizationsEs extends AppLocalizations {
   @override
   String get notesTooLong =>
       'Las notas son demasiado largas. Acórtelas e intente de nuevo.';
+
+  @override
+  String get equipmentTitle => 'Equipo';
+
+  @override
+  String get equipmentEmpty => 'Aún no hay equipo en sus sitios.';
+
+  @override
+  String get equipmentStatusAvailable => 'Disponible';
+
+  @override
+  String get equipmentStatusMaintenance => 'Mantenimiento';
+
+  @override
+  String get equipmentStatusUnavailable => 'No disponible';
+
+  @override
+  String get equipmentOnSite => 'En el sitio';
+
+  @override
+  String equipmentSerial(String serial) {
+    return 'Serie $serial';
+  }
 }

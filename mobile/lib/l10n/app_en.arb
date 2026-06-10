@@ -85,5 +85,17 @@
   "submitCheckIn": "Submit check-in",
   "checkInQueued": "Check-in queued — will sync when online.",
   "checkInNeedsCrew": "Add at least one crew member.",
-  "notesTooLong": "Notes are too long. Shorten and try again."
+  "notesTooLong": "Notes are too long. Shorten and try again.",
+  "equipmentTitle": "Equipment",
+  "equipmentEmpty": "No equipment on your sites yet.",
+  "equipmentStatusAvailable": "Available",
+  "equipmentStatusMaintenance": "Maintenance",
+  "equipmentStatusUnavailable": "Unavailable",
+  "equipmentOnSite": "On site",
+  "equipmentSerial": "SN {serial}",
+  "@equipmentSerial": {
+    "placeholders": {
+      "serial": { "type": "String" }
+    }
+  }
 }

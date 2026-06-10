@@ -320,6 +320,47 @@ void main() {
     expect(meta?.sinceCursor, '2026-06-04T12:00:00.000Z');
   });
 
+  test(
+    'pull full-replaces the equipment cache (drops what left my site)',
+    () async {
+      Map<String, dynamic> body(List<Map<String, dynamic>> equip) => {
+        'tasks': <dynamic>[],
+        'feed_cards': <dynamic>[],
+        'equipment': equip,
+        'server_time': '2026-06-04T12:00:00Z',
+      };
+      final excavator = {
+        'id': 'eq-1',
+        'name': 'Excavator',
+        'asset_type': 'excavator',
+        'status': 'available',
+        'serial_number': 'SN-1',
+        'start_date': '2026-06-01T00:00:00Z',
+        'end_date': '2026-06-30T00:00:00Z',
+      };
+      final crane = {
+        'id': 'eq-2',
+        'name': 'Crane',
+        'asset_type': 'crane',
+        'status': 'maintenance',
+        'start_date': '2026-06-01T00:00:00Z',
+        'end_date': '2026-06-30T00:00:00Z',
+      };
+
+      api.getScript.add(body([excavator, crane]));
+      await sync.pull();
+      expect((await db.allCachedEquipment()).length, 2);
+
+      // Next sync returns only the excavator — the crane left, so it must be gone
+      // from the cache (full-replace, not upsert).
+      api.getScript.add(body([excavator]));
+      await sync.pull();
+      final cached = await db.allCachedEquipment();
+      expect(cached.length, 1);
+      expect(cached.single.id, 'eq-1');
+    },
+  );
+
   test('syncNow drains the outbox then pulls server truth', () async {
     await sync.queueProgress(taskId: 't1', percentComplete: 60);
     api.script.add({'progress': {}}); // drain succeeds

@@ -6,6 +6,63 @@ provenance — do not delete.
 
 ---
 
+## ESC-003 — Field equipment screen (Phase 4a-ii) is unspecified by any binding doc
+
+### What was found (verified against the code + specs)
+Phase 4a-ii ("equipment field") asked for an equipment view in the Flutter field
+app, but **no binding spec defines a field-visible equipment screen.** A
+4-grounder ultraplan confirmed:
+- Every binding doc treats fleet as **operator-only**: API_CONTRACT §11 / the
+  RBAC matrix, INFORMATION_ARCHITECTURE §3.3 (exactly five field screens),
+  UX_CORE_SCREENS, and DESIGN_SYSTEM all exclude `field_worker` from fleet.
+- `field_worker` (role rank 1) currently **403s on the entire `/fleet` group**
+  (`RequireMinRole(superintendent)`, router.go:369). No field-facing fleet
+  endpoint exists.
+- The only pro-field signal is **VISION.md**'s forward roadmap, which lists
+  "equipment screens" as a mobile gap to close.
+- `fleet_assets` + `equipment_allocations` carry **zero monetary columns**
+  (migration 003), so there is no financial data to leak — but the field
+  projection still must not re-serve the operator model (`org_id`).
+
+### Why it surfaced during Phase 4a-ii
+The chunk is explicitly gated in NEXT_STEPS/HANDOFF as "CROSS-STACK + a product
+decision: is fleet field-visible?". Per CLAUDE.md, a missing spec must be logged
+here and paused for the owner rather than improvised.
+
+### Options (for owner decision)
+1. **Defer** — keep fleet operator-only; mark 4a-ii deferred. Spec-compliant.
+2. **Read-only "equipment on my projects"** — add an equipment array to the
+   existing `GET /api/v1/field/sync` envelope (which `field_worker` already
+   reaches), scoped to the caller's assigned sites, via a field-safe DTO; a
+   read-only More-tab screen. No new route/RBAC/migration.
+3. **Interactive** (check-out/in, condition/defect, hour-meter) — net-new write
+   tables + endpoints; contradicts every spec; rejected.
+
+### Resolution (2026-06-09, owner chose Option 2)
+Owner selected the read-only view (Option 2). Built on
+`feat/phase-4a-ii-field-equipment` with the ultraplan (PHASE_4A_II_FIELD_EQUIPMENT.md)
+as the **working spec**, with these deviations from the original draft applied
+after an adversarial critique:
+- **Full-set, server-wins** equipment (ignores `?since`): neither fleet table
+  has `updated_at`, and relevance pivots on the allocation window + status, so a
+  `created_at` delta would make the list go permanently stale. The mobile cache
+  REPLACES (delete-then-fill), not upserts.
+- **Scoping**: equipment on a project where the caller has a NON-completed
+  assigned task (mirrors the task-pull visibility); allocation active "today"
+  (`[start, end)`). Org isolation via the `projects` join (defense in depth).
+- **Field-safe DTO** (`models.FieldEquipment`), never `models.FleetAsset`.
+
+### Spec backfill owed to Antigravity (tracked, non-blocking for this build)
+The owner authorized building ahead of the formal spec; Antigravity should
+backfill so the docs match shipped reality: **API_CONTRACT §11** (field/sync
+`+equipment` array + the field-safe DTO), **INFORMATION_ARCHITECTURE §3.3**
+(fifth → sixth field screen), **UX_CORE_SCREENS** (equipment card),
+**DESIGN_SYSTEM** (reconcile the nav RBAC row — field_worker now reads fleet).
+Also: the field crew-checkin shape shipped as `{name, role}` (free text) vs the
+API_CONTRACT's illustrative `{worker_id, …}` — same doc-drift to reconcile.
+
+---
+
 ## ESC-002 — `RequirePlanTier(pro)` 402-walls every self-minted token (post-Brain stale gate)
 
 - **Status:** RESOLVED 2026-06-09 (Phase 4 chunk 1) — owner chose **Option 2** (drop the vestigial pro gate). See "Resolution" below.

@@ -278,14 +278,20 @@ Remaining chunks (see NEXT_STEPS §P4 for entry points):
   no metrics" framing across the rules + 3 docs. 3-lens adversarial verification: Go design sound (verified
   vs River source), docs clean; 2 medium findings fixed (HTTP bind error now fails fast; the dropped-event
   best-effort caveat now operator-facing). Spec: [PHASE_4B_II_WORKER_OBS.md](.agents/handoff/PHASE_4B_II_WORKER_OBS.md).
-- **4a · Flutter field.** **4a-i (standalone check-in + offline affordance) is DONE — merged + pushed (`origin/main` `4f7698e`; top "Last shipped").**
-  new `CheckInScreen` (crew roster name+role, GPS, notes, offline-queued) + a reusable `FbDashedBorder` (the
-  amber dashed offline affordance), wired into the More tab, with the crew-less stub extracted out of
-  `daily_log`; 9 widget tests + a golden; 3-lens verification, 5 findings fixed. Spec:
-  [PHASE_4A_I_FIELD_CHECKIN.md](.agents/handoff/PHASE_4A_I_FIELD_CHECKIN.md). Then **equipment** (4a-ii,
-  CROSS-STACK + a product decision: is fleet field-visible? today field sync carries only Tasks+FeedCards,
-  `/fleet` is operator-only, so equipment needs a new field-scoped read endpoint in `internal/api/field.go`).
-  Gates: `cd mobile && dart format + flutter analyze + flutter test (+golden)` (Flutter 3.41.3 local).
+- **4a · Flutter field — 4a-i DONE (merged `4f7698e`); 4a-ii BUILT on branch, awaiting review → closes 4a.**
+  - **4a-i** (standalone check-in + `FbDashedBorder` offline affordance) — merged + pushed (top "Last shipped").
+    Spec: [PHASE_4A_I_FIELD_CHECKIN.md](.agents/handoff/PHASE_4A_I_FIELD_CHECKIN.md).
+  - **4a-ii · read-only "equipment on my projects" — BUILT on `feat/phase-4a-ii-field-equipment` (committed,
+    NOT pushed/merged); all gates green; awaiting review.** Owner chose Option B (read-only) after an 8-agent
+    ultraplan ([ESC-003](.agents/handoff/ESCALATION_LOG.md) — the screen was unspecified by any binding doc).
+    CROSS-STACK, **no new endpoint / RBAC gate / migration**: an `equipment` array rides the existing
+    `GET /api/v1/field/sync` (which `field_worker` already reaches), full-set server-wins, scoped to the
+    caller's active (non-completed-task) sites via the `projects` join; field-safe `FieldEquipment` DTO (no
+    `org_id`/cost). Mobile: `CachedEquipment` Drift table + the app's **first `MigrationStrategy` (v1→v2)** +
+    **delete-then-fill** `replaceEquipment` + `equipmentProvider` + a read-only `EquipmentScreen` (More tab).
+    The critique caught + fixed a build-breaking `created_at`-delta (→ full-replace) before any code. Tests:
+    Go integration (assignment/org/window/no-leak) + mobile (full-replace + v1→v2 migration + screen + pull).
+    Spec: [PHASE_4A_II_FIELD_EQUIPMENT.md](.agents/handoff/PHASE_4A_II_FIELD_EQUIPMENT.md).
 - **4b-iii · error-path UX (remaining hardening)** — Retry-After on 5xx/429, AI circuit-breaker surfacing,
   `cmd/migrate --dry-run`. Plus the small metric follow-ups 4b-ii surfaced (`pgxpool.Stat()` →
   `buildos_db_pool_*`; a per-error-code/SetupGate counter; a worker queue-depth gauge).

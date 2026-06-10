@@ -65,5 +65,12 @@
   "submitCheckIn": "Enviar registro",
   "checkInQueued": "Registro en cola — se sincronizará al conectarse.",
   "checkInNeedsCrew": "Agregue al menos un miembro de la cuadrilla.",
-  "notesTooLong": "Las notas son demasiado largas. Acórtelas e intente de nuevo."
+  "notesTooLong": "Las notas son demasiado largas. Acórtelas e intente de nuevo.",
+  "equipmentTitle": "Equipo",
+  "equipmentEmpty": "Aún no hay equipo en sus sitios.",
+  "equipmentStatusAvailable": "Disponible",
+  "equipmentStatusMaintenance": "Mantenimiento",
+  "equipmentStatusUnavailable": "No disponible",
+  "equipmentOnSite": "En el sitio",
+  "equipmentSerial": "Serie {serial}"
 }

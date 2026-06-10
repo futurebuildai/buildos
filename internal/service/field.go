@@ -143,6 +143,18 @@ func (s *FieldService) Sync(ctx context.Context, opts SyncOptions) (models.Field
 		} else {
 			resp.FeedCards = []models.FeedCard{}
 		}
+
+		// Equipment allocated to the caller's active sites (Phase 4a-ii,
+		// read-only). FULL-SET — ignores Since (see FieldEquipment doc).
+		equip, err := s.store.ListAllocatedEquipment(ctx, tx, store.ListAllocatedEquipmentParams{
+			UserID: userID,
+			OrgID:  opts.CallerOrgID,
+			Today:  serverTime,
+		})
+		if err != nil {
+			return err
+		}
+		resp.Equipment = equip
 		return nil
 	})
 	if err != nil {

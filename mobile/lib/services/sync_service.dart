@@ -210,6 +210,20 @@ class SyncService {
           }),
         ),
     ]);
+    // Equipment is a full-set collection — REPLACE (wipe-then-fill), so assets
+    // that left the caller's sites disappear from the cache.
+    await _db.replaceEquipment([
+      for (final e in resp.equipment)
+        CachedEquipmentCompanion.insert(
+          id: e.id,
+          name: e.name,
+          assetType: e.assetType,
+          status: Value(e.status),
+          serialNumber: Value(e.serialNumber),
+          startDate: e.startDate,
+          endDate: e.endDate,
+        ),
+    ]);
     await _db.setSyncMeta(
       at: DateTime.now().toUtc(),
       cursor: resp.serverTime.toIso8601String(),

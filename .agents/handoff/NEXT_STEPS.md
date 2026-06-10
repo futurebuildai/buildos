@@ -124,10 +124,11 @@ the actual code, which made the original "3 missing field screens" framing partl
      `FbDashedBorder` (amber dashed affordance), wired into the More tab; the crew-less stub extracted out of
      `daily_log`. 9 widget tests + a golden; mobile gates green. Spec:
      [PHASE_4A_I_FIELD_CHECKIN.md](./PHASE_4A_I_FIELD_CHECKIN.md).
-   - **4a-ii · equipment — CROSS-STACK, gated on a product decision** (is fleet field-visible? today field
-     sync carries only Tasks+FeedCards and `/fleet` is operator-only, so equipment needs a new field-scoped
-     read endpoint in `internal/api/field.go`). Entry: `mobile/lib/screens/`. Gates: `cd mobile && dart
-     format + flutter analyze + flutter test (+golden)`.
+   - **4a-ii · read-only equipment — BUILT on `feat/phase-4a-ii-field-equipment`, awaiting review (closes 4a).**
+     Owner chose read-only (ESC-003). An `equipment` array on `GET /api/v1/field/sync` (full-set, server-wins,
+     scoped to the caller's active sites; field-safe DTO) → a `CachedEquipment` Drift cache (first v1→v2
+     migration, delete-then-fill) → a read-only `EquipmentScreen` (More tab). No new endpoint/RBAC/migration.
+     Spec: [PHASE_4A_II_FIELD_EQUIPMENT.md](./PHASE_4A_II_FIELD_EQUIPMENT.md).
 3. **4b · operator hardening.**
    - **4b-i · alerting rules + runbooks — DONE: merged + PUSHED (`origin/main` `ff22d74`).**
      `deploy/prometheus/buildos.rules.yml` (8 alerts) + `deploy/prometheus/README.md` +

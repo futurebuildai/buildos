@@ -1508,12 +1508,482 @@ class SyncMetaCompanion extends UpdateCompanion<SyncMetaData> {
   }
 }
 
+class $CachedEquipmentTable extends CachedEquipment
+    with TableInfo<$CachedEquipmentTable, CachedEquipmentData> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $CachedEquipmentTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  @override
+  late final GeneratedColumn<String> id = GeneratedColumn<String>(
+    'id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _nameMeta = const VerificationMeta('name');
+  @override
+  late final GeneratedColumn<String> name = GeneratedColumn<String>(
+    'name',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _assetTypeMeta = const VerificationMeta(
+    'assetType',
+  );
+  @override
+  late final GeneratedColumn<String> assetType = GeneratedColumn<String>(
+    'asset_type',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _statusMeta = const VerificationMeta('status');
+  @override
+  late final GeneratedColumn<String> status = GeneratedColumn<String>(
+    'status',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant('available'),
+  );
+  static const VerificationMeta _serialNumberMeta = const VerificationMeta(
+    'serialNumber',
+  );
+  @override
+  late final GeneratedColumn<String> serialNumber = GeneratedColumn<String>(
+    'serial_number',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _startDateMeta = const VerificationMeta(
+    'startDate',
+  );
+  @override
+  late final GeneratedColumn<DateTime> startDate = GeneratedColumn<DateTime>(
+    'start_date',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _endDateMeta = const VerificationMeta(
+    'endDate',
+  );
+  @override
+  late final GeneratedColumn<DateTime> endDate = GeneratedColumn<DateTime>(
+    'end_date',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: true,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    name,
+    assetType,
+    status,
+    serialNumber,
+    startDate,
+    endDate,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'cached_equipment';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<CachedEquipmentData> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    } else if (isInserting) {
+      context.missing(_idMeta);
+    }
+    if (data.containsKey('name')) {
+      context.handle(
+        _nameMeta,
+        name.isAcceptableOrUnknown(data['name']!, _nameMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_nameMeta);
+    }
+    if (data.containsKey('asset_type')) {
+      context.handle(
+        _assetTypeMeta,
+        assetType.isAcceptableOrUnknown(data['asset_type']!, _assetTypeMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_assetTypeMeta);
+    }
+    if (data.containsKey('status')) {
+      context.handle(
+        _statusMeta,
+        status.isAcceptableOrUnknown(data['status']!, _statusMeta),
+      );
+    }
+    if (data.containsKey('serial_number')) {
+      context.handle(
+        _serialNumberMeta,
+        serialNumber.isAcceptableOrUnknown(
+          data['serial_number']!,
+          _serialNumberMeta,
+        ),
+      );
+    }
+    if (data.containsKey('start_date')) {
+      context.handle(
+        _startDateMeta,
+        startDate.isAcceptableOrUnknown(data['start_date']!, _startDateMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_startDateMeta);
+    }
+    if (data.containsKey('end_date')) {
+      context.handle(
+        _endDateMeta,
+        endDate.isAcceptableOrUnknown(data['end_date']!, _endDateMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_endDateMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id};
+  @override
+  CachedEquipmentData map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return CachedEquipmentData(
+      id: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}id'],
+      )!,
+      name: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}name'],
+      )!,
+      assetType: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}asset_type'],
+      )!,
+      status: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}status'],
+      )!,
+      serialNumber: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}serial_number'],
+      ),
+      startDate: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}start_date'],
+      )!,
+      endDate: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}end_date'],
+      )!,
+    );
+  }
+
+  @override
+  $CachedEquipmentTable createAlias(String alias) {
+    return $CachedEquipmentTable(attachedDatabase, alias);
+  }
+}
+
+class CachedEquipmentData extends DataClass
+    implements Insertable<CachedEquipmentData> {
+  final String id;
+  final String name;
+  final String assetType;
+  final String status;
+  final String? serialNumber;
+
+  /// Allocation window [startDate, endDate). end is exclusive.
+  final DateTime startDate;
+  final DateTime endDate;
+  const CachedEquipmentData({
+    required this.id,
+    required this.name,
+    required this.assetType,
+    required this.status,
+    this.serialNumber,
+    required this.startDate,
+    required this.endDate,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<String>(id);
+    map['name'] = Variable<String>(name);
+    map['asset_type'] = Variable<String>(assetType);
+    map['status'] = Variable<String>(status);
+    if (!nullToAbsent || serialNumber != null) {
+      map['serial_number'] = Variable<String>(serialNumber);
+    }
+    map['start_date'] = Variable<DateTime>(startDate);
+    map['end_date'] = Variable<DateTime>(endDate);
+    return map;
+  }
+
+  CachedEquipmentCompanion toCompanion(bool nullToAbsent) {
+    return CachedEquipmentCompanion(
+      id: Value(id),
+      name: Value(name),
+      assetType: Value(assetType),
+      status: Value(status),
+      serialNumber: serialNumber == null && nullToAbsent
+          ? const Value.absent()
+          : Value(serialNumber),
+      startDate: Value(startDate),
+      endDate: Value(endDate),
+    );
+  }
+
+  factory CachedEquipmentData.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return CachedEquipmentData(
+      id: serializer.fromJson<String>(json['id']),
+      name: serializer.fromJson<String>(json['name']),
+      assetType: serializer.fromJson<String>(json['assetType']),
+      status: serializer.fromJson<String>(json['status']),
+      serialNumber: serializer.fromJson<String?>(json['serialNumber']),
+      startDate: serializer.fromJson<DateTime>(json['startDate']),
+      endDate: serializer.fromJson<DateTime>(json['endDate']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<String>(id),
+      'name': serializer.toJson<String>(name),
+      'assetType': serializer.toJson<String>(assetType),
+      'status': serializer.toJson<String>(status),
+      'serialNumber': serializer.toJson<String?>(serialNumber),
+      'startDate': serializer.toJson<DateTime>(startDate),
+      'endDate': serializer.toJson<DateTime>(endDate),
+    };
+  }
+
+  CachedEquipmentData copyWith({
+    String? id,
+    String? name,
+    String? assetType,
+    String? status,
+    Value<String?> serialNumber = const Value.absent(),
+    DateTime? startDate,
+    DateTime? endDate,
+  }) => CachedEquipmentData(
+    id: id ?? this.id,
+    name: name ?? this.name,
+    assetType: assetType ?? this.assetType,
+    status: status ?? this.status,
+    serialNumber: serialNumber.present ? serialNumber.value : this.serialNumber,
+    startDate: startDate ?? this.startDate,
+    endDate: endDate ?? this.endDate,
+  );
+  CachedEquipmentData copyWithCompanion(CachedEquipmentCompanion data) {
+    return CachedEquipmentData(
+      id: data.id.present ? data.id.value : this.id,
+      name: data.name.present ? data.name.value : this.name,
+      assetType: data.assetType.present ? data.assetType.value : this.assetType,
+      status: data.status.present ? data.status.value : this.status,
+      serialNumber: data.serialNumber.present
+          ? data.serialNumber.value
+          : this.serialNumber,
+      startDate: data.startDate.present ? data.startDate.value : this.startDate,
+      endDate: data.endDate.present ? data.endDate.value : this.endDate,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('CachedEquipmentData(')
+          ..write('id: $id, ')
+          ..write('name: $name, ')
+          ..write('assetType: $assetType, ')
+          ..write('status: $status, ')
+          ..write('serialNumber: $serialNumber, ')
+          ..write('startDate: $startDate, ')
+          ..write('endDate: $endDate')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    id,
+    name,
+    assetType,
+    status,
+    serialNumber,
+    startDate,
+    endDate,
+  );
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is CachedEquipmentData &&
+          other.id == this.id &&
+          other.name == this.name &&
+          other.assetType == this.assetType &&
+          other.status == this.status &&
+          other.serialNumber == this.serialNumber &&
+          other.startDate == this.startDate &&
+          other.endDate == this.endDate);
+}
+
+class CachedEquipmentCompanion extends UpdateCompanion<CachedEquipmentData> {
+  final Value<String> id;
+  final Value<String> name;
+  final Value<String> assetType;
+  final Value<String> status;
+  final Value<String?> serialNumber;
+  final Value<DateTime> startDate;
+  final Value<DateTime> endDate;
+  final Value<int> rowid;
+  const CachedEquipmentCompanion({
+    this.id = const Value.absent(),
+    this.name = const Value.absent(),
+    this.assetType = const Value.absent(),
+    this.status = const Value.absent(),
+    this.serialNumber = const Value.absent(),
+    this.startDate = const Value.absent(),
+    this.endDate = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  CachedEquipmentCompanion.insert({
+    required String id,
+    required String name,
+    required String assetType,
+    this.status = const Value.absent(),
+    this.serialNumber = const Value.absent(),
+    required DateTime startDate,
+    required DateTime endDate,
+    this.rowid = const Value.absent(),
+  }) : id = Value(id),
+       name = Value(name),
+       assetType = Value(assetType),
+       startDate = Value(startDate),
+       endDate = Value(endDate);
+  static Insertable<CachedEquipmentData> custom({
+    Expression<String>? id,
+    Expression<String>? name,
+    Expression<String>? assetType,
+    Expression<String>? status,
+    Expression<String>? serialNumber,
+    Expression<DateTime>? startDate,
+    Expression<DateTime>? endDate,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (name != null) 'name': name,
+      if (assetType != null) 'asset_type': assetType,
+      if (status != null) 'status': status,
+      if (serialNumber != null) 'serial_number': serialNumber,
+      if (startDate != null) 'start_date': startDate,
+      if (endDate != null) 'end_date': endDate,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  CachedEquipmentCompanion copyWith({
+    Value<String>? id,
+    Value<String>? name,
+    Value<String>? assetType,
+    Value<String>? status,
+    Value<String?>? serialNumber,
+    Value<DateTime>? startDate,
+    Value<DateTime>? endDate,
+    Value<int>? rowid,
+  }) {
+    return CachedEquipmentCompanion(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      assetType: assetType ?? this.assetType,
+      status: status ?? this.status,
+      serialNumber: serialNumber ?? this.serialNumber,
+      startDate: startDate ?? this.startDate,
+      endDate: endDate ?? this.endDate,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<String>(id.value);
+    }
+    if (name.present) {
+      map['name'] = Variable<String>(name.value);
+    }
+    if (assetType.present) {
+      map['asset_type'] = Variable<String>(assetType.value);
+    }
+    if (status.present) {
+      map['status'] = Variable<String>(status.value);
+    }
+    if (serialNumber.present) {
+      map['serial_number'] = Variable<String>(serialNumber.value);
+    }
+    if (startDate.present) {
+      map['start_date'] = Variable<DateTime>(startDate.value);
+    }
+    if (endDate.present) {
+      map['end_date'] = Variable<DateTime>(endDate.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('CachedEquipmentCompanion(')
+          ..write('id: $id, ')
+          ..write('name: $name, ')
+          ..write('assetType: $assetType, ')
+          ..write('status: $status, ')
+          ..write('serialNumber: $serialNumber, ')
+          ..write('startDate: $startDate, ')
+          ..write('endDate: $endDate, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
 abstract class _$AppDatabase extends GeneratedDatabase {
   _$AppDatabase(QueryExecutor e) : super(e);
   $AppDatabaseManager get managers => $AppDatabaseManager(this);
   late final $OutboxItemsTable outboxItems = $OutboxItemsTable(this);
   late final $CachedTasksTable cachedTasks = $CachedTasksTable(this);
   late final $SyncMetaTable syncMeta = $SyncMetaTable(this);
+  late final $CachedEquipmentTable cachedEquipment = $CachedEquipmentTable(
+    this,
+  );
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
@@ -1522,6 +1992,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     outboxItems,
     cachedTasks,
     syncMeta,
+    cachedEquipment,
   ];
 }
 
@@ -2289,6 +2760,256 @@ typedef $$SyncMetaTableProcessedTableManager =
       SyncMetaData,
       PrefetchHooks Function()
     >;
+typedef $$CachedEquipmentTableCreateCompanionBuilder =
+    CachedEquipmentCompanion Function({
+      required String id,
+      required String name,
+      required String assetType,
+      Value<String> status,
+      Value<String?> serialNumber,
+      required DateTime startDate,
+      required DateTime endDate,
+      Value<int> rowid,
+    });
+typedef $$CachedEquipmentTableUpdateCompanionBuilder =
+    CachedEquipmentCompanion Function({
+      Value<String> id,
+      Value<String> name,
+      Value<String> assetType,
+      Value<String> status,
+      Value<String?> serialNumber,
+      Value<DateTime> startDate,
+      Value<DateTime> endDate,
+      Value<int> rowid,
+    });
+
+class $$CachedEquipmentTableFilterComposer
+    extends Composer<_$AppDatabase, $CachedEquipmentTable> {
+  $$CachedEquipmentTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get name => $composableBuilder(
+    column: $table.name,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get assetType => $composableBuilder(
+    column: $table.assetType,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get status => $composableBuilder(
+    column: $table.status,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get serialNumber => $composableBuilder(
+    column: $table.serialNumber,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get startDate => $composableBuilder(
+    column: $table.startDate,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get endDate => $composableBuilder(
+    column: $table.endDate,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $$CachedEquipmentTableOrderingComposer
+    extends Composer<_$AppDatabase, $CachedEquipmentTable> {
+  $$CachedEquipmentTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get name => $composableBuilder(
+    column: $table.name,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get assetType => $composableBuilder(
+    column: $table.assetType,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get status => $composableBuilder(
+    column: $table.status,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get serialNumber => $composableBuilder(
+    column: $table.serialNumber,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get startDate => $composableBuilder(
+    column: $table.startDate,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get endDate => $composableBuilder(
+    column: $table.endDate,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $$CachedEquipmentTableAnnotationComposer
+    extends Composer<_$AppDatabase, $CachedEquipmentTable> {
+  $$CachedEquipmentTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<String> get name =>
+      $composableBuilder(column: $table.name, builder: (column) => column);
+
+  GeneratedColumn<String> get assetType =>
+      $composableBuilder(column: $table.assetType, builder: (column) => column);
+
+  GeneratedColumn<String> get status =>
+      $composableBuilder(column: $table.status, builder: (column) => column);
+
+  GeneratedColumn<String> get serialNumber => $composableBuilder(
+    column: $table.serialNumber,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<DateTime> get startDate =>
+      $composableBuilder(column: $table.startDate, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get endDate =>
+      $composableBuilder(column: $table.endDate, builder: (column) => column);
+}
+
+class $$CachedEquipmentTableTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          $CachedEquipmentTable,
+          CachedEquipmentData,
+          $$CachedEquipmentTableFilterComposer,
+          $$CachedEquipmentTableOrderingComposer,
+          $$CachedEquipmentTableAnnotationComposer,
+          $$CachedEquipmentTableCreateCompanionBuilder,
+          $$CachedEquipmentTableUpdateCompanionBuilder,
+          (
+            CachedEquipmentData,
+            BaseReferences<
+              _$AppDatabase,
+              $CachedEquipmentTable,
+              CachedEquipmentData
+            >,
+          ),
+          CachedEquipmentData,
+          PrefetchHooks Function()
+        > {
+  $$CachedEquipmentTableTableManager(
+    _$AppDatabase db,
+    $CachedEquipmentTable table,
+  ) : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$CachedEquipmentTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$CachedEquipmentTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$CachedEquipmentTableAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback:
+              ({
+                Value<String> id = const Value.absent(),
+                Value<String> name = const Value.absent(),
+                Value<String> assetType = const Value.absent(),
+                Value<String> status = const Value.absent(),
+                Value<String?> serialNumber = const Value.absent(),
+                Value<DateTime> startDate = const Value.absent(),
+                Value<DateTime> endDate = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => CachedEquipmentCompanion(
+                id: id,
+                name: name,
+                assetType: assetType,
+                status: status,
+                serialNumber: serialNumber,
+                startDate: startDate,
+                endDate: endDate,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String id,
+                required String name,
+                required String assetType,
+                Value<String> status = const Value.absent(),
+                Value<String?> serialNumber = const Value.absent(),
+                required DateTime startDate,
+                required DateTime endDate,
+                Value<int> rowid = const Value.absent(),
+              }) => CachedEquipmentCompanion.insert(
+                id: id,
+                name: name,
+                assetType: assetType,
+                status: status,
+                serialNumber: serialNumber,
+                startDate: startDate,
+                endDate: endDate,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $$CachedEquipmentTableProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      $CachedEquipmentTable,
+      CachedEquipmentData,
+      $$CachedEquipmentTableFilterComposer,
+      $$CachedEquipmentTableOrderingComposer,
+      $$CachedEquipmentTableAnnotationComposer,
+      $$CachedEquipmentTableCreateCompanionBuilder,
+      $$CachedEquipmentTableUpdateCompanionBuilder,
+      (
+        CachedEquipmentData,
+        BaseReferences<
+          _$AppDatabase,
+          $CachedEquipmentTable,
+          CachedEquipmentData
+        >,
+      ),
+      CachedEquipmentData,
+      PrefetchHooks Function()
+    >;
 
 class $AppDatabaseManager {
   final _$AppDatabase _db;
@@ -2299,4 +3020,6 @@ class $AppDatabaseManager {
       $$CachedTasksTableTableManager(_db, _db.cachedTasks);
   $$SyncMetaTableTableManager get syncMeta =>
       $$SyncMetaTableTableManager(_db, _db.syncMeta);
+  $$CachedEquipmentTableTableManager get cachedEquipment =>
+      $$CachedEquipmentTableTableManager(_db, _db.cachedEquipment);
 }

@@ -62,7 +62,23 @@ func TestFieldService_Sync(t *testing.T) {
 	uid := uuid.MustParse(subject)
 	taskID := seedFieldServiceTask(t, pool, projectID, uid, "open-task")
 
-	t.Run("returns assigned tasks + server_time", func(t *testing.T) {
+	// An asset allocated to the caller's project, active "today" (window spans
+	// now), so Sync's full-set equipment read returns it.
+	assetID := uuid.New()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO fleet_assets (id, org_id, name, asset_type, status)
+		VALUES ($1, $2, 'Backhoe', 'backhoe', 'available')`, assetID, orgID); err != nil {
+		t.Fatalf("seed asset: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO equipment_allocations (asset_id, project_id, start_date, end_date)
+		VALUES ($1, $2, $3, $4)`,
+		assetID, projectID,
+		time.Now().UTC().AddDate(0, 0, -1), time.Now().UTC().AddDate(0, 0, 2)); err != nil {
+		t.Fatalf("seed allocation: %v", err)
+	}
+
+	t.Run("returns assigned tasks + equipment + server_time", func(t *testing.T) {
 		resp, err := svc.Sync(ctx, SyncOptions{
 			CallerOrgID:       orgID,
 			CallerOIDCSubject: subject,
@@ -73,6 +89,9 @@ func TestFieldService_Sync(t *testing.T) {
 		}
 		if len(resp.Tasks) != 1 || resp.Tasks[0].ID != taskID {
 			t.Fatalf("tasks = %+v, want exactly the seeded task", resp.Tasks)
+		}
+		if len(resp.Equipment) != 1 || resp.Equipment[0].ID != assetID {
+			t.Fatalf("equipment = %+v, want exactly the seeded backhoe", resp.Equipment)
 		}
 		if resp.ServerTime.IsZero() {
 			t.Error("ServerTime is zero, want a stamp")

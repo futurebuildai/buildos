@@ -66,12 +66,41 @@ type DailyLog struct {
 	ReportedAt        time.Time   `json:"reported_at"`
 }
 
+// FieldEquipment is the FIELD-SAFE projection of a fleet asset currently
+// allocated to one of the caller's projects (Phase 4a-ii, read-only). It is
+// deliberately NOT models.FleetAsset: the field response must not re-serve the
+// operator model — that would leak org_id and any column later added to
+// fleet_assets (e.g. a cost/value column) to field roles. Carries only what a
+// field worker needs to know which equipment is on their site, plus the
+// allocation window. There are no monetary columns on fleet_assets or
+// equipment_allocations today, so there is no financial field to strip here.
+type FieldEquipment struct {
+	ID           uuid.UUID `json:"id"`
+	Name         string    `json:"name"`
+	AssetType    string    `json:"asset_type"`
+	SerialNumber *string   `json:"serial_number,omitempty"`
+	Status       string    `json:"status"`
+	// Allocation window the asset is on the caller's project for. DATE columns
+	// → midnight-UTC time.Time (same as DailyLog.LogDate). end_date is exclusive
+	// (the allocations daterange is [start, end)).
+	StartDate time.Time `json:"start_date"`
+	EndDate   time.Time `json:"end_date"`
+}
+
 // FieldSyncResponse bundles everything a mobile client needs to refresh
 // its local state. ServerTime is what the client should pass back as
 // `?since=` on the next sync — the API contract uses a server-authoritative
 // timestamp so clock skew doesn't drop or double-deliver rows.
+//
+// Equipment is a FULL-SET collection (not a delta): it ignores `?since` and
+// always returns the caller's currently-allocated equipment, because relevance
+// pivots on the allocation window (and a status flip) — not on a row's
+// created_at — and neither fleet table has an updated_at to delta on. The
+// mobile client must therefore REPLACE (delete-then-fill) its equipment cache
+// each sync, not upsert.
 type FieldSyncResponse struct {
-	Tasks      []ProjectTask `json:"tasks"`
-	FeedCards  []FeedCard    `json:"feed_cards"`
-	ServerTime time.Time     `json:"server_time"`
+	Tasks      []ProjectTask    `json:"tasks"`
+	FeedCards  []FeedCard       `json:"feed_cards"`
+	Equipment  []FieldEquipment `json:"equipment"`
+	ServerTime time.Time        `json:"server_time"`
 }

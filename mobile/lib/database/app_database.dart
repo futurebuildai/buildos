@@ -60,6 +60,26 @@ class CachedTasks extends Table {
   Set<Column> get primaryKey => {id};
 }
 
+/// Server-authoritative cache of equipment allocated to the caller's active
+/// sites (Phase 4a-ii, read-only). Unlike [CachedTasks] (an upsert that never
+/// removes), this is FULL-REPLACE (wipe-then-fill) on each sync: equipment that
+/// has left the caller's site must DISAPPEAR, and the server returns the
+/// complete current set every pull. See [AppDatabase.replaceEquipment].
+class CachedEquipment extends Table {
+  TextColumn get id => text()();
+  TextColumn get name => text()();
+  TextColumn get assetType => text()();
+  TextColumn get status => text().withDefault(const Constant('available'))();
+  TextColumn get serialNumber => text().nullable()();
+
+  /// Allocation window [startDate, endDate). end is exclusive.
+  DateTimeColumn get startDate => dateTime()();
+  DateTimeColumn get endDate => dateTime()();
+
+  @override
+  Set<Column> get primaryKey => {id};
+}
+
 /// Single-row table holding sync metadata (the `?since=` cursor + last-sync).
 class SyncMeta extends Table {
   IntColumn get id => integer().withDefault(const Constant(1))();
@@ -72,7 +92,7 @@ class SyncMeta extends Table {
   Set<Column> get primaryKey => {id};
 }
 
-@DriftDatabase(tables: [OutboxItems, CachedTasks, SyncMeta])
+@DriftDatabase(tables: [OutboxItems, CachedTasks, SyncMeta, CachedEquipment])
 class AppDatabase extends _$AppDatabase {
   AppDatabase([QueryExecutor? executor]) : super(executor ?? _open());
 
@@ -80,7 +100,20 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting() : super(NativeDatabase.memory());
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
+
+  @override
+  MigrationStrategy get migration => MigrationStrategy(
+    onCreate: (m) => m.createAll(),
+    onUpgrade: (m, from, to) async {
+      // v1 → v2 (Phase 4a-ii): add the read-only equipment cache. It is a
+      // server-refilled pull cache, so creating it empty loses no local data —
+      // the next sync fills it. The other tables are untouched.
+      if (from < 2) {
+        await m.createTable(cachedEquipment);
+      }
+    },
+  );
 
   // ---- Outbox -----------------------------------------------------------
 
@@ -146,6 +179,22 @@ class AppDatabase extends _$AppDatabase {
   }
 
   Future<List<CachedTask>> allCachedTasks() => select(cachedTasks).get();
+
+  // ---- Equipment cache (FULL-REPLACE: wipe then fill) -------------------
+
+  /// Server-wins full replace. Equipment that left the caller's sites must
+  /// DISAPPEAR, so this deletes every row then inserts the response — unlike
+  /// [replaceTasks]'s upsert, which never removes. Wrapped in a transaction so
+  /// a concurrent read never sees the empty intermediate state.
+  Future<void> replaceEquipment(List<CachedEquipmentCompanion> rows) async {
+    await transaction(() async {
+      await delete(cachedEquipment).go();
+      await batch((b) => b.insertAll(cachedEquipment, rows));
+    });
+  }
+
+  Future<List<CachedEquipmentData>> allCachedEquipment() =>
+      select(cachedEquipment).get();
 
   // ---- Sync metadata ----------------------------------------------------
 

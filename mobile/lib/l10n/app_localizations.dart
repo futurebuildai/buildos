@@ -493,6 +493,48 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Notes are too long. Shorten and try again.'**
   String get notesTooLong;
+
+  /// No description provided for @equipmentTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Equipment'**
+  String get equipmentTitle;
+
+  /// No description provided for @equipmentEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No equipment on your sites yet.'**
+  String get equipmentEmpty;
+
+  /// No description provided for @equipmentStatusAvailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Available'**
+  String get equipmentStatusAvailable;
+
+  /// No description provided for @equipmentStatusMaintenance.
+  ///
+  /// In en, this message translates to:
+  /// **'Maintenance'**
+  String get equipmentStatusMaintenance;
+
+  /// No description provided for @equipmentStatusUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Unavailable'**
+  String get equipmentStatusUnavailable;
+
+  /// No description provided for @equipmentOnSite.
+  ///
+  /// In en, this message translates to:
+  /// **'On site'**
+  String get equipmentOnSite;
+
+  /// No description provided for @equipmentSerial.
+  ///
+  /// In en, this message translates to:
+  /// **'SN {serial}'**
+  String equipmentSerial(String serial);
 }
 
 class _AppLocalizationsDelegate
