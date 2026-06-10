@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -52,6 +53,7 @@ type RouterConfig struct {
 	Metrics             MetricsRecorder      // optional — when nil, /metrics doesn't mount and HTTP middleware is skipped
 	SentryEnabled       bool                 // when true, the Sentry HTTP middleware is mounted to capture panics
 	RateLimiter         *mw.IPRateLimiter    // optional — when nil, no rate limiting is applied
+	TrustedProxyCIDRs   []*net.IPNet         // forwarding headers (XFF) are honored ONLY from these peers; empty = ignore XFF, use the TCP peer (fail-safe)
 }
 
 // NewRouter creates the Chi router with all route groups and middleware.
@@ -60,13 +62,16 @@ func NewRouter(cfg RouterConfig) http.Handler {
 
 	// Global middleware. Order matters:
 	//   - RequestID first so chi assigns one before any logging.
-	//   - RealIP next so downstream sees the right remote.
+	//   - RealIP next so downstream sees the right remote. Unlike chi's
+	//     RealIP, mw.RealIP trusts X-Forwarded-For ONLY from configured
+	//     trusted-proxy CIDRs (else the per-IP rate limiter is bypassable by
+	//     header spoofing). Empty allowlist = use the real TCP peer.
 	//   - Recoverer wraps before metrics: panics still get counted.
 	//   - Metrics middleware before Logger so a panicked handler's
 	//     5xx still ticks the counter even if Logger swallows it.
 	//   - Logger emits the request line, with request_id already set.
 	r.Use(chimw.RequestID)
-	r.Use(chimw.RealIP)
+	r.Use(mw.RealIP(cfg.TrustedProxyCIDRs))
 	// OTel HTTP middleware sits HERE — after RequestID/RealIP (so
 	// the span tags include both) but before everything else (so
 	// every downstream middleware's behavior is captured under the
@@ -84,6 +89,8 @@ func NewRouter(cfg RouterConfig) http.Handler {
 			}),
 		)
 	})
+	// Baseline security headers on every response (incl. 429s/errors below).
+	r.Use(mw.SecurityHeaders)
 	// Rate limiter mounts EARLY in the stack so rejected requests
 	// don't pay the cost of downstream middleware (auth, metrics,
 	// audit). Mounted after RealIP so the per-IP bucket sees the

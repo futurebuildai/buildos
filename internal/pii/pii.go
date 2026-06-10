@@ -125,6 +125,22 @@ var FieldClass = map[string]Class{
 	"ip_address":     Restricted,
 	"remote_addr":    Restricted,
 
+	// Restricted (secret material) — must NEVER reach a log/audit/Sentry sink.
+	"password":      Restricted,
+	"password_hash": Restricted,
+	"secret":        Restricted,
+	"token":         Restricted,
+	"access_token":  Restricted,
+	"refresh_token": Restricted,
+	"reset_token":   Restricted,
+	"token_hash":    Restricted,
+	"api_key":       Restricted,
+	"apikey":        Restricted,
+	"private_key":   Restricted,
+	"authorization": Restricted,
+	"jwt":           Restricted,
+	"vault_key":     Restricted,
+
 	// Confidential (business-sensitive)
 	"vendor_name":    Confidential,
 	"invoice_number": Confidential,

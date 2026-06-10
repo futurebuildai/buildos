@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
+	"github.com/futurebuildai/buildos/internal/connectors"
 )
 
 // Default model ids and limits. Opus is the heavy-reasoning default;
@@ -31,6 +33,10 @@ const (
 	// Anthropic API rejects oversize images; we reject earlier to avoid
 	// buffering attacker-controlled bytes.
 	defaultMaxImageBytes int64 = 5 * 1024 * 1024
+
+	// documentFetchTimeout bounds the SSRF-guarded fetch of an invoice
+	// document_url (generous for a ~5MB image over a slow link).
+	documentFetchTimeout = 20 * time.Second
 )
 
 // Client is the native Anthropic Messages API client. Construct via
@@ -42,6 +48,7 @@ type Client struct {
 	fastModel     string
 	baseURL       string
 	httpClient    *http.Client
+	docHTTPClient *http.Client
 	retry         RetryConfig
 	breaker       *circuitBreaker
 	metrics       MetricsObserver // optional; nil disables observation
@@ -61,8 +68,15 @@ type Config struct {
 	// BaseURL is the Anthropic API base. Default
 	// "https://api.anthropic.com".
 	BaseURL string
-	// HTTPClient is optional; default is a 60s-timeout client.
+	// HTTPClient is optional; default is a 60s-timeout client. Used for the
+	// Anthropic API (a fixed, trusted host).
 	HTTPClient *http.Client
+	// DocumentFetchClient fetches the operator-supplied invoice document_url —
+	// kept SEPARATE from HTTPClient because that URL is UNTRUSTED. The default
+	// (when nil) is an SSRF-guarded egress client: a private-IP/metadata denylist
+	// enforced at the resolved dial address (defeats DNS-rebind), redirects
+	// refused, https only. Override only in tests.
+	DocumentFetchClient *http.Client
 	// Retry is optional; default 3 attempts, 200ms base, 4x.
 	Retry RetryConfig
 	// Circuit is optional; default 5 failures / 60s window, 30s open.
@@ -114,12 +128,20 @@ func NewClient(cfg Config) (*Client, error) {
 	if cfg.now == nil {
 		cfg.now = time.Now
 	}
+	// The document fetch defaults to an SSRF-guarded client (fail-safe): the
+	// invoice document_url is untrusted operator input and must NOT be fetched
+	// through the plain client that can reach arbitrary internal hosts.
+	docClient := cfg.DocumentFetchClient
+	if docClient == nil {
+		docClient = connectors.NewEgressClient(documentFetchTimeout)
+	}
 	return &Client{
 		keys:          cfg.KeyResolver,
 		model:         cfg.Model,
 		fastModel:     cfg.FastModel,
 		baseURL:       strings.TrimRight(cfg.BaseURL, "/"),
 		httpClient:    cfg.HTTPClient,
+		docHTTPClient: docClient,
 		retry:         cfg.Retry.withDefaults(),
 		breaker:       newCircuitBreaker(cfg.Circuit),
 		metrics:       cfg.Metrics,

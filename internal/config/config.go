@@ -3,8 +3,10 @@ package config
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -76,6 +78,13 @@ type Config struct {
 	// permissive: 50 rps steady, 100 burst.
 	RateLimitRPS   int // requests per second per IP; 0 = use default
 	RateLimitBurst int // burst capacity per IP; 0 = use default
+
+	// TrustedProxyCIDRs gates whether X-Forwarded-For is trusted (so the per-IP
+	// rate limiter keys on a client-forgeable header). Empty (default) = ignore
+	// XFF and use the real TCP peer. Set to the LB/ingress subnet(s) only when
+	// an upstream you control terminates the connection. Parsed from the
+	// comma-separated TRUSTED_PROXY_CIDRS env.
+	TrustedProxyCIDRs []*net.IPNet
 
 	// OpenTelemetry tracing. Empty Endpoint disables initialization;
 	// the SDK falls back to a no-op tracer that's safe to call but
@@ -184,8 +193,9 @@ func LoadWithSource(ctx context.Context, src SecretSource) (*Config, error) {
 		SentryRelease:     os.Getenv("SENTRY_RELEASE"),
 		SentryTracesRate:  getEnvFloat("SENTRY_TRACES_SAMPLE_RATE", 0.0),
 
-		RateLimitRPS:   getEnvInt("RATE_LIMIT_RPS", 0),   // 0 → middleware default
-		RateLimitBurst: getEnvInt("RATE_LIMIT_BURST", 0), // 0 → middleware default
+		RateLimitRPS:      getEnvInt("RATE_LIMIT_RPS", 0),   // 0 → middleware default
+		RateLimitBurst:    getEnvInt("RATE_LIMIT_BURST", 0), // 0 → middleware default
+		TrustedProxyCIDRs: parseCIDRs(getEnvStr("TRUSTED_PROXY_CIDRS", "")),
 
 		OTelEndpoint:   secret("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		OTelInsecure:   getEnvBool("OTEL_EXPORTER_OTLP_INSECURE", false),
@@ -203,6 +213,27 @@ func getEnvStr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// parseCIDRs parses a comma-separated list of CIDRs (e.g. "10.0.0.0/8,::1/128").
+// Invalid entries are skipped (a typo must not silently widen trust — it just
+// drops that entry, leaving the fail-safe "ignore XFF" default narrower).
+func parseCIDRs(s string) []*net.IPNet {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	var out []*net.IPNet
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if _, n, err := net.ParseCIDR(part); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 func getEnvInt(key string, fallback int) int {

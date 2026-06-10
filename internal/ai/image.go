@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 )
 
 // Image-handling sentinels. Distinct typed errors so callers can map an
@@ -38,13 +39,20 @@ var supportedImageMediaTypes = map[string]bool{
 //
 // The raw bytes are NEVER logged. Oversize and unsupported-media-type
 // failures return the typed sentinels above.
-func (c *Client) fetchDocumentImage(ctx context.Context, url string) (mediaType string, base64Data string, err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func (c *Client) fetchDocumentImage(ctx context.Context, rawURL string) (mediaType string, base64Data string, err error) {
+	// SSRF defense layer 1 (scheme): only https — reject http/file/gopher/etc.
+	// Layer 2 (the resolved private-IP denylist + no-redirect) is enforced by
+	// c.docHTTPClient (the guarded egress client) at dial time.
+	u, perr := url.Parse(rawURL)
+	if perr != nil || u.Scheme != "https" || u.Host == "" {
+		return "", "", fmt.Errorf("%w: document_url must be an absolute https URL", ErrUnsupportedMediaType)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return "", "", fmt.Errorf("ai: build image request: %w", err)
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.docHTTPClient.Do(req)
 	if err != nil {
 		return "", "", fmt.Errorf("ai: fetch document image: %w", err)
 	}

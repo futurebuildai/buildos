@@ -132,12 +132,16 @@ func (c *mcpConnector) executor(caller Caller, remoteName string) agentic.ToolEx
 	})
 }
 
-// logError records the detailed connector failure server-side (never to the
-// model). The raw error embeds resolved IPs / TLS hosts that must not leak.
+// logError records the connector failure server-side (never to the model). The
+// raw error embeds resolved IPs / TLS hosts; the field-name slog scrubber can't
+// mask values inside an error string, so the WARN line (always emitted) omits
+// the raw error and only the DEBUG line (off in prod) carries the detail.
 func (c *mcpConnector) logError(ctx context.Context, op string, err error) {
 	if c.p.Logger == nil {
 		return
 	}
 	c.p.Logger.WarnContext(ctx, "mcp connector "+op+" failed",
+		slog.String("connector", c.p.Name))
+	c.p.Logger.DebugContext(ctx, "mcp connector "+op+" error detail",
 		slog.String("connector", c.p.Name), slog.Any("error", err))
 }

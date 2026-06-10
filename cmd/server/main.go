@@ -339,6 +339,7 @@ func run(logger *slog.Logger) error {
 		SetupService:        setupService,
 		SentryEnabled:       sentryOK,
 		RateLimiter:         middleware.NewIPRateLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst),
+		TrustedProxyCIDRs:   cfg.TrustedProxyCIDRs,
 	})
 
 	srv := &http.Server{

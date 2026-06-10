@@ -296,7 +296,17 @@ Remaining chunks (see NEXT_STEPS §P4 for entry points):
 - **4b-iii · error-path UX (remaining hardening)** — Retry-After on 5xx/429, AI circuit-breaker surfacing,
   `cmd/migrate --dry-run`. Plus the small metric follow-ups 4b-ii surfaced (`pgxpool.Stat()` →
   `buildos_db_pool_*`; a per-error-code/SetupGate counter; a worker queue-depth gauge).
-- **4c · security + load** (k6 + `/security-review`) — FINAL gate, after 4a/4b.
+- **4c · security + load (FINAL gate) — BUILT on `feat/phase-4c-security-load` (committed, NOT pushed/merged);
+  all gates green; awaiting review.** An 8-surface multi-agent security audit (25 agents) + a k6 load harness.
+  No critical issues; **2 HIGH fixed**: SSRF in invoice `document_url` (now routed through the SSRF-guarded
+  egress client + https-only) and the `X-Forwarded-For`-spoof rate-limit bypass (`mw.RealIP` honors XFF only
+  from `TRUSTED_PROXY_CIDRS`, fail-safe default). Plus security headers, login-enumeration constant-time
+  fix, a `duration_days` CHECK (migration 019, CPM-DoS), PII-catalog secret field names, MCP-error log
+  scrub. `scripts/k6/` (smoke/field-sync/recalc/auth-flood) + runbook. Posture report:
+  [docs/security-posture.md](docs/security-posture.md). Spec:
+  [PHASE_4C_SECURITY_LOAD.md](.agents/handoff/PHASE_4C_SECURITY_LOAD.md). **Closes Phase 4** (4b-iii is the
+  only optional remainder). Tracked follow-ups: per-account lockout, per-(org,user) AI throttle, deployment
+  TLS/HSTS + `TRUSTED_PROXY_CIDRS`.
 
 ---
 

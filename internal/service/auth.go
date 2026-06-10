@@ -74,6 +74,7 @@ type AuthService struct {
 	refreshTTL time.Duration
 	resetTTL   time.Duration
 	appBaseURL string // used to build password-reset links in email
+	dummyHash  string // fixed argon2id hash to equalize login timing (anti-enumeration)
 }
 
 // AuthServiceConfig configures NewAuthService. Pool, Users, Setup, and Issuer
@@ -115,6 +116,13 @@ func NewAuthService(cfg AuthServiceConfig) (*AuthService, error) {
 	if cfg.ResetTTL <= 0 {
 		cfg.ResetTTL = DefaultPasswordResetTTL
 	}
+	// Precompute a fixed argon2id hash once at startup. Login verifies against
+	// it on the unknown-email / no-password paths so every attempt spends the
+	// same KDF cost — defeating account enumeration by response timing.
+	dummyHash, derr := auth.HashPassword("buildos-login-timing-equalizer")
+	if derr != nil {
+		cfg.Logger.Warn("auth: could not precompute timing-equalizer hash", "error", derr)
+	}
 	return &AuthService{
 		pool:       cfg.Pool,
 		users:      cfg.Users,
@@ -127,6 +135,7 @@ func NewAuthService(cfg AuthServiceConfig) (*AuthService, error) {
 		refreshTTL: cfg.RefreshTTL,
 		resetTTL:   cfg.ResetTTL,
 		appBaseURL: cfg.AppBaseURL,
+		dummyHash:  dummyHash,
 	}, nil
 }
 
@@ -248,12 +257,16 @@ func (s *AuthService) Login(ctx context.Context, email, password string) (TokenP
 		found, gerr := s.users.GetUserByEmailGlobal(ctx, tx, email)
 		if gerr != nil {
 			if errors.Is(gerr, store.ErrNotFound) {
+				// Spend the same argon2id cost as a real verify so response
+				// time doesn't reveal whether the account exists.
+				_ = auth.VerifyPassword(password, s.dummyHash)
 				return ErrInvalidCredentials
 			}
 			return gerr
 		}
 		if found.PasswordHash == "" {
-			// Legacy/OIDC user with no native password set.
+			// Legacy/OIDC user with no native password set — equalize timing too.
+			_ = auth.VerifyPassword(password, s.dummyHash)
 			return ErrInvalidCredentials
 		}
 		if verr := auth.VerifyPassword(password, found.PasswordHash); verr != nil {

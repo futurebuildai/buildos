@@ -317,8 +317,9 @@ func TestInvoiceExtract_TextRoundTrip(t *testing.T) {
 }
 
 func TestInvoiceExtract_DocumentImageRoundTrip(t *testing.T) {
-	// Doc server serves a tiny PNG; AI server asserts an image block.
-	docSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	// Doc server serves a tiny PNG over TLS (the doc fetch is https-only); AI
+	// server asserts an image block.
+	docSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write(tinyPNG())
 	}))
@@ -351,6 +352,9 @@ func TestInvoiceExtract_DocumentImageRoundTrip(t *testing.T) {
 		})
 	})
 	defer cleanup()
+	// Reach the loopback TLS doc server (the default doc client is the SSRF
+	// guard, which refuses loopback).
+	c.docHTTPClient = docSrv.Client()
 
 	resp, err := c.InvoiceExtract(context.Background(), InvoiceExtractRequest{DocumentURL: docSrv.URL + "/doc.png"})
 	if err != nil {
@@ -913,10 +917,11 @@ func TestInvoiceExtract_DocumentFetchError(t *testing.T) {
 	})
 	defer cleanup()
 
-	docSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	docSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer docSrv.Close()
+	c.docHTTPClient = docSrv.Client()
 
 	if _, err := c.InvoiceExtract(context.Background(), InvoiceExtractRequest{DocumentURL: docSrv.URL}); err == nil {
 		t.Fatal("expected an error when the document fetch fails")

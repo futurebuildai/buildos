@@ -24,11 +24,16 @@ func tinyPNG() []byte {
 	return buf.Bytes()
 }
 
-func imageTestClient(t *testing.T, maxBytes int64) *Client {
+// imageTestClient injects docClient as the DocumentFetchClient so tests reach
+// an httptest TLS server (the real default is the SSRF-guarded egress client,
+// which deliberately refuses loopback — the SSRF guard itself is covered in
+// internal/connectors). Document URLs must be https (the scheme allowlist).
+func imageTestClient(t *testing.T, maxBytes int64, docClient *http.Client) *Client {
 	t.Helper()
 	c, err := NewClient(Config{
-		KeyResolver:   staticKey("k"),
-		MaxImageBytes: maxBytes,
+		KeyResolver:         staticKey("k"),
+		MaxImageBytes:       maxBytes,
+		DocumentFetchClient: docClient,
 	})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
@@ -38,13 +43,13 @@ func imageTestClient(t *testing.T, maxBytes int64) *Client {
 
 func TestFetchDocumentImage_HappyPath(t *testing.T) {
 	pngBytes := tinyPNG()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write(pngBytes)
 	}))
 	defer srv.Close()
 
-	c := imageTestClient(t, defaultMaxImageBytes)
+	c := imageTestClient(t, defaultMaxImageBytes, srv.Client())
 	mt, b64, err := c.fetchDocumentImage(context.Background(), srv.URL+"/doc.png")
 	if err != nil {
 		t.Fatalf("fetchDocumentImage: %v", err)
@@ -60,13 +65,13 @@ func TestFetchDocumentImage_HappyPath(t *testing.T) {
 
 // Content-Type missing/generic but bytes sniff as PNG → accepted.
 func TestFetchDocumentImage_SniffsWhenContentTypeGeneric(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		_, _ = w.Write(tinyPNG())
 	}))
 	defer srv.Close()
 
-	c := imageTestClient(t, defaultMaxImageBytes)
+	c := imageTestClient(t, defaultMaxImageBytes, srv.Client())
 	mt, _, err := c.fetchDocumentImage(context.Background(), srv.URL)
 	if err != nil {
 		t.Fatalf("fetchDocumentImage: %v", err)
@@ -80,13 +85,13 @@ func TestFetchDocumentImage_OversizeRejected(t *testing.T) {
 	// Serve more bytes than the ceiling.
 	big := make([]byte, 2048)
 	copy(big, tinyPNG()) // keep a valid PNG header so it's not also a media-type fail
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write(big)
 	}))
 	defer srv.Close()
 
-	c := imageTestClient(t, 1024) // 1KB ceiling, body is 2KB
+	c := imageTestClient(t, 1024, srv.Client()) // 1KB ceiling, body is 2KB
 	_, _, err := c.fetchDocumentImage(context.Background(), srv.URL)
 	if !errors.Is(err, ErrImageTooLarge) {
 		t.Fatalf("err = %v, want ErrImageTooLarge", err)
@@ -96,26 +101,26 @@ func TestFetchDocumentImage_OversizeRejected(t *testing.T) {
 // Exactly-at-limit is accepted (the limit is inclusive).
 func TestFetchDocumentImage_AtLimitAccepted(t *testing.T) {
 	pngBytes := tinyPNG()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write(pngBytes)
 	}))
 	defer srv.Close()
 
-	c := imageTestClient(t, int64(len(pngBytes))) // ceiling == exact size
+	c := imageTestClient(t, int64(len(pngBytes)), srv.Client()) // ceiling == exact size
 	if _, _, err := c.fetchDocumentImage(context.Background(), srv.URL); err != nil {
 		t.Fatalf("at-limit should be accepted; err = %v", err)
 	}
 }
 
 func TestFetchDocumentImage_UnsupportedMediaTypeRejected(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/pdf")
 		_, _ = w.Write([]byte("%PDF-1.7\n%fake pdf bytes that won't sniff as an image"))
 	}))
 	defer srv.Close()
 
-	c := imageTestClient(t, defaultMaxImageBytes)
+	c := imageTestClient(t, defaultMaxImageBytes, srv.Client())
 	_, _, err := c.fetchDocumentImage(context.Background(), srv.URL)
 	if !errors.Is(err, ErrUnsupportedMediaType) {
 		t.Fatalf("err = %v, want ErrUnsupportedMediaType", err)
@@ -123,12 +128,12 @@ func TestFetchDocumentImage_UnsupportedMediaTypeRejected(t *testing.T) {
 }
 
 func TestFetchDocumentImage_HTTPErrorStatus(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer srv.Close()
 
-	c := imageTestClient(t, defaultMaxImageBytes)
+	c := imageTestClient(t, defaultMaxImageBytes, srv.Client())
 	if _, _, err := c.fetchDocumentImage(context.Background(), srv.URL); err == nil {
 		t.Fatal("expected error on 404")
 	}
@@ -137,11 +142,11 @@ func TestFetchDocumentImage_HTTPErrorStatus(t *testing.T) {
 // TestFetchDocumentImage_TransportError covers the httpClient.Do error
 // leg: a connection to a closed server fails before any status check.
 func TestFetchDocumentImage_TransportError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	url := srv.URL
 	srv.Close() // connections now refused
 
-	c := imageTestClient(t, defaultMaxImageBytes)
+	c := imageTestClient(t, defaultMaxImageBytes, srv.Client())
 	if _, _, err := c.fetchDocumentImage(context.Background(), url); err == nil {
 		t.Fatal("expected a transport error fetching from a closed server")
 	}
@@ -159,14 +164,30 @@ func TestFetchDocumentImage_BodyReadError(t *testing.T) {
 		}, nil
 	}}
 	c, err := NewClient(Config{
-		KeyResolver: staticKey("k"),
-		HTTPClient:  &http.Client{Transport: rt},
+		KeyResolver:         staticKey("k"),
+		DocumentFetchClient: &http.Client{Transport: rt},
 	})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	if _, _, ferr := c.fetchDocumentImage(context.Background(), "http://doc.invalid/x.png"); ferr == nil || !strings.Contains(ferr.Error(), "read document image") {
+	if _, _, ferr := c.fetchDocumentImage(context.Background(), "https://doc.invalid/x.png"); ferr == nil || !strings.Contains(ferr.Error(), "read document image") {
 		t.Fatalf("err = %v, want a read document image error", ferr)
+	}
+}
+
+// SSRF scheme guard: only https document URLs are fetched.
+func TestFetchDocumentImage_RejectsNonHTTPS(t *testing.T) {
+	c := imageTestClient(t, defaultMaxImageBytes, &http.Client{})
+	for _, u := range []string{
+		"http://example.com/x.png",
+		"file:///etc/passwd",
+		"gopher://internal/x",
+		"//example.com/x.png", // scheme-relative → no scheme
+		"not a url",
+	} {
+		if _, _, err := c.fetchDocumentImage(context.Background(), u); !errors.Is(err, ErrUnsupportedMediaType) {
+			t.Errorf("url %q: err = %v, want ErrUnsupportedMediaType", u, err)
+		}
 	}
 }
 
