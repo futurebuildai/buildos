@@ -11,7 +11,43 @@ of 2026-05-01.
 
 ---
 
-## Tier 0 — ▶ ACTIVE: agentic-OS roadmap (north star = [/VISION.md](../../VISION.md))
+## Tier −1 — ▶ ACTIVE: deployment & launch (Kelbrook first; owner-approved ultraplan 2026-06-09)
+
+This repo is **"fork zero"**: Kelbrook runs from it (staging.futurebuild.ai auto-deploys `main`;
+app.futurebuild.ai promotes staging-verified digests). True per-customer forks start with builder #2.
+Status detail lives in [HANDOFF.md](../../HANDOFF.md) "In flight".
+
+1. **Phase 0a — same-origin SPA serving — ✅ BUILT + REVIEWED** (branch `feature/phase-0a-spa-serving`
+   @ `4a7547e`, awaiting owner review/merge). `internal/api/spa.go`, `WEB_DIST_DIR`, Dockerfile webbuilder
+   stage, sourcemap stripping, CI cache + JS lockfile scan. 15-agent adversarial review: 11 findings, all fixed.
+2. **Phase 0b — feedback subsystem.** Migration 020 `feedback` (org_id/user_id/category/message/context
+   JSONB/status/triage_note; index `(org_id,status)` lock-ok; no money columns). Entry points:
+   `internal/models/feedback.go` + `internal/store/feedback.go` + `internal/service/feedback.go` (pattern:
+   `service/setup.go` one-tx+audit, actions `feedback.submit`/`feedback.triage`) + `internal/api/feedback.go`
+   (`POST /api/v1/feedback` any authenticated role; `GET/PATCH /api/v1/admin/feedback` admin+ — the command
+   center's harvest surface) + router wiring; web `fb-feedback-widget` organism in `fb-app` (category select +
+   textarea, auto-captures route/role/version; vitest + axe); `internal/pii` catalog: `message`/`triage_note`
+   Confidential.
+3. **Phase 1 — Railway deploy infra.** `deploy/railway/{README.md,provision.sh,teardown-kelbrook-legacy.sh}`
+   + `.github/workflows/{deploy-staging,promote-production,backup-nightly}.yml`. One Railway project
+   "buildos-fork0", envs staging/production × services server/worker/Postgres-16 from the GHCR image;
+   migrate-before-rollout; production only promotes digests staging verified. `TRUSTED_PROXY_CIDRS` set for
+   Railway's edge; Cloudflare proxied-CNAME + Full-strict TLS + HSTS. Workflow-YAML push may need the owner
+   (token `workflow` scope).
+4. **Ops (credentialed, runbooked):** teardown legacy Kelbrook Railway/Cloudflare attempts (allowlist-gated
+   script — never pattern-matched deletion) → provision staging → fork-init secrets + claim/wizard smoke →
+   provision prod (fresh keypair/vault key, never shared with staging) → DNS.
+5. **`buildos-operations` sister repo:** Starlight wiki (docs.futurebuild.ai; non-technical user guide +
+   technical ops manual), Claude-native command center (CLAUDE.md written for Grant + skills:
+   deploy-fork/upgrade-fork/harvest-feedback/fleet-status/teardown-fork + `fleet/forks.yaml` registry),
+   feedback→plan→spec→approve→execute loop via GitHub issue templates.
+6. **Phase 3 — PRR gate:** `docs/prr/PRR-001-kelbrook.md` (reliability/security/capacity/data-integrity/
+   observability/operational-readiness with evidence), `e2e-staging.yml` Playwright matrix
+   (chromium+firefox+webkit, every operator journey + axe), security remediation PR (per-account lockout +
+   per-(org,user) AI throttle — the posture doc's tracked follow-ups), restore drill, then promote + Kelbrook
+   onboarding + 1-week hypercare.
+
+## Tier 0 — agentic-OS roadmap (north star = [/VISION.md](../../VISION.md))
 
 The product direction is now the **agentic OS**: a deterministic CPM core wrapped by an isolated,
 configurable AI harness (`internal/agentic`). [/VISION.md](../../VISION.md) is canonical and supersedes

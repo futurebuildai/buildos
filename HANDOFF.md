@@ -273,6 +273,35 @@ govulncheck clean. PRs #9 onward also have CI green at merge time
 
 ## In flight
 
+**▶ ACTIVE: the deployment & launch plan (owner-approved ultraplan, 2026-06-09).** Kelbrook is the first
+customer; this repo is "fork zero" (staging.futurebuild.ai auto-deploys `main`, app.futurebuild.ai promotes
+pinned digests; true per-customer forks start with builder #2). Phases: **0a** SPA same-origin serving →
+**0b** feedback subsystem (migration 020 + `fb-feedback-widget`) → **1** `deploy/railway/` + deploy/promote/
+backup GH workflows → ops: Kelbrook legacy teardown + provision staging/prod + Cloudflare DNS (needs
+`RAILWAY_TOKEN`/`CLOUDFLARE_API_TOKEN`) → **2** `buildos-operations` sister repo (Starlight wiki +
+Claude-native command center for Grant + feedback loop) → **3** PRR-001 + 3-browser staging e2e matrix +
+security remediation (lockout + AI throttle) → cutover. Full plan text: in the 2026-06-09 session log /
+owner's ultraplan approval message.
+
+- **Phase 0a — same-origin SPA serving: BUILT + REVIEWED, awaiting owner review/merge.** Branch
+  `feature/phase-0a-spa-serving` @ `4a7547e` (NOT merged, NOT pushed — owner's call per working agreement).
+  `internal/api/spa.go` (NotFound catch-all: SPA fallback + CSP/no-cache on HTML, immutable hashed assets,
+  JSON-404 `/api/*` guard — note chi propagates root NotFound into subrouters; the `r.URL.Path` guard is
+  load-bearing), `WEB_DIST_DIR` (config + boot fail-fast validation), Dockerfile `node:20-alpine` webbuilder
+  stage (+ **`.dockerignore` fix — it excluded `web/` entirely**, the stage would have gotten an empty
+  context), **source maps stripped from the image** (vite `sourcemap:'hidden'` + `find -delete`; the 790KB
+  map embedded the full TS source, served unauth — the review's one MAJOR), metrics `(unmatched)` label +
+  OTel post-routing span rename (cardinality), CI gha layer cache + Trivy JS lockfile scan + web SBOM,
+  fork-init secrets into `.gitignore`/`.dockerignore`. **15-agent adversarial review: 11 confirmed findings,
+  ALL remediated.** Gates: `make audit` ALL PASSED ×2 + image build + live smoke ×2 (HTML+CSP, immutable
+  assets, JSON 404s, `.map` 404s) + web vitest 231 + workflow YAML parse. **Caveat for the pusher:** the
+  diff touches `.github/workflows/{ci,release}.yml` — if the push token lacks the `workflow` scope, those
+  two files need a user-side push (same recipe as PR #9).
+- **Phase 0b — feedback subsystem: NEXT.** Migration 020 `feedback` table, store/service/api
+  (`POST /api/v1/feedback` any-role + admin harvest surface `GET/PATCH /api/v1/admin/feedback`),
+  `fb-feedback-widget` organism in the app shell, PII catalog entries (message/triage_note Confidential).
+  Pattern: `internal/service/setup.go` (one-tx + audit), handler shape `internal/api/setup.go`.
+
 **Phase 4 is COMPLETE** — every chunk (4a-i, 4a-ii, 4b-i, 4b-ii, 4b-iii, 4c) is merged + pushed; 4b-iii (error-path UX + metric follow-ups) was the final chunk and closed the backlog. The only remaining work is non-blocking: the documented security follow-ups (`docs/security-posture.md`) and the ESC-003 spec backfill owed for 4a-ii. Historical context: Chunks 1 (ESC-002) and 4b-i (alerting + runbooks) are merged + pushed
 (`origin/main` `ff22d74`; both in "Last shipped"). Chunk 4b-ii (worker observability) is merged + pushed (`origin/main` `19fc7d3`; top "Last shipped"). A Phase-4 ultraplan (6-agent assessment, 2026-06-09) decomposed the phase against the actual code.
 Remaining chunks (see NEXT_STEPS §P4 for entry points):
