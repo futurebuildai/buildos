@@ -681,3 +681,42 @@ export interface AuditEntry {
   after?: Record<string, unknown>;
   created_at: string;
 }
+
+// ----------------------------- Feedback (Phase 0b) -----------------------------
+
+export type FeedbackCategory = 'bug' | 'idea' | 'friction' | 'other';
+
+/** Triage lifecycle owned by the backend; the widget only ever sees `new`. */
+export type FeedbackStatus = 'new' | 'triaged' | 'planned' | 'shipped' | 'declined';
+
+/**
+ * Client-captured submission context (all strings). The server caps the
+ * serialized object at 4096 bytes, so keep values short and flat.
+ *
+ * This widget always SENDS all five keys, so the submit payload keeps them
+ * required. The backend guarantees none of them on READ (API_CONTRACT 13d:
+ * `context?: object` — it may be `{}` or any object ≤4096B), so the read
+ * model below uses `Partial<FeedbackContext>`.
+ */
+export interface FeedbackContext {
+  route: string;
+  role: string;
+  app_version: string;
+  user_agent: string;
+  viewport: string;
+}
+
+/** POST /api/v1/feedback → 201 { feedback: Feedback }. */
+export interface Feedback {
+  id: string;
+  org_id: string;
+  user_sub: string;
+  category: FeedbackCategory;
+  message: string;
+  /** READ model: no keys guaranteed by the backend — treat every key as optional. */
+  context: Partial<FeedbackContext>;
+  status: FeedbackStatus;
+  triage_note: string;
+  created_at: string;
+  updated_at: string;
+}

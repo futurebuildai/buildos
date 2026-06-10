@@ -1,6 +1,7 @@
 /// <reference types="vitest/config" />
 import { defineConfig } from 'vite';
 import { fileURLToPath, URL } from 'node:url';
+import { readFileSync } from 'node:fs';
 
 // BuildOS Office Console — Vite config.
 //
@@ -8,7 +9,19 @@ import { fileURLToPath, URL } from 'node:url';
 // Everything else (which features are on) is discovered at runtime from the server
 // so a single build is deployable across forks. In production the console is served
 // same-origin behind the Go server, so the default base is the relative "/".
+
+// Build-time app version for the feedback widget's captureContext (it reads
+// import.meta.env.VITE_APP_VERSION). Sourced from the environment when CI
+// stamps one, falling back to the package.json version — without this define
+// the env var is defined nowhere and context.app_version is always 'dev'.
+const pkg = JSON.parse(
+  readFileSync(fileURLToPath(new URL('./package.json', import.meta.url)), 'utf-8'),
+) as { version: string };
+
 export default defineConfig({
+  define: {
+    'import.meta.env.VITE_APP_VERSION': JSON.stringify(process.env.VITE_APP_VERSION ?? pkg.version),
+  },
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),

@@ -142,6 +142,8 @@ var FieldClass = map[string]Class{
 	"vault_key":     Restricted,
 
 	// Confidential (business-sensitive)
+	"message":        Confidential, // feedback free text (Phase 0b)
+	"triage_note":    Confidential, // feedback triage free text (Phase 0b)
 	"vendor_name":    Confidential,
 	"invoice_number": Confidential,
 	"po_number":      Confidential,

@@ -34,6 +34,7 @@ const (
 	AuditResourceForesight                 = "foresight"
 	AuditResourceAgentConfig               = "agent_config"
 	AuditResourceConnectorConfig           = "connector_config"
+	AuditResourceFeedback                  = "feedback"
 )
 
 // AuditRecorder is the consumer-side interface every mutating service

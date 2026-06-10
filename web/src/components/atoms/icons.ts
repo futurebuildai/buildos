@@ -55,7 +55,8 @@ export type IconName =
   | 'building'
   | 'hexagon'
   | 'menu'
-  | 'sliders';
+  | 'sliders'
+  | 'message-circle';
 
 /** Inner SVG markup per icon (stroke paths; currentColor; 24×24 viewBox). */
 export const ICON_PATHS: Record<IconName, string> = {
@@ -119,4 +120,5 @@ export const ICON_PATHS: Record<IconName, string> = {
   hexagon: '<path d="M12 2l8.66 5v10L12 22l-8.66-5V7z"/>',
   menu: '<path d="M3 12h18M3 6h18M3 18h18"/>',
   sliders: '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>',
+  'message-circle': '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22z"/>',
 };

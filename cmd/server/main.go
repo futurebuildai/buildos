@@ -219,6 +219,11 @@ func run(logger *slog.Logger) error {
 	}
 	connectorService := service.NewConnectorService(pool, store.NewConnectorConfigStore(), store.NewConnectorToolsStore(), connectorSecret, auditService, logger)
 
+	// Feedback loop (Phase 0b). Always constructed (needs only the pool +
+	// store) — the widget submit surface and the admin/command-center
+	// harvest surface are core, not capability-gated.
+	feedbackService := service.NewFeedbackService(pool, store.NewFeedbackStore(), auditService)
+
 	// Conversational ERP assistant (Phase 2c). Typed-nil-safe: a nil
 	// aiClient (vault/AI unconfigured) leaves the service's AI seam unset
 	// so Converse soft-fails with agentic.ErrAssistantUnavailable (503)
@@ -365,6 +370,7 @@ func run(logger *slog.Logger) error {
 		AgentsService:       agentsService,
 		AgentConfigService:  agentConfigService,
 		ConnectorService:    connectorService,
+		FeedbackService:     feedbackService,
 		Assistant:           assistantService,
 		IngestionService:    ingestionService,
 		SetupService:        setupService,

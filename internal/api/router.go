@@ -53,6 +53,7 @@ type RouterConfig struct {
 	AgentsService       AgentsServicer       // optional — when nil, /agents/* routes don't mount
 	AgentConfigService  AgentConfigServicer  // optional — when nil, /admin/agents/* routes don't mount (agent config registry)
 	ConnectorService    ConnectorServicer    // optional — when nil, /admin/connectors/* routes don't mount (connector registry)
+	FeedbackService     FeedbackServicer     // optional — when nil, /feedback + /admin/feedback routes don't mount
 	Assistant           AssistantConverser   // optional — when nil, POST /agents/chat doesn't mount (no AI client)
 	IngestionService    InvoiceIngestor      // optional — when nil, the /invoices/ingest route doesn't mount (AI unconfigured)
 	Metrics             MetricsRecorder      // optional — when nil, /metrics doesn't mount and HTTP middleware is skipped
@@ -212,6 +213,10 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	if cfg.ConnectorService != nil {
 		connectorAdmin = NewConnectorHandler(cfg.ConnectorService)
 	}
+	var feedback *FeedbackHandler
+	if cfg.FeedbackService != nil {
+		feedback = NewFeedbackHandler(cfg.FeedbackService)
+	}
 
 	// Auth middleware
 	authMiddleware := mw.Auth(cfg.Verifier, cfg.DevAuthMode, cfg.Logger)
@@ -299,6 +304,18 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		// --------------------------------------------------------
 		if connectorAdmin != nil {
 			MountConnectorRoutes(r, connectorAdmin)
+		}
+
+		// --------------------------------------------------------
+		// 0.8 Feedback loop (Phase 0b) — POST /api/v1/feedback is
+		//     auth-only (every role files reports from the widget);
+		//     /api/v1/admin/feedback (list + triage) is admin-gated —
+		//     the harvest surface the buildos-operations command
+		//     center polls. Behind the SetupGate (operational, not
+		//     bootstrap).
+		// --------------------------------------------------------
+		if feedback != nil {
+			MountFeedbackRoutes(r, feedback)
 		}
 
 		// --------------------------------------------------------

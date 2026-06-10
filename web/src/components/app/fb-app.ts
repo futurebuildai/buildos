@@ -4,9 +4,10 @@ import { SignalWatcher } from '@lit-labs/signals';
 import { FBElement } from '../base/fb-element.js';
 import '../base/fb-placeholder.js';
 import '../shell/fb-org-shell.js';
+import '../organisms/fb-feedback-widget.js';
 import type { Workspace, Density } from '../shell/fb-top-bar.js';
 import { currentRoute, navigate, type ResolvedRoute } from '../../router.js';
-import { authClaims } from '../../state/authStore.js';
+import { authClaims, isAuthenticated } from '../../state/authStore.js';
 
 /**
  * Root application element. Subscribes to the router's `currentRoute` signal and
@@ -52,6 +53,12 @@ export class FbApp extends SignalWatcher(FBElement) {
     if (!route) return html`<div class="centered">Loading…</div>`;
 
     const page = this.renderPage(route);
+    // Phase 0b: the floating feedback widget rides along on the authed ORG
+    // shell only (fixed bottom-right, below toasts). Deliberately absent
+    // from the auth/setup shells: pre-onboarding the SetupGate 403s
+    // POST /api/v1/feedback (SETUP_INCOMPLETE), so rendering the button
+    // there offers an affordance that can only fail.
+    const feedback = isAuthenticated.get() ? html`<fb-feedback-widget></fb-feedback-widget>` : null;
 
     switch (route.def.shell) {
       case 'auth':
@@ -59,7 +66,7 @@ export class FbApp extends SignalWatcher(FBElement) {
         return html`<div class="centered"><div class="centered-inner">${page}</div></div>`;
       case 'org':
       default:
-        return this.renderOrgShell(route, page);
+        return html`${this.renderOrgShell(route, page)}${feedback}`;
     }
   }
 
