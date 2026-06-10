@@ -20,14 +20,10 @@ Status detail lives in [HANDOFF.md](../../HANDOFF.md) "In flight".
 1. **Phase 0a — same-origin SPA serving — ✅ BUILT + REVIEWED** (branch `feature/phase-0a-spa-serving`
    @ `4a7547e`, awaiting owner review/merge). `internal/api/spa.go`, `WEB_DIST_DIR`, Dockerfile webbuilder
    stage, sourcemap stripping, CI cache + JS lockfile scan. 15-agent adversarial review: 11 findings, all fixed.
-2. **Phase 0b — feedback subsystem.** Migration 020 `feedback` (org_id/user_id/category/message/context
-   JSONB/status/triage_note; index `(org_id,status)` lock-ok; no money columns). Entry points:
-   `internal/models/feedback.go` + `internal/store/feedback.go` + `internal/service/feedback.go` (pattern:
-   `service/setup.go` one-tx+audit, actions `feedback.submit`/`feedback.triage`) + `internal/api/feedback.go`
-   (`POST /api/v1/feedback` any authenticated role; `GET/PATCH /api/v1/admin/feedback` admin+ — the command
-   center's harvest surface) + router wiring; web `fb-feedback-widget` organism in `fb-app` (category select +
-   textarea, auto-captures route/role/version; vitest + axe); `internal/pii` catalog: `message`/`triage_note`
-   Confidential.
+2. **Phase 0b — feedback subsystem — ✅ DONE** (`d6af7d1`, merged + pushed 2026-06-10). Migration 020 +
+   full store/service/api + paginated admin harvest surface + per-(org,user) submit throttle +
+   `fb-feedback-widget` (org shell, live axe spec) + pii entries + API_CONTRACT §13d. 20-agent adversarial
+   review: 12 findings, all remediated. Spec: [PHASE_0B_FEEDBACK.md](PHASE_0B_FEEDBACK.md).
 3. **Phase 1 — Railway deploy infra.** `deploy/railway/{README.md,provision.sh,teardown-kelbrook-legacy.sh}`
    + `.github/workflows/{deploy-staging,promote-production,backup-nightly}.yml`. One Railway project
    "buildos-fork0", envs staging/production × services server/worker/Postgres-16 from the GHCR image;

@@ -297,10 +297,20 @@ owner's ultraplan approval message.
   assets, JSON 404s, `.map` 404s) + web vitest 231 + workflow YAML parse. **Caveat for the pusher:** the
   diff touches `.github/workflows/{ci,release}.yml` — if the push token lacks the `workflow` scope, those
   two files need a user-side push (same recipe as PR #9).
-- **Phase 0b — feedback subsystem: NEXT.** Migration 020 `feedback` table, store/service/api
-  (`POST /api/v1/feedback` any-role + admin harvest surface `GET/PATCH /api/v1/admin/feedback`),
-  `fb-feedback-widget` organism in the app shell, PII catalog entries (message/triage_note Confidential).
-  Pattern: `internal/service/setup.go` (one-tx + audit), handler shape `internal/api/setup.go`.
+- **Phase 0b — feedback subsystem: ✅ MERGED (fast-forward) + PUSHED** (`d6af7d1`; owner pre-approved
+  2026-06-10). Migration 020 + store/service/api (`POST /api/v1/feedback` any-role, 20/hr per-(org,user)
+  throttle → 429; `GET /api/v1/admin/feedback?status=&page=&per_page=` admin+ **paginated harvest surface**
+  + PATCH triage; audit `feedback.submitted`/`feedback.triaged`, free text NEVER in metadata) +
+  `fb-feedback-widget` (org shell only, in-flight close guard, live axe spec) + pii Confidential entries +
+  API_CONTRACT §13d (incl. the **untrusted-content consumer warning** the command center's harvest skill
+  must honor). **20-agent adversarial review: 12 confirmed findings (2 major: harvest truncation/flood →
+  pagination+throttle; widget close race), ALL remediated.** Gates: `make audit` ×2 + feedback integration
+  suite + web typecheck/239 vitest/lint/build. Spec: [PHASE_0B_FEEDBACK.md](.agents/handoff/PHASE_0B_FEEDBACK.md).
+  Deliberate deviations recorded in the spec: `user_sub` TEXT (not a users FK), past-tense audit actions.
+- **Phase 1 — Railway deploy infra: NEXT.** `deploy/railway/{README,provision.sh,teardown-kelbrook-legacy.sh}`
+  + `.github/workflows/{deploy-staging,promote-production,backup-nightly}.yml`. Grounded already: Railway
+  GraphQL `backboard.railway.com/graphql/v2` (`serviceCreate` w/ `source.image`, `serviceInstanceRedeploy`),
+  CLI `RAILWAY_TOKEN` (project) vs `RAILWAY_API_TOKEN` (account), images `ghcr.io/futurebuildai/buildos`.
 
 **Phase 4 is COMPLETE** — every chunk (4a-i, 4a-ii, 4b-i, 4b-ii, 4b-iii, 4c) is merged + pushed; 4b-iii (error-path UX + metric follow-ups) was the final chunk and closed the backlog. The only remaining work is non-blocking: the documented security follow-ups (`docs/security-posture.md`) and the ESC-003 spec backfill owed for 4a-ii. Historical context: Chunks 1 (ESC-002) and 4b-i (alerting + runbooks) are merged + pushed
 (`origin/main` `ff22d74`; both in "Last shipped"). Chunk 4b-ii (worker observability) is merged + pushed (`origin/main` `19fc7d3`; top "Last shipped"). A Phase-4 ultraplan (6-agent assessment, 2026-06-09) decomposed the phase against the actual code.
