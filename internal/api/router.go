@@ -25,6 +25,10 @@ import (
 type MetricsRecorder interface {
 	HTTPMiddleware(next http.Handler) http.Handler
 	Handler() http.Handler
+	// ObserveErrorResponse counts a JSON error response by {code, status-class};
+	// the error writers (this package + middleware) call it via a package-level
+	// observer the router wires below.
+	ObserveErrorResponse(code, status string)
 }
 
 // RouterConfig holds all dependencies needed to build the API router.
@@ -59,6 +63,17 @@ type RouterConfig struct {
 // NewRouter creates the Chi router with all route groups and middleware.
 func NewRouter(cfg RouterConfig) http.Handler {
 	r := chi.NewRouter()
+
+	// Wire the error-response counter into both error writers (this package +
+	// the middleware package). Reset to nil when metrics are disabled so a
+	// later metrics-less router build doesn't keep a stale observer.
+	if cfg.Metrics != nil {
+		errResponseObserver = cfg.Metrics.ObserveErrorResponse
+		mw.SetErrorObserver(cfg.Metrics.ObserveErrorResponse)
+	} else {
+		errResponseObserver = nil
+		mw.SetErrorObserver(nil)
+	}
 
 	// Global middleware. Order matters:
 	//   - RequestID first so chi assigns one before any logging.

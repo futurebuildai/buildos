@@ -86,6 +86,9 @@ db-down:
 migrate: build-migrate
 	DATABASE_URL=$(DATABASE_URL) ./bin/migrate up
 
+migrate-dry-run: build-migrate
+	DATABASE_URL=$(DATABASE_URL) ./bin/migrate up --dry-run
+
 migrate-down: build-migrate
 	DATABASE_URL=$(DATABASE_URL) ./bin/migrate down
 

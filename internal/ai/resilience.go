@@ -81,14 +81,19 @@ func newCircuitBreaker(cfg CircuitConfig) *circuitBreaker {
 // back to recordSuccess / recordFailure so an outcome from a stale
 // state transition (e.g., half-open probe completes after the breaker
 // was reset by a manual intervention) can't flip the wrong state.
-func (cb *circuitBreaker) allow() (bool, uint64) {
+// allow reports whether a call may proceed, the breaker generation, and — when
+// it returns false because the breaker is OPEN — the remaining time until the
+// breaker promotes to half-open (for an accurate client-facing Retry-After). The
+// duration is 0 in every admit case and in half-open (a probe is in flight, so
+// the wait is indeterminate).
+func (cb *circuitBreaker) allow() (bool, uint64, time.Duration) {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
 	now := cb.cfg.Now()
 	switch cb.state {
 	case circuitClosed:
-		return true, cb.generationSeed
+		return true, cb.generationSeed, 0
 	case circuitOpen:
 		if now.Sub(cb.openedAt) >= cb.cfg.OpenDuration {
 			// Open duration elapsed; promote to half-open and admit
@@ -96,19 +101,19 @@ func (cb *circuitBreaker) allow() (bool, uint64) {
 			cb.state = circuitHalfOpen
 			cb.probeOutstand = true
 			cb.generationSeed++
-			return true, cb.generationSeed
+			return true, cb.generationSeed, 0
 		}
-		return false, cb.generationSeed
+		return false, cb.generationSeed, cb.openedAt.Add(cb.cfg.OpenDuration).Sub(now)
 	case circuitHalfOpen:
 		// At most one probe in flight; everyone else short-circuits
 		// until the probe resolves.
 		if cb.probeOutstand {
-			return false, cb.generationSeed
+			return false, cb.generationSeed, 0
 		}
 		cb.probeOutstand = true
-		return true, cb.generationSeed
+		return true, cb.generationSeed, 0
 	}
-	return true, cb.generationSeed
+	return true, cb.generationSeed, 0
 }
 
 // recordSuccess collapses the in-window failure list (success ⇒ no

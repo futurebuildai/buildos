@@ -38,32 +38,23 @@ log via the `*Context` slog variants so the trio is present.
 ## 3. The metric surface + known gaps
 
 See [`deploy/prometheus/README.md`](../deploy/prometheus/README.md#the-metric-surface-what-buildos-emits)
-for the five emitted metrics and their labels. **Both the server and the worker are
-scraped** (4b-ii wired worker observability — a `/metrics` listener + `ObserveJob` via
-a River event subscription, so `buildos_river_job_runs_total` is now real, plus the
-worker's AI client now feeds `buildos_ai_*`). Two things still **cannot** be alerted on
-(each needs a Go change — tracked follow-ups):
+for the emitted metrics and their labels. **Both the server and the worker are
+scraped.** Phase 4b-iii closed the prior gaps: `buildos_db_pool_*` (pool stats),
+`buildos_http_error_responses_total{code,status}` (per-error-code, incl.
+`SETUP_INCOMPLETE`), and `buildos_river_queue_depth` + `buildos_river_oldest_available_seconds`
+(the wedged-but-alive worker). Remaining:
 
-- **DB connection-pool exhaustion** — pgxpool's `Stat()` (acquired/idle/total conns,
-  acquire wait) is not exported as a metric. Proxy signals: `/ready` failing (it
-  `Ping`s the pool), rising HTTP p95, and `BuildOSHTTP5xxRateHigh`.
-- **SetupGate over-rejection** — the gate 403s operational traffic with
-  `SETUP_INCOMPLETE` until onboarding completes, but HTTP `status` is class-only
-  (`4xx`), so this shows only as elevated 4xx (`BuildOSHTTP4xxRateElevated`), not a
-  dedicated signal. Confirm via logs (`action`/error code) or `/audit?action_prefix=setup.`.
-- **Worker alive but not draining jobs** — `BuildOSWorkerDown` catches a dead/unscraped
-  worker, but a worker that is up (`up==1`) yet stuck (River queue wedged, advisory-lock
-  contention, a jammed job pool) emits no job events, so the River ratios go *stale*
-  rather than spike and nothing pages. Detecting this needs a queue-depth / oldest-
-  available-job gauge (a Go follow-up). For now, watch the River job tables for a
-  growing `available` backlog.
+- **DB pool acquire-WAIT** — the gauges expose acquired/idle/total/max conns
+  (`BuildOSDBPoolNearExhaustion` alerts at >90% of max), but not the per-acquire wait
+  duration. Rising HTTP p95 + the pool-near-max alert are the proxy.
 - **River metrics are best-effort** — `buildos_river_job_runs_total` is fed by River's
   buffered, non-blocking subscription, so it can undercount under burst; the River job
-  tables are the source of truth (see `BuildOSRiverJobsDiscarded`).
+  tables are the source of truth (see `BuildOSRiverJobsDiscarded`). The queue-depth
+  gauges (4b-iii) are a direct table query and are NOT subject to that drop.
 
-> **Follow-up to close these (one small Go chunk each):** export `pgxpool.Stat()` as
-> `buildos_db_pool_*` gauges; add a per-error-code (or SetupGate-rejection) counter; a
-> queue-depth/oldest-available gauge for the worker-stuck case. Filed against Phase 4b.
+> **Resolved in 4b-iii:** `pgxpool.Stat()` → `buildos_db_pool_*`; the per-error-code
+> (`SETUP_INCOMPLETE` etc.) counter; and the worker queue-depth / oldest-available gauges
+> (the wedged-worker case → `BuildOSWorkerQueueBacklog`).
 
 ---
 
@@ -159,6 +150,23 @@ is a bug to fix, not noise to mute.
 > **River job tables (`state = 'discarded'`) are the source of truth** — reconcile
 > against them periodically (and after any worker restart/burst) rather than trusting
 > the alert to catch every discard.
+
+### BuildOSWorkerQueueBacklog
+**Warning** — and the one `BuildOSWorkerDown` *can't* catch. The worker is **up** but
+not draining: the oldest ready-to-run job has been `available` for >5m. Unlike the
+job-outcome metrics (which go stale when nothing runs), this is a direct query on the
+River tables, so it fires even when the worker is wedged. Causes: a jammed job pool,
+advisory-lock contention, a stuck DB, or genuine overload. Check the worker logs, the
+`buildos_river_queue_depth` gauge (how big), and the River `river_job` table
+(`state='available'`, oldest `scheduled_at`). Restart the worker if wedged; scale or
+tune `MaxWorkers` if it's real overload.
+
+### BuildOSDBPoolNearExhaustion
+**Warning.** >90% of the pgx pool's max connections (`buildos_db_pool_max_conns`) have
+been in use for >5m. New requests queue for a connection — HTTP p95 climbs, then 5xx.
+Check `buildos_db_pool_acquired_conns` vs `max`, hunt a slow query or a leaked
+connection (a tx never committed/rolled back), and consider raising `DB_POOL_MAX` if the
+load is legitimate. `/ready` (a pool `Ping`) is the binary backstop.
 
 ---
 

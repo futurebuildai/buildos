@@ -10,16 +10,13 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// Per-IP token-bucket rate limit. Stopgap protection against
-// brute-force / DDoS while the real per-tenant credit system lands
-// (Brain-coordinated; tracks unified API consumption for Maestro +
-// 3rd-party API calls, with pay-per-use credits).
+// Per-IP token-bucket rate limit — coarse protection against
+// brute-force / runaway scripts.
 //
 // Defaults are intentionally permissive — a real human user with a
 // busy frontend dashboard easily bursts 50 req/sec when refreshing
 // multiple panes. The point is to stop a runaway script, not to
-// throttle normal traffic. Per-tenant quota enforcement is a
-// downstream concern.
+// throttle normal traffic.
 
 // DefaultRateLimitRPS is the steady-state rate (requests per second)
 // per remote IP. 50 rps × 60s = 3000 req/min, well above real
@@ -80,10 +77,12 @@ func (l *IPRateLimiter) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip := clientIP(r)
 		if !l.allow(ip) {
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Retry-After", "1") // 1s is a good default; bucket refills at rps tokens/sec
-			w.WriteHeader(http.StatusTooManyRequests)
-			_, _ = w.Write([]byte(`{"error":{"code":"RATE_LIMITED","message":"too many requests"}}`))
+			// Retry-After "1": at the configured rps a single token refills in
+			// well under a second, so the RFC 7231 integer-seconds floor is 1.
+			w.Header().Set("Retry-After", "1")
+			// Use the shared slim error writer (consistent envelope + the
+			// {code, status} metrics observer) instead of a hand-rolled literal.
+			writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", "too many requests")
 			return
 		}
 		next.ServeHTTP(w, r)

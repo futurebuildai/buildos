@@ -3,10 +3,12 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -120,6 +122,28 @@ func TestDailyBriefing_RateLimited429(t *testing.T) {
 	h.DailyBriefing(w, r)
 	if w.Code != http.StatusTooManyRequests {
 		t.Errorf("status=%d, want 429", w.Code)
+	}
+}
+
+func TestDailyBriefing_CircuitOpen503WithRetryAfter(t *testing.T) {
+	// The breaker being open is a transient self-protection state → 503 + a
+	// Retry-After equal to the remaining open window (distinct from the
+	// ErrTransient 502 and the config-gap 503s). Wrapped with %w to mirror the
+	// real service path (AgentsService wraps the ai error), exercising the
+	// errors.Is/As-through-wrap contract.
+	wrapped := fmt.Errorf("daily briefing: ai: %w", &ai.CircuitOpenError{RetryAfter: 12 * time.Second})
+	h := NewAgentsHandler(&mockAgentsService{briefingErr: wrapped})
+	r := buildRequest(t, "POST", "/api/v1/agents/daily-briefing", testOrgID, nil, nil)
+	w := httptest.NewRecorder()
+	h.DailyBriefing(w, r)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d, want 503, body=%s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Retry-After"); got != "12" {
+		t.Errorf("Retry-After=%q, want 12", got)
+	}
+	if !strings.Contains(w.Body.String(), "AI_CIRCUIT_OPEN") {
+		t.Errorf("body missing AI_CIRCUIT_OPEN: %s", w.Body.String())
 	}
 }
 

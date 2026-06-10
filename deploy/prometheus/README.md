@@ -16,16 +16,19 @@ alert means + first response) and [`docs/deploy-runbook.md`](../../docs/deploy-r
 the AI client) and, since 4b-ii, the **worker** (`cmd/worker`: a /metrics listener +
 River job-outcome subscription + the AI client). So there are **two scrape targets**
 (`buildos-server`, `buildos-worker`). Metrics come from a **custom registry**
-(`internal/obs/metrics.go`) — there are **no** `go_*` / `process_*` / DB-pool metrics.
-The actually-emitted set is five:
+(`internal/obs/metrics.go`) — there are **no** `go_*` / `process_*` metrics:
 
 | Metric | Type | Labels | Emitted by |
 |---|---|---|---|
 | `buildos_http_requests_total` | counter | `route`, `method`, `status` (`2xx`/…/`5xx`) | server |
 | `buildos_http_request_duration_seconds` | histogram | `route`, `method` | server |
+| `buildos_http_error_responses_total` | counter | `code` (app error code), `status` | server |
 | `buildos_ai_requests_total` | counter | `kind`, `model`, `outcome` (`success`/`error`) | server + worker |
 | `buildos_ai_request_duration_seconds` | histogram | `kind`, `model` | server + worker |
 | `buildos_river_job_runs_total` | counter | `kind`, `outcome` (`success`/`error`/`discarded`) | worker |
+| `buildos_river_queue_depth` | gauge | — (available job count) | worker |
+| `buildos_river_oldest_available_seconds` | gauge | — (age of oldest available job) | worker |
+| `buildos_db_pool_*` | gauge | — (acquired/idle/total/max conns) | server |
 
 `route` is the **chi route pattern** (e.g. `/api/v1/projects/{projectID}`), not the raw
 URL — cardinality is bounded. `buildos_ai_*` now covers AI calls from **both** the

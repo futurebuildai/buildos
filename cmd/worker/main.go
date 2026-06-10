@@ -232,6 +232,11 @@ func run(logger *slog.Logger) error {
 	stopJobMetrics := registry.ObserveJobMetrics(metrics, logger)
 	defer stopJobMetrics()
 
+	// Queue-depth gauges (Phase 4b-iii): the available-backlog count + oldest
+	// age, so a wedged-but-alive worker (up==1 but not draining) is visible.
+	stopQueueDepth := registry.ObserveQueueDepth(ctx, metrics, 15*time.Second, logger)
+	defer stopQueueDepth()
+
 	httpSrv := newWorkerHTTPServer(":"+cfg.Port, metrics, pool)
 	httpErrCh := make(chan error, 1)
 	go func() {

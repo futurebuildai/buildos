@@ -140,3 +140,60 @@ func TestObserveJob_RecordsCounter(t *testing.T) {
 		}
 	}
 }
+
+func scrape(t *testing.T, m *Metrics) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	return rec.Body.String()
+}
+
+func TestObserveErrorResponse_RecordsByCodeAndStatus(t *testing.T) {
+	m := NewMetrics()
+	m.ObserveErrorResponse("SETUP_INCOMPLETE", "4xx")
+	m.ObserveErrorResponse("SETUP_INCOMPLETE", "4xx")
+	m.ObserveErrorResponse("AI_CIRCUIT_OPEN", "5xx")
+
+	body := scrape(t, m)
+	for _, w := range []string{
+		`buildos_http_error_responses_total{code="SETUP_INCOMPLETE",status="4xx"} 2`,
+		`buildos_http_error_responses_total{code="AI_CIRCUIT_OPEN",status="5xx"} 1`,
+	} {
+		if !strings.Contains(body, w) {
+			t.Errorf("missing line %q in:\n%s", w, body)
+		}
+	}
+}
+
+func TestRegisterPoolGauges_ScrapesStat(t *testing.T) {
+	m := NewMetrics()
+	m.RegisterPoolGauges(func() (a, i, t, mx int32) { return 3, 7, 10, 25 })
+
+	body := scrape(t, m)
+	for _, w := range []string{
+		"buildos_db_pool_acquired_conns 3",
+		"buildos_db_pool_idle_conns 7",
+		"buildos_db_pool_total_conns 10",
+		"buildos_db_pool_max_conns 25",
+	} {
+		if !strings.Contains(body, w) {
+			t.Errorf("missing line %q in:\n%s", w, body)
+		}
+	}
+}
+
+func TestRiverQueueGauges(t *testing.T) {
+	m := NewMetrics()
+	m.SetQueueDepth(4)
+	m.SetOldestAvailableSeconds(42)
+
+	body := scrape(t, m)
+	for _, w := range []string{
+		"buildos_river_queue_depth 4",
+		"buildos_river_oldest_available_seconds 42",
+	} {
+		if !strings.Contains(body, w) {
+			t.Errorf("missing line %q in:\n%s", w, body)
+		}
+	}
+}

@@ -293,3 +293,43 @@ groups:
             Inspect the River job table for the failure, fix the root cause, and
             re-enqueue if the work still matters.
           runbook_url: "https://github.com/futurebuildai/buildos/blob/main/docs/observability-runbook.md#buildosriverjobsdiscarded"
+
+      - alert: BuildOSWorkerQueueBacklog
+        # The oldest AVAILABLE (ready-to-run) River job has waited too long — the
+        # worker is wedged-but-ALIVE (up==1, not draining) or overwhelmed. This is
+        # the gap BuildOSWorkerDown cannot catch (a live process that stopped
+        # working jobs); buildos_river_queue_depth shows the backlog size.
+        expr: buildos_river_oldest_available_seconds > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "BuildOS worker not draining: oldest ready job waited {{ $value | humanizeDuration }}"
+          description: >
+            The oldest ready-to-run River job has been available for >5m. The
+            worker is up (else BuildOSWorkerDown fires) but not making progress —
+            a wedged job pool, advisory-lock contention, or a stuck DB. Check the
+            worker logs and the buildos_river_queue_depth gauge.
+          runbook_url: "https://github.com/futurebuildai/buildos/blob/main/docs/observability-runbook.md#buildosworkerqueuebacklog"
+
+  # ---------------------------------------------------------------------------
+  # Resource saturation (server). DB connection-pool exhaustion (4b-iii gauges).
+  # ---------------------------------------------------------------------------
+  - name: buildos-resources
+    rules:
+      - alert: BuildOSDBPoolNearExhaustion
+        # Acquired connections near the configured max → new requests block
+        # waiting for a connection (rising p95), then 5xx. The DB-pool gauges
+        # (pgxpool.Stat) replace the former /ready-only proxy.
+        expr: buildos_db_pool_acquired_conns / clamp_min(buildos_db_pool_max_conns, 1) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "BuildOS DB pool near exhaustion ({{ $value | humanizePercentage }} of max in use)"
+          description: >
+            >90% of the pgx pool's max connections have been in use for >5m. New
+            requests will queue for a connection (rising HTTP p95) then fail.
+            Check for slow queries, a leaked connection, or an under-sized
+            DB_POOL_MAX.
+          runbook_url: "https://github.com/futurebuildai/buildos/blob/main/docs/observability-runbook.md#buildosdbpoolnearexhaustion"

@@ -43,6 +43,8 @@ var (
 	// open and refusing to forward calls. Surface as 503. Distinct
 	// from ErrTransient so service-layer code can skip its own
 	// fallback retry loop entirely while the breaker is tripped.
+	// The concrete error is *CircuitOpenError (carrying a Retry-After
+	// hint); errors.Is(err, ErrCircuitOpen) still matches it.
 	ErrCircuitOpen = errors.New("ai: circuit breaker open")
 
 	// ErrRateLimited is returned when Anthropic responded with HTTP 429
@@ -51,6 +53,22 @@ var (
 	// caller's API.
 	ErrRateLimited = errors.New("ai: rate limited")
 )
+
+// DefaultOpenDuration mirrors the circuit breaker's default open window. Used as
+// the Retry-After fallback when a breaker-open error carries no explicit hint.
+const DefaultOpenDuration = 30 * time.Second
+
+// CircuitOpenError is the concrete error returned when the breaker is open. It
+// carries RetryAfter (the remaining open window) so the API layer can emit an
+// accurate Retry-After. Is(ErrCircuitOpen) is true, so existing
+// errors.Is(err, ErrCircuitOpen) checks keep working.
+type CircuitOpenError struct {
+	RetryAfter time.Duration
+}
+
+func (e *CircuitOpenError) Error() string { return ErrCircuitOpen.Error() }
+
+func (e *CircuitOpenError) Is(target error) bool { return target == ErrCircuitOpen }
 
 // HTTPError captures a non-2xx response from Anthropic in a typed way.
 // Implements error so callers can switch on errors.As(err, &HTTPError{}).

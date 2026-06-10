@@ -285,10 +285,11 @@ func (c *Client) messages(ctx context.Context, kind, orgID string, req messagesR
 		// reset per-attempt hint
 		lastRetryAfter = 0
 
-		ok, gen := c.breaker.allow()
+		ok, gen, openFor := c.breaker.allow()
 		if !ok {
-			c.observe(kind, req.Model, 0, ErrCircuitOpen)
-			return nil, ErrCircuitOpen
+			coErr := &CircuitOpenError{RetryAfter: openFor}
+			c.observe(kind, req.Model, 0, coErr)
+			return nil, coErr
 		}
 
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))

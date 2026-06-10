@@ -130,7 +130,8 @@ func (h *AgentsHandler) writeServiceError(w http.ResponseWriter, r *http.Request
 //   - ai.ErrUnconfigured / agentic.ErrAssistantUnavailable          → 503
 //   - *ai.HTTPError{401} (bad stored key) / *ai.HTTPError{>=500}     → 503 / 502
 //   - ai.ErrRateLimited                                             → 429
-//   - ai.ErrTransient / ai.ErrCircuitOpen                           → 502
+//   - ai.ErrCircuitOpen (breaker tripped, transient)                → 503 + Retry-After
+//   - ai.ErrTransient                                               → 502
 //   - service.ErrAgentsAIUnavailable / ScheduleServiceUnavailable   → 503
 //   - service.ErrNotFound                                           → 404
 //   - service.ErrInvalidInput                                       → 400
@@ -168,7 +169,20 @@ func writeAIServiceError(w http.ResponseWriter, r *http.Request, err error) {
 		writeErrorResponse(w, r, http.StatusTooManyRequests, "RATE_LIMITED", "AI provider rate limited")
 		return
 	}
-	if errors.Is(err, ai.ErrTransient) || errors.Is(err, ai.ErrCircuitOpen) {
+	// Circuit open: a transient self-protection state, distinct from a config
+	// gap — surface 503 + a Retry-After equal to the remaining open window so
+	// the client backs off and retries (the documented contract for
+	// ai.ErrCircuitOpen). Must precede the ErrTransient leg.
+	if errors.Is(err, ai.ErrCircuitOpen) {
+		ra := ai.DefaultOpenDuration
+		var coErr *ai.CircuitOpenError
+		if errors.As(err, &coErr) && coErr.RetryAfter > 0 {
+			ra = coErr.RetryAfter
+		}
+		writeErrorResponseRetry(w, r, http.StatusServiceUnavailable, "AI_CIRCUIT_OPEN", "AI provider temporarily unavailable (circuit open); retry after the indicated delay", ra)
+		return
+	}
+	if errors.Is(err, ai.ErrTransient) {
 		writeErrorResponse(w, r, http.StatusBadGateway, "UPSTREAM_ERROR", "AI provider transient error")
 		return
 	}

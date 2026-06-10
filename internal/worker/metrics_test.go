@@ -64,10 +64,10 @@ func ev(kind string, s rivertype.JobState) *river.Event {
 // when the channel closes.
 func TestDrainJobEvents(t *testing.T) {
 	ch := make(chan *river.Event, 8)
-	ch <- ev("daily_briefing", rivertype.JobStateCompleted)        // → success
-	ch <- ev("delay_cascade", rivertype.JobStateRetryable)         // → error
+	ch <- ev("daily_briefing", rivertype.JobStateCompleted)         // → success
+	ch <- ev("delay_cascade", rivertype.JobStateRetryable)          // → error
 	ch <- ev("field_notification_retry", rivertype.JobStateRunning) // skipped (non-terminal)
-	ch <- ev("corporate_rollup", rivertype.JobStateDiscarded)      // → discarded
+	ch <- ev("corporate_rollup", rivertype.JobStateDiscarded)       // → discarded
 	close(ch)
 
 	obs := &recordingObserver{}

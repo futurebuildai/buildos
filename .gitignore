@@ -2,6 +2,7 @@
 bin/
 /server
 /worker
+/migrate
 *.exe
 *.exe~
 *.dll

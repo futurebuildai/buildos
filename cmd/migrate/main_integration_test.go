@@ -33,7 +33,7 @@ func TestRunAppMigrationsUpDown(t *testing.T) {
 		"DROP TABLE mig_test_widget;")
 
 	// --- Up: applies the migration and records version 900.
-	if err := runAppMigrationsUp(ctx, pool, dir, logger); err != nil {
+	if err := runAppMigrationsUp(ctx, pool, dir, false, logger); err != nil {
 		t.Fatalf("runAppMigrationsUp: %v", err)
 	}
 	if !tableExists(t, pool, "mig_test_widget") {
@@ -45,7 +45,7 @@ func TestRunAppMigrationsUpDown(t *testing.T) {
 
 	// --- Up again: already-applied versions are skipped (no error, no
 	// duplicate row — the `if exists { continue }` branch).
-	if err := runAppMigrationsUp(ctx, pool, dir, logger); err != nil {
+	if err := runAppMigrationsUp(ctx, pool, dir, false, logger); err != nil {
 		t.Fatalf("runAppMigrationsUp (re-run): %v", err)
 	}
 	if n := versionCount(t, pool, "900"); n != 1 {
@@ -61,6 +61,36 @@ func TestRunAppMigrationsUpDown(t *testing.T) {
 	}
 	if versionCount(t, pool, "900") != 0 {
 		t.Fatal("version 900 still recorded after down migration")
+	}
+}
+
+// TestRunAppMigrationsUp_DryRun proves --dry-run lists a pending migration
+// WITHOUT applying it (no table created, version not recorded).
+func TestRunAppMigrationsUp_DryRun(t *testing.T) {
+	pool := testdb.NewPool(t)
+	ctx := context.Background()
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "901_dryrun.up.sql"),
+		"CREATE TABLE mig_test_dryrun (id INT PRIMARY KEY);")
+
+	if err := runAppMigrationsUp(ctx, pool, dir, true /*dryRun*/, logger); err != nil {
+		t.Fatalf("dry-run: %v", err)
+	}
+	if tableExists(t, pool, "mig_test_dryrun") {
+		t.Error("dry-run must NOT create the table")
+	}
+	if versionCount(t, pool, "901") != 0 {
+		t.Error("dry-run must NOT record the version")
+	}
+
+	// A real run after the dry-run applies it (the dry-run left no residue).
+	if err := runAppMigrationsUp(ctx, pool, dir, false, logger); err != nil {
+		t.Fatalf("apply after dry-run: %v", err)
+	}
+	if !tableExists(t, pool, "mig_test_dryrun") {
+		t.Error("real run after dry-run should apply the migration")
 	}
 }
 

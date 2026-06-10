@@ -132,8 +132,17 @@ func (h *IngestHandler) writeIngestError(w http.ResponseWriter, r *http.Request,
 		// 503 — no Anthropic key for this org; pipeline degraded,
 		// nothing written.
 		writeErrorResponse(w, r, http.StatusServiceUnavailable, "AI_UNCONFIGURED", "AI extraction is not configured")
+	case errors.Is(err, ai.ErrCircuitOpen):
+		// 503 + Retry-After: the breaker is tripped (transient), distinct
+		// from the config gap above and the 502 transport-error default.
+		ra := ai.DefaultOpenDuration
+		var coErr *ai.CircuitOpenError
+		if errors.As(err, &coErr) && coErr.RetryAfter > 0 {
+			ra = coErr.RetryAfter
+		}
+		writeErrorResponseRetry(w, r, http.StatusServiceUnavailable, "AI_CIRCUIT_OPEN", "AI extraction temporarily unavailable (circuit open)", ra)
 	default:
-		// AI transport error (timeout, 5xx, circuit open) → 502.
+		// AI transport error (timeout, 5xx) → 502 (circuit-open handled above).
 		writeErrorResponse(w, r, http.StatusBadGateway, "AI_UPSTREAM_ERROR", "AI extraction upstream error")
 	}
 }

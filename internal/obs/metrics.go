@@ -38,6 +38,19 @@ type Metrics struct {
 	// JobRuns counts every River job execution by kind and
 	// outcome ("success" / "error" / "discarded").
 	JobRuns *prometheus.CounterVec
+
+	// ErrorResponses counts JSON error responses by {code, status-class}.
+	// `code` is the bounded application error code (RATE_LIMITED,
+	// SETUP_INCOMPLETE, AI_CIRCUIT_OPEN, …) — finer than the HTTP status the
+	// request middleware sees. (Phase 4b-iii.)
+	ErrorResponses *prometheus.CounterVec
+
+	// RiverQueueDepth is the count of AVAILABLE (ready-to-run) River jobs, and
+	// RiverOldestAvailableSecs the age of the oldest available job. Together
+	// they detect a worker that is up-and-scraping but not DRAINING (the gap
+	// 4b-ii flagged). Set periodically by the worker. (Phase 4b-iii.)
+	RiverQueueDepth          prometheus.Gauge
+	RiverOldestAvailableSecs prometheus.Gauge
 }
 
 // NewMetrics constructs a Metrics with all collectors registered. The
@@ -102,15 +115,40 @@ func NewMetrics() *Metrics {
 		[]string{"kind", "outcome"},
 	)
 
-	r.MustRegister(httpReqs, httpDur, aiReqs, aiDur, jobRuns)
+	errResps := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "buildos",
+			Subsystem: "http",
+			Name:      "error_responses_total",
+			Help:      "JSON error responses by application error code and status class.",
+		},
+		[]string{"code", "status"},
+	)
+	queueDepth := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "buildos",
+		Subsystem: "river",
+		Name:      "queue_depth",
+		Help:      "Count of available (ready-to-run) River jobs.",
+	})
+	oldestAvail := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "buildos",
+		Subsystem: "river",
+		Name:      "oldest_available_seconds",
+		Help:      "Age in seconds of the oldest available River job (0 when the queue is empty).",
+	})
+
+	r.MustRegister(httpReqs, httpDur, aiReqs, aiDur, jobRuns, errResps, queueDepth, oldestAvail)
 
 	return &Metrics{
-		registry:     r,
-		HTTPRequests: httpReqs,
-		HTTPDuration: httpDur,
-		AIRequests:   aiReqs,
-		AIDuration:   aiDur,
-		JobRuns:      jobRuns,
+		registry:                 r,
+		HTTPRequests:             httpReqs,
+		HTTPDuration:             httpDur,
+		AIRequests:               aiReqs,
+		AIDuration:               aiDur,
+		JobRuns:                  jobRuns,
+		ErrorResponses:           errResps,
+		RiverQueueDepth:          queueDepth,
+		RiverOldestAvailableSecs: oldestAvail,
 	}
 }
 
@@ -207,4 +245,38 @@ func (m *Metrics) ObserveAICall(kind, model string, dur time.Duration, err error
 // "success", "error", "discarded".
 func (m *Metrics) ObserveJob(kind, outcome string) {
 	m.JobRuns.WithLabelValues(kind, outcome).Inc()
+}
+
+// ObserveErrorResponse records one JSON error response. Wired into the API error
+// writers via the router. (Phase 4b-iii.)
+func (m *Metrics) ObserveErrorResponse(code, status string) {
+	m.ErrorResponses.WithLabelValues(code, status).Inc()
+}
+
+// SetQueueDepth / SetOldestAvailableSeconds update the River backlog gauges.
+// Called by the worker's queue-depth collector. (Phase 4b-iii.)
+func (m *Metrics) SetQueueDepth(n int) { m.RiverQueueDepth.Set(float64(n)) }
+
+func (m *Metrics) SetOldestAvailableSeconds(s float64) { m.RiverOldestAvailableSecs.Set(s) }
+
+// RegisterPoolGauges registers buildos_db_pool_* GaugeFuncs backed by stat,
+// which returns a pgxpool.Stat snapshot's (acquired, idle, total, max) conn
+// counts. GaugeFunc is scrape-time + concurrency-safe — no goroutine/ticker
+// needed. Pass a closure (e.g. over pool.Stat()) so internal/obs stays free of a
+// pgxpool import. Call once at startup. (Phase 4b-iii.)
+func (m *Metrics) RegisterPoolGauges(stat func() (acquired, idle, total, maxConns int32)) {
+	gauge := func(name, help string, pick func(a, i, t, mx int32) int32) prometheus.GaugeFunc {
+		return prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Namespace: "buildos", Subsystem: "db_pool", Name: name, Help: help,
+		}, func() float64 {
+			a, i, t, mx := stat()
+			return float64(pick(a, i, t, mx))
+		})
+	}
+	m.registry.MustRegister(
+		gauge("acquired_conns", "Currently in-use pgx connections.", func(a, _, _, _ int32) int32 { return a }),
+		gauge("idle_conns", "Idle pgx connections in the pool.", func(_, i, _, _ int32) int32 { return i }),
+		gauge("total_conns", "Total (idle+in-use) pgx connections.", func(_, _, t, _ int32) int32 { return t }),
+		gauge("max_conns", "Configured max pool size.", func(_, _, _, mx int32) int32 { return mx }),
+	)
 }

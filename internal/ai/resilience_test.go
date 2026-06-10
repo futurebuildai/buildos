@@ -307,19 +307,45 @@ func TestCircuit_FailureWindowAgesOutFailures(t *testing.T) {
 	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
 	cb.cfg.Now = func() time.Time { return now }
 
-	_, gen := cb.allow()
+	_, gen, _ := cb.allow()
 	cb.recordFailure(gen)
-	_, gen = cb.allow()
+	_, gen, _ = cb.allow()
 	cb.recordFailure(gen)
 	if state, fails := cb.snapshot(); state != circuitClosed || fails != 2 {
 		t.Fatalf("after 2 failures: state=%v fails=%d", state, fails)
 	}
 
 	now = now.Add(15 * time.Second)
-	_, gen = cb.allow()
+	_, gen, _ = cb.allow()
 	cb.recordFailure(gen)
 	if state, fails := cb.snapshot(); state != circuitClosed || fails != 1 {
 		t.Errorf("after window expiry + 1 failure: state=%v fails=%d, want closed+1", state, fails)
+	}
+}
+
+// allow() returns the remaining open window as a Retry-After hint while open,
+// and 0 while closed (Phase 4b-iii — surfaced as the HTTP Retry-After).
+func TestCircuit_AllowReportsRetryAfterWhileOpen(t *testing.T) {
+	cb := newCircuitBreaker(CircuitConfig{
+		FailureThreshold: 1,
+		OpenDuration:     30 * time.Second,
+	})
+	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	cb.cfg.Now = func() time.Time { return now }
+
+	ok, gen, ra := cb.allow()
+	if !ok || ra != 0 {
+		t.Fatalf("closed: ok=%v ra=%v, want true/0", ok, ra)
+	}
+	cb.recordFailure(gen) // threshold 1 → trips open at `now`
+
+	now = now.Add(5 * time.Second)
+	ok, _, ra = cb.allow()
+	if ok {
+		t.Fatal("breaker should be open (refusing the call)")
+	}
+	if ra != 25*time.Second {
+		t.Errorf("RetryAfter = %v, want 25s (30s window − 5s elapsed)", ra)
 	}
 }
 
@@ -335,7 +361,7 @@ func TestCircuit_HalfOpenSecondCallerShortCircuits(t *testing.T) {
 	cb.cfg.Now = func() time.Time { return now }
 
 	// Trip to open with a single failure.
-	_, gen := cb.allow()
+	_, gen, _ := cb.allow()
 	cb.recordFailure(gen)
 	if state, _ := cb.snapshot(); state != circuitOpen {
 		t.Fatalf("breaker = %v, want open", state)
@@ -344,7 +370,7 @@ func TestCircuit_HalfOpenSecondCallerShortCircuits(t *testing.T) {
 	// After the open-duration elapses the first caller is promoted to the
 	// half-open probe and admitted.
 	now = now.Add(31 * time.Second)
-	if ok, _ := cb.allow(); !ok {
+	if ok, _, _ := cb.allow(); !ok {
 		t.Fatal("first caller after open-duration should be admitted as the probe")
 	}
 	if state, _ := cb.snapshot(); state != circuitHalfOpen {
@@ -352,7 +378,7 @@ func TestCircuit_HalfOpenSecondCallerShortCircuits(t *testing.T) {
 	}
 
 	// A second caller, with the probe still outstanding, must be denied.
-	if ok, _ := cb.allow(); ok {
+	if ok, _, _ := cb.allow(); ok {
 		t.Error("second caller during an outstanding probe should be denied")
 	}
 }
@@ -370,7 +396,7 @@ func TestCircuit_StaleGenerationOutcomesDiscarded(t *testing.T) {
 	cb.cfg.Now = func() time.Time { return now }
 
 	// Record one real failure under the live generation.
-	_, gen := cb.allow()
+	_, gen, _ := cb.allow()
 	cb.recordFailure(gen)
 	if _, fails := cb.snapshot(); fails != 1 {
 		t.Fatalf("fails=%d, want 1 after one real failure", fails)

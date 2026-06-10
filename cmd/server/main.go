@@ -120,6 +120,12 @@ func run(logger *slog.Logger) error {
 	// duration), the HTTP middleware stack (request count + duration
 	// by route), and exposed via GET /metrics.
 	metrics := obs.NewMetrics()
+	// DB connection-pool gauges (Phase 4b-iii). The closure keeps internal/obs
+	// free of a pgxpool import; GaugeFunc reads pool.Stat() at scrape time.
+	metrics.RegisterPoolGauges(func() (acquired, idle, total, maxConns int32) {
+		s := pool.Stat()
+		return s.AcquiredConns(), s.IdleConns(), s.TotalConns(), s.MaxConns()
+	})
 
 	// Stores + services. Audit service first so domain services can
 	// receive it as a dependency.

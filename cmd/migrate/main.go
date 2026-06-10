@@ -31,10 +31,7 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("DATABASE_URL is required")
 	}
 
-	direction := "up"
-	if len(os.Args) > 1 {
-		direction = os.Args[1]
-	}
+	direction, dryRun := parseArgs(os.Args[1:])
 
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
@@ -43,45 +40,76 @@ func run(logger *slog.Logger) error {
 	defer pool.Close()
 
 	// Step 1: Run River migrations (creates river_job, river_queue, etc.)
-	logger.Info("running river migrations", "direction", direction)
 	riverMigrator, err := rivermigrate.New(riverpgxv5.New(pool), nil)
 	if err != nil {
 		return fmt.Errorf("creating river migrator: %w", err)
 	}
-
-	if direction == "up" {
-		res, err := riverMigrator.Migrate(ctx, rivermigrate.DirectionUp, nil)
-		if err != nil {
-			return fmt.Errorf("river migrate up: %w", err)
-		}
-		for _, v := range res.Versions {
-			logger.Info("river migration applied", "version", v.Version)
-		}
+	if dryRun {
+		// Don't mutate river_migration in a dry run; the app-migration list
+		// below (Step 2) is the actionable preview.
+		logger.Info("[dry-run] skipping river migrations", "direction", direction)
 	} else {
-		res, err := riverMigrator.Migrate(ctx, rivermigrate.DirectionDown, &rivermigrate.MigrateOpts{TargetVersion: -1})
-		if err != nil {
-			return fmt.Errorf("river migrate down: %w", err)
-		}
-		for _, v := range res.Versions {
-			logger.Info("river migration rolled back", "version", v.Version)
+		logger.Info("running river migrations", "direction", direction)
+		if direction == "up" {
+			res, err := riverMigrator.Migrate(ctx, rivermigrate.DirectionUp, nil)
+			if err != nil {
+				return fmt.Errorf("river migrate up: %w", err)
+			}
+			for _, v := range res.Versions {
+				logger.Info("river migration applied", "version", v.Version)
+			}
+		} else {
+			res, err := riverMigrator.Migrate(ctx, rivermigrate.DirectionDown, &rivermigrate.MigrateOpts{TargetVersion: -1})
+			if err != nil {
+				return fmt.Errorf("river migrate down: %w", err)
+			}
+			for _, v := range res.Versions {
+				logger.Info("river migration rolled back", "version", v.Version)
+			}
 		}
 	}
 
 	// Step 2: Run application SQL migrations
-	logger.Info("running application migrations", "direction", direction)
+	logger.Info("running application migrations", "direction", direction, "dry_run", dryRun)
 	migrationDir := "migrations"
 	if envDir := os.Getenv("MIGRATIONS_DIR"); envDir != "" {
 		migrationDir = envDir
 	}
 
 	if direction == "up" {
-		return runAppMigrationsUp(ctx, pool, migrationDir, logger)
+		return runAppMigrationsUp(ctx, pool, migrationDir, dryRun, logger)
+	}
+	if dryRun {
+		logger.Info("[dry-run] down migrations are not enumerated; run without --dry-run to roll back")
+		return nil
 	}
 	return runAppMigrationsDown(ctx, pool, migrationDir, logger)
 }
 
-func runAppMigrationsUp(ctx context.Context, pool *pgxpool.Pool, dir string, logger *slog.Logger) error {
-	// Create tracking table if it doesn't exist
+// parseArgs resolves the direction (the first non-flag positional, default "up")
+// and the --dry-run/-n flag. Without this, the old positional parse made
+// `migrate --dry-run` set direction="--dry-run" and fall into the DOWN branch.
+func parseArgs(args []string) (direction string, dryRun bool) {
+	direction = "up"
+	gotDir := false
+	for _, a := range args {
+		switch a {
+		case "--dry-run", "-n":
+			dryRun = true
+		default:
+			if !gotDir && !strings.HasPrefix(a, "-") {
+				direction = a
+				gotDir = true
+			}
+		}
+	}
+	return direction, dryRun
+}
+
+func runAppMigrationsUp(ctx context.Context, pool *pgxpool.Pool, dir string, dryRun bool, logger *slog.Logger) error {
+	// Create tracking table if it doesn't exist. Idempotent; needed even for a
+	// dry run so the "already applied?" query below works on a fresh DB. This is
+	// the runner's own bookkeeping table, not a schema migration.
 	_, err := pool.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version TEXT PRIMARY KEY,
@@ -108,6 +136,11 @@ func runAppMigrationsUp(ctx context.Context, pool *pgxpool.Pool, dir string, log
 			return fmt.Errorf("checking migration %s: %w", version, err)
 		}
 		if exists {
+			continue
+		}
+
+		if dryRun {
+			logger.Info("[dry-run] pending migration", "version", version, "file", filepath.Base(f))
 			continue
 		}
 
