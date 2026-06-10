@@ -7,6 +7,11 @@ rollouts, and graceful shutdown. Pairs with
 [`docs/dr-runbook.md`](dr-runbook.md) (backup/restore), and
 [`deploy/prometheus/`](../deploy/prometheus/) (scrape + rules).
 
+> **Railway (the canonical hosting platform):** this file stays platform-agnostic;
+> the concrete Railway runbook — provisioning, Cloudflare DNS/TLS, the staging →
+> production promotion pipeline, nightly backups, legacy teardown — lives in
+> [`deploy/railway/README.md`](../deploy/railway/README.md) (Phase 1).
+
 Deployment model: **single-tenant per customer fork** ([ADR-002](../.agents/handoff/ADR-002-single-tenant-fork-model.md)).
 One image, one database, one customer. No RLS, no per-tenant routing.
 

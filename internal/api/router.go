@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net"
 	"net/http"
@@ -61,6 +62,7 @@ type RouterConfig struct {
 	RateLimiter         *mw.IPRateLimiter    // optional — when nil, no rate limiting is applied
 	TrustedProxyCIDRs   []*net.IPNet         // forwarding headers (XFF) are honored ONLY from these peers; empty = ignore XFF, use the TCP peer (fail-safe)
 	WebDistDir          string               // optional — built web console dir (web/dist); empty = no SPA serving (dev rigs proxy via Vite)
+	Version             string               // build version surfaced by GET /health (ldflags-stamped; empty = "dev") — deploy smoke asserts the rolled binary
 }
 
 // NewRouter creates the Chi router with all route groups and middleware.
@@ -164,7 +166,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	//   /ready  — readiness. The process can serve traffic right now.
 	//             Pings the database. Used by load balancers / k8s
 	//             readiness gates.
-	r.Get("/health", livenessHandler())
+	r.Get("/health", livenessHandler(cfg.Version))
 	r.Get("/ready", readinessHandler(cfg.Pool, cfg.Logger))
 
 	// Prometheus scrape endpoint. No auth — Prometheus convention.
@@ -527,11 +529,26 @@ func NewRouter(cfg RouterConfig) http.Handler {
 // HTTP listener can answer, the process is alive. We deliberately do
 // NOT check the database here; an unreachable DB is a readiness
 // problem, not a liveness one (restarting the process won't help).
-func livenessHandler() http.HandlerFunc {
+//
+// version is the ldflags-stamped build version (e.g. "staging-<sha>").
+// The deploy pipeline's smoke asserts it after a roll: status codes
+// alone can't distinguish the NEW deployment from the OLD one still
+// draining, but the version string can.
+func livenessHandler(version string) http.HandlerFunc {
+	if version == "" {
+		version = "dev"
+	}
+	// Pre-marshal once — version is fixed for the process lifetime and
+	// must be JSON-escaped, not string-concatenated, since it arrives
+	// from a build arg.
+	body, err := json.Marshal(map[string]string{"status": "ok", "version": version})
+	if err != nil {
+		body = []byte(`{"status":"ok","version":"unknown"}`)
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok","version":"0.1.0"}`))
+		_, _ = w.Write(body)
 	}
 }
 

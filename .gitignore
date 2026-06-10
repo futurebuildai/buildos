@@ -57,3 +57,6 @@ forks/
 **/private.pem
 **/vault_master_key.txt
 **/bootstrap_token.txt
+# provision.sh writes its Railway ID manifest into the tracked deploy/railway/
+# dir — operator-private, never commit it
+deploy/railway/provision-output.env

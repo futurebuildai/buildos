@@ -24,12 +24,10 @@ Status detail lives in [HANDOFF.md](../../HANDOFF.md) "In flight".
    full store/service/api + paginated admin harvest surface + per-(org,user) submit throttle +
    `fb-feedback-widget` (org shell, live axe spec) + pii entries + API_CONTRACT §13d. 20-agent adversarial
    review: 12 findings, all remediated. Spec: [PHASE_0B_FEEDBACK.md](PHASE_0B_FEEDBACK.md).
-3. **Phase 1 — Railway deploy infra.** `deploy/railway/{README.md,provision.sh,teardown-kelbrook-legacy.sh}`
-   + `.github/workflows/{deploy-staging,promote-production,backup-nightly}.yml`. One Railway project
-   "buildos-fork0", envs staging/production × services server/worker/Postgres-16 from the GHCR image;
-   migrate-before-rollout; production only promotes digests staging verified. `TRUSTED_PROXY_CIDRS` set for
-   Railway's edge; Cloudflare proxied-CNAME + Full-strict TLS + HSTS. Workflow-YAML push may need the owner
-   (token `workflow` scope).
+3. **Phase 1 — Railway deploy infra — ✅ BUILT + REVIEWED** (branch `feature/phase-1-railway-deploy`,
+   awaiting owner merge). deploy/railway/ + 3 workflows; 26-agent review, 19 findings (2 critical:
+   migrate-noop + redeploy-previous-snapshot) all remediated incl. Go/Dockerfile root-cause fixes.
+   Detail in HANDOFF "In flight".
 4. **Ops (credentialed, runbooked):** teardown legacy Kelbrook Railway/Cloudflare attempts (allowlist-gated
    script — never pattern-matched deletion) → provision staging → fork-init secrets + claim/wizard smoke →
    provision prod (fresh keypair/vault key, never shared with staging) → DNS.

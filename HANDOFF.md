@@ -307,10 +307,23 @@ owner's ultraplan approval message.
   pagination+throttle; widget close race), ALL remediated.** Gates: `make audit` ×2 + feedback integration
   suite + web typecheck/239 vitest/lint/build. Spec: [PHASE_0B_FEEDBACK.md](.agents/handoff/PHASE_0B_FEEDBACK.md).
   Deliberate deviations recorded in the spec: `user_sub` TEXT (not a users FK), past-tense audit actions.
-- **Phase 1 — Railway deploy infra: NEXT.** `deploy/railway/{README,provision.sh,teardown-kelbrook-legacy.sh}`
-  + `.github/workflows/{deploy-staging,promote-production,backup-nightly}.yml`. Grounded already: Railway
-  GraphQL `backboard.railway.com/graphql/v2` (`serviceCreate` w/ `source.image`, `serviceInstanceRedeploy`),
-  CLI `RAILWAY_TOKEN` (project) vs `RAILWAY_API_TOKEN` (account), images `ghcr.io/futurebuildai/buildos`.
+- **Phase 1 — Railway deploy infra: BUILT + REVIEWED, awaiting owner review/merge.** Branch
+  `feature/phase-1-railway-deploy` (NOT merged/pushed — owner's call). `deploy/railway/`
+  (README runbook · idempotent `provision.sh` w/ --dry-run, --project-id team-token path, GHCR pull creds,
+  variables-at-creation · allowlist-gated `teardown-kelbrook-legacy.sh`) + 3 workflows
+  (`deploy-staging`: workflow_run after green CI on main + fork-PR/stale-run guards, digest-pinned,
+  version-asserted smoke via /health; `promote-production`: digest dispatch, backup-before-promote-or-fail,
+  image-label version assert; `backup-nightly`: cron → R2 w/ exact-key head-object verification).
+  **26-agent adversarial review: 19 confirmed findings (2 CRITICAL), ALL remediated.** The criticals forced
+  Go/Dockerfile fixes merged into this branch: (1) the migrate one-shot globbed a relative path in the image
+  → applied ZERO migrations and exited 0 — now `ENV MIGRATIONS_DIR` is baked AND cmd/migrate hard-fails on an
+  empty glob; (2) `serviceInstanceRedeploy` redeploys the PREVIOUS snapshot → rolls now use
+  `serviceInstanceUpdate + serviceInstanceDeployV2`; plus /health now surfaces the real ldflags version
+  (was hardcoded "0.1.0"; cmd/server never declared the var) so smoke can prove the rolled binary, and a
+  positive TRUSTED_PROXY_CIDRS boot log for the runbook's verify step. Statics: shellcheck + actionlint +
+  bash -n + YAML all clean; `make audit` ALL PASSED. **After merge → the credentialed ops run** (legacy
+  Kelbrook teardown → provision staging+prod → Cloudflare DNS): needs `RAILWAY_API_TOKEN` +
+  `CLOUDFLARE_API_TOKEN` + the GH secrets matrix in deploy/railway/README.md §4.
 
 **Phase 4 is COMPLETE** — every chunk (4a-i, 4a-ii, 4b-i, 4b-ii, 4b-iii, 4c) is merged + pushed; 4b-iii (error-path UX + metric follow-ups) was the final chunk and closed the backlog. The only remaining work is non-blocking: the documented security follow-ups (`docs/security-posture.md`) and the ESC-003 spec backfill owed for 4a-ii. Historical context: Chunks 1 (ESC-002) and 4b-i (alerting + runbooks) are merged + pushed
 (`origin/main` `ff22d74`; both in "Last shipped"). Chunk 4b-ii (worker observability) is merged + pushed (`origin/main` `19fc7d3`; top "Last shipped"). A Phase-4 ultraplan (6-agent assessment, 2026-06-09) decomposed the phase against the actual code.

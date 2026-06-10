@@ -1,0 +1,467 @@
+# Continuous deploy to STAGING — fires after every successful "CI" run on
+# main (plus manual dispatch for re-runs / first bring-up).
+#
+# Topology (the shared deploy contract): ONE Railway project "buildos-fork0"
+# with "staging" and "production" environments; each environment runs two
+# services off the SAME image — "server" (BUILDOS_ROLE=server, the default)
+# and "worker" (BUILDOS_ROLE=worker) — plus a Railway managed Postgres.
+# Migrations are NOT a Railway service: each deploy runs the migrate role as
+# a one-shot `docker run -e BUILDOS_ROLE=migrate` from this runner against
+# the environment's DATABASE_URL, and must exit 0 BEFORE the services roll
+# (migrate-before-roll, docs/deploy-runbook.md §4).
+#
+# Pipeline:
+#   0. stale guard — if main has moved past this run's commit (operator
+#                    re-ran an old CI run after a newer commit deployed),
+#                    exit GREEN and skip everything: never roll staging
+#                    backward.
+#   1. build+push — linux/amd64 image tagged staging-<short-sha>, labelled
+#                   org.opencontainers.image.version=<tag> (promote reads
+#                   the label to learn the expected /health version);
+#                   Railway is then pinned by the pushed DIGEST (tags are
+#                   mutable, digests are not).
+#   2. migrate    — one-shot migrate role against DATABASE_URL_STAGING.
+#   3. roll       — Railway GraphQL: serviceInstanceUpdate (digest-pinned
+#                   image) + serviceInstanceDeployV2, for BOTH services.
+#   4. smoke      — poll /ready (10s interval, 5m budget), then poll /health
+#                   until it reports THIS run's version (proves the new
+#                   deployment is serving, not the draining old one), then
+#                   console HTML and the JSON-404 envelope.
+#   5. summary    — prints the digest that promote-production takes as input.
+#
+# Production NEVER builds: promote-production.yml takes this run's digest as
+# input and rolls the exact bytes staging verified.
+#
+# Railway-side per-service env (set in Railway, NOT here — semantics in
+# docs/deploy-runbook.md §2):
+#   DATABASE_URL            — Railway reference to the environment's Postgres
+#   JWT_PRIVATE_KEY_PEM / JWT_PUBLIC_KEY_PEM — per-fork RS256 keypair
+#   VAULT_MASTER_KEY        — AES-256 credential-vault key
+#   BUILDOS_BOOTSTRAP_TOKEN — first boot only; REMOVE after the owner claim
+#   SENTRY_ENVIRONMENT      — "staging" here, "production" there
+#   SENTRY_DSN              — optional (empty = no-op)
+#   TRUSTED_PROXY_CIDRS     — REQUIRED: Railway's edge proxies every request.
+#                             Start with the placeholder
+#                             "100.64.0.0/10,10.0.0.0/8" and VERIFY AT FIRST
+#                             DEPLOY: check the server's boot log / observed
+#                             peer address and tighten the CIDRs to what
+#                             Railway actually uses.
+#   PORT is injected by Railway (the app reads $PORT, default 8080). The
+#   Railway healthcheck for both services is GET /ready — the worker serves
+#   /ready and /metrics on its $PORT too (docs/deploy-runbook.md §3).
+#
+# GitHub Actions secrets consumed across the deploy workflows (exact names):
+#   RAILWAY_API_TOKEN, RAILWAY_PROJECT_ID (provisioning-time only — the
+#   serviceCreate mutation needs it; the roll mutations below do not),
+#   RAILWAY_ENV_ID_STAGING, RAILWAY_ENV_ID_PRODUCTION,
+#   RAILWAY_SVC_ID_SERVER_STAGING, RAILWAY_SVC_ID_WORKER_STAGING,
+#   RAILWAY_SVC_ID_SERVER_PRODUCTION, RAILWAY_SVC_ID_WORKER_PRODUCTION,
+#   DATABASE_URL_STAGING, DATABASE_URL_PRODUCTION,
+#   R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET
+# Repo variables: STAGING_BASE_URL, PROD_BASE_URL.
+
+name: Deploy Staging
+
+on:
+  # Deploy every main-branch commit that CI fully validated. CAUTION:
+  # `branches: [main]` filters on the TRIGGERING run's HEAD BRANCH NAME,
+  # not on where the code lives — a fork PR opened from a branch literally
+  # named "main" passes this filter, and workflow_run jobs always execute
+  # in the BASE repo's context with full deploy secrets. The branch filter
+  # is therefore noise reduction, not security. The actual gate is the
+  # job-level `if` below: the triggering run must be a `push` event AND its
+  # head repository must be this repository (fork PRs are `pull_request`
+  # events from a different head repo, so they fail both conditions).
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  # Manual re-run: a flaky smoke, or first bring-up of the Railway project.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: >-
+          Print the Railway GraphQL request bodies without sending them
+          (migrate + smoke are skipped too). Use on the first credentialed
+          run to validate field names against the live schema.
+        type: boolean
+        default: false
+
+# One staging deploy at a time, queued — never cancelled: killing a deploy
+# mid-roll could leave server and worker on different digests.
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write # GHCR push of the staging image
+
+env:
+  # Canonical image for every fork-0 environment (also what release.yml
+  # publishes). Hardcoded rather than github.repository so a repo rename
+  # can't silently fork the image namespace.
+  IMAGE: ghcr.io/futurebuildai/buildos
+
+jobs:
+  deploy:
+    name: Build, migrate, roll, smoke (staging)
+    runs-on: ubuntu-latest
+    # On the workflow_run path, require ALL of:
+    #   - conclusion == 'success' (workflow_run fires for failed/cancelled
+    #     runs too),
+    #   - event == 'push' AND head_repository == this repository — the real
+    #     fork-PR gate (see the trigger comment above: the `branches`
+    #     filter alone is spoofable by a fork branch named "main").
+    # Manual dispatch is always allowed.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Deploy exactly the commit CI validated. On workflow_run,
+          # GITHUB_SHA is the default-branch tip at event time (which may
+          # already have moved past what CI tested); head_sha is the commit
+          # the triggering run ran against. On dispatch the expression is
+          # empty and checkout falls back to the dispatched ref.
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Stale-run guard (only deploy the current main tip)
+        id: stale
+        env:
+          # Re-running an old workflow_run replays the ORIGINAL event
+          # payload, so a re-run for old commit A (flaky smoke, say) can
+          # fire AFTER commit B already deployed — and would roll staging
+          # backward. head_sha is the deploying commit on the workflow_run
+          # path; github.sha covers manual dispatch.
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          git fetch origin main --depth 1
+          main_sha="$(git rev-parse origin/main)"
+          if [[ "${DEPLOY_SHA}" != "${main_sha}" ]]; then
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "## Staging deploy skipped (stale run)"
+              echo ""
+              echo "Stale run for \`${DEPLOY_SHA}\` — \`main\` is at \`${main_sha}\`, skipping."
+              echo ""
+              echo "Deploying would roll staging backward past a newer commit's deploy,"
+              echo "so every subsequent step is skipped and the run exits GREEN: the"
+              echo "newer commit's own deploy run owns staging now."
+            } >> "${GITHUB_STEP_SUMMARY}"
+            echo "::notice::stale run for ${DEPLOY_SHA}, main is at ${main_sha}, skipping deploy"
+            exit 0
+          fi
+          echo "stale=false" >> "$GITHUB_OUTPUT"
+          echo "deploying ${DEPLOY_SHA} (== origin/main tip)"
+
+      - name: Set up Buildx
+        if: ${{ steps.stale.outputs.stale != 'true' }}
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: ${{ steps.stale.outputs.stale != 'true' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute build metadata
+        if: ${{ steps.stale.outputs.stale != 'true' }}
+        id: meta
+        run: |
+          # Derive everything from the checked-out HEAD, not GITHUB_SHA
+          # (see the checkout comment above). VERSION is the staging tag —
+          # more useful in /health build info than workflow_run's
+          # GITHUB_REF_NAME, which is just "main".
+          sha="$(git rev-parse HEAD)"
+          {
+            echo "sha=${sha}"
+            echo "short=${sha:0:8}"
+            echo "tag=staging-${sha:0:8}"
+            echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push (linux/amd64)
+        if: ${{ steps.stale.outputs.stale != 'true' }}
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # Railway runs amd64 only; single-arch keeps the deploy loop fast.
+          # release.yml still publishes multi-arch for fork operators.
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
+          # The version label mirrors the VERSION build-arg (which cmd/server
+          # ldflags-stamps into /health's "version"). promote-production.yml
+          # has no access to this run's outputs, so it discovers the expected
+          # /health version by reading this label off the promoted digest.
+          labels: |
+            org.opencontainers.image.version=${{ steps.meta.outputs.tag }}
+          # Layer cache shared with ci.yml/release.yml: the webbuilder stage
+          # (npm ci + tsc + vite) would otherwise run cold on every deploy.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ steps.meta.outputs.tag }}
+            COMMIT=${{ steps.meta.outputs.short }}
+            BUILD_DATE=${{ steps.meta.outputs.build_date }}
+
+      - name: Run migrations (one-shot migrate role)
+        if: ${{ inputs.dry_run != true && steps.stale.outputs.stale != 'true' }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL_STAGING }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # Migrations are NOT a Railway service: the migrate role runs as a
+          # one-shot container on this runner against staging's DATABASE_URL
+          # and must exit 0 before any service rolls (migrate-before-roll,
+          # docs/deploy-runbook.md §4 — expand/contract migrations keep the
+          # still-running old code compatible while it drains). The image
+          # bakes ENV MIGRATIONS_DIR=/var/lib/buildos/migrations, so no
+          # -e MIGRATIONS_DIR is needed here.
+          #
+          # `-e DATABASE_URL` (no value) inherits the variable from the step
+          # env, so the DSN never lands on argv (argv is ps-visible on the
+          # runner; the env of our own child process is not).
+          docker run --rm \
+            -e BUILDOS_ROLE=migrate \
+            -e DATABASE_URL \
+            "${IMAGE}@${DIGEST}"
+
+      - name: Roll staging services to the digest (Railway GraphQL)
+        if: ${{ steps.stale.outputs.stale != 'true' }}
+        env:
+          RAILWAY_API: https://backboard.railway.com/graphql/v2
+          RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+          RAILWAY_ENV_ID: ${{ secrets.RAILWAY_ENV_ID_STAGING }}
+          SVC_ID_SERVER: ${{ secrets.RAILWAY_SVC_ID_SERVER_STAGING }}
+          SVC_ID_WORKER: ${{ secrets.RAILWAY_SVC_ID_WORKER_STAGING }}
+          IMAGE_REF: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          DRY_RUN: ${{ inputs.dry_run == true && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          # IMPORTANT (first credentialed run): Railway's public GraphQL docs
+          # are thin — validate the exact field names used below
+          # (serviceInstanceUpdate / ServiceInstanceUpdateInput /
+          # input.source.image / serviceInstanceDeployV2) against the live
+          # introspected schema before trusting this step. The deploy
+          # mutation in particular has TWO candidates: serviceInstanceDeployV2
+          # (current schema; returns the new deployment id) and
+          # serviceInstanceDeploy (older schemas). The dry-run / first
+          # credentialed run MUST confirm which one the live schema exposes
+          # and adjust Q_DEPLOY to match. That is what the dry_run input is
+          # for: it prints the exact request bodies without sending anything.
+          #
+          # Railway returns HTTP 200 for GraphQL-level failures, so we fail
+          # on any "errors" array in the response BODY and never trust the
+          # HTTP status alone.
+          #
+          # This bash is kept in lockstep with promote-production.yml — if
+          # you touch one, touch both (a composite action is the de-dupe
+          # path once the live schema is validated).
+
+          # The token goes in a header FILE (mktemp creates 0600), not argv —
+          # argv is ps-visible on the runner.
+          AUTH_HEADER_FILE="$(mktemp)"
+          trap 'rm -f "${AUTH_HEADER_FILE}"' EXIT
+          printf 'Authorization: Bearer %s\n' "${RAILWAY_API_TOKEN}" > "${AUTH_HEADER_FILE}"
+
+          # read -r -d '' exits non-zero at EOF; '|| true' keeps set -e calm.
+          read -r -d '' Q_UPDATE <<'GQL' || true
+          mutation RollImage($serviceId: String!, $environmentId: String!, $input: ServiceInstanceUpdateInput!) {
+            serviceInstanceUpdate(serviceId: $serviceId, environmentId: $environmentId, input: $input)
+          }
+          GQL
+          # NOT serviceInstanceRedeploy: redeploy re-creates the PREVIOUS
+          # deployment snapshot, so the digest pinned by serviceInstanceUpdate
+          # above might never actually deploy. DeployV2 cuts a NEW deployment
+          # from the service's current (just-updated) config.
+          read -r -d '' Q_DEPLOY <<'GQL' || true
+          mutation Deploy($serviceId: String!, $environmentId: String!) {
+            serviceInstanceDeployV2(serviceId: $serviceId, environmentId: $environmentId)
+          }
+          GQL
+
+          # gql <query> <variables-json> — POST one GraphQL operation.
+          # Fails on transport errors, non-JSON responses (gateway errors),
+          # and any GraphQL "errors" in the body.
+          gql() {
+            local body resp
+            body="$(jq -cn --arg q "$1" --argjson v "$2" '{query: $q, variables: $v}')"
+            if [[ "${DRY_RUN}" == "1" ]]; then
+              echo "[dry-run] would POST to ${RAILWAY_API}:"
+              jq . <<<"${body}"
+              return 0
+            fi
+            resp="$(curl -sS -X POST "${RAILWAY_API}" \
+                      -H @"${AUTH_HEADER_FILE}" \
+                      -H 'Content-Type: application/json' \
+                      --data-binary "${body}")"
+            if ! jq -e . >/dev/null 2>&1 <<<"${resp}"; then
+              echo "::error::Railway returned non-JSON (gateway error?): ${resp:0:200}"
+              return 1
+            fi
+            if jq -e '(.errors // []) | length > 0' >/dev/null <<<"${resp}"; then
+              echo "::error::Railway GraphQL errors: $(jq -c '.errors' <<<"${resp}")"
+              return 1
+            fi
+            jq -c '.data' <<<"${resp}"
+          }
+
+          # roll <name> <serviceId> — pin the digest, then cut a NEW
+          # deployment from it. Both mutations must succeed; either failing
+          # fails the job (gql returns non-zero on any GraphQL "errors", and
+          # the concurrency group keeps a retry from interleaving). DeployV2
+          # returns the new deployment's id — captured and echoed so the run
+          # log ties this roll to a concrete Railway deployment.
+          roll() {
+            local name="$1" sid="$2" out
+            echo "── ${name}: serviceInstanceUpdate → ${IMAGE_REF}"
+            gql "${Q_UPDATE}" "$(jq -cn --arg s "${sid}" --arg e "${RAILWAY_ENV_ID}" --arg img "${IMAGE_REF}" \
+              '{serviceId: $s, environmentId: $e, input: {source: {image: $img}}}')"
+            echo "── ${name}: serviceInstanceDeployV2"
+            out="$(gql "${Q_DEPLOY}" "$(jq -cn --arg s "${sid}" --arg e "${RAILWAY_ENV_ID}" \
+              '{serviceId: $s, environmentId: $e}')")"
+            if [[ "${DRY_RUN}" == "1" ]]; then
+              printf '%s\n' "${out}" # the dry-run request body gql printed
+            else
+              echo "── ${name}: deployment id $(jq -r '.serviceInstanceDeployV2 // "(none in response)"' <<<"${out}")"
+            fi
+          }
+
+          roll server "${SVC_ID_SERVER}"
+          roll worker "${SVC_ID_WORKER}"
+          if [[ "${DRY_RUN}" == "1" ]]; then
+            echo "dry-run complete — nothing was sent to Railway"
+          else
+            echo "rolled both staging services to ${IMAGE_REF}"
+          fi
+
+      - name: Wait for staging /ready
+        if: ${{ inputs.dry_run != true && steps.stale.outputs.stale != 'true' }}
+        env:
+          BASE_URL: ${{ vars.STAGING_BASE_URL }}
+        run: |
+          set -euo pipefail
+          # Poll until the environment serves ready traffic again: 10s
+          # interval, 5-minute budget (image pull + boot + DB ping). Caveat:
+          # during Railway's rolling replace the OUTGOING deployment can
+          # briefly answer 200 here — the version assertion in the next step
+          # is what proves the NEW deployment is the one answering.
+          deadline=$(( $(date +%s) + 300 ))
+          while :; do
+            code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${BASE_URL}/ready" || true)"
+            if [[ "${code}" == "200" ]]; then
+              echo "${BASE_URL}/ready is 200"
+              break
+            fi
+            if (( $(date +%s) >= deadline )); then
+              echo "::error::${BASE_URL}/ready did not return 200 within 300s (last: ${code})"
+              exit 1
+            fi
+            echo "/ready=${code}; retrying in 10s"
+            sleep 10
+          done
+
+      - name: Wait for this run's version on /health
+        if: ${{ inputs.dry_run != true && steps.stale.outputs.stale != 'true' }}
+        env:
+          BASE_URL: ${{ vars.STAGING_BASE_URL }}
+          EXPECTED_VERSION: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # /ready going 200 above is NOT proof the new deployment answered:
+          # during Railway's rolling replace the OLD deployment keeps serving
+          # (and would pass the smoke) while it drains. GET /health returns
+          # {"status":"ok","version":"<ldflags-stamped>"} — cmd/server stamps
+          # -X main.version from the VERSION build-arg, which is exactly this
+          # run's staging-<short-sha> tag. Poll until the serving version IS
+          # this run's tag; only then is the smoke below testing the new
+          # bytes. Timeout = the new deployment never took traffic = a
+          # failed deploy.
+          deadline=$(( $(date +%s) + 180 ))
+          while :; do
+            got="$(curl -s --max-time 10 "${BASE_URL}/health" | jq -r '.version // empty' 2>/dev/null || true)"
+            if [[ "${got}" == "${EXPECTED_VERSION}" ]]; then
+              echo "/health serves version ${got} — the new deployment is live"
+              break
+            fi
+            if (( $(date +%s) >= deadline )); then
+              echo "::error::/health version is '${got:-<none>}', want '${EXPECTED_VERSION}' — new deployment never took traffic within 180s"
+              exit 1
+            fi
+            echo "/health version='${got:-<none>}' (want ${EXPECTED_VERSION}); retrying in 10s"
+            sleep 10
+          done
+
+      - name: Smoke test (staging)
+        if: ${{ inputs.dry_run != true && steps.stale.outputs.stale != 'true' }}
+        env:
+          BASE_URL: ${{ vars.STAGING_BASE_URL }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::smoke(${BASE_URL}): $*"; exit 1; }
+
+          # /ready — DB-touching readiness (docs/deploy-runbook.md §3);
+          # already polled above, asserted once more for the record.
+          code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${BASE_URL}/ready" || true)"
+          [[ "${code}" == "200" ]] || fail "/ready returned ${code}, want 200"
+
+          # /health — process liveness; deliberately no DB check.
+          code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${BASE_URL}/health" || true)"
+          [[ "${code}" == "200" ]] || fail "/health returned ${code}, want 200"
+
+          # GET / — the image bundles the web console (Phase 0a) and the
+          # server serves it same-origin. A missing title means the console
+          # is missing from the image or WEB_DIST_DIR broke at boot.
+          home_html="$(curl -sS --max-time 10 "${BASE_URL}/")"
+          grep -q '<title>BuildOS' <<<"${home_html}" \
+            || fail "GET / did not return HTML containing '<title>BuildOS'"
+
+          # GET /api/v1/nope — an unknown API route must be the API router's
+          # JSON 404, not a host-level HTML error page (proves routing and
+          # the error envelope survive Railway's edge proxy).
+          hdrs="$(mktemp)"
+          code="$(curl -s -D "${hdrs}" -o /dev/null -w '%{http_code}' --max-time 10 "${BASE_URL}/api/v1/nope" || true)"
+          [[ "${code}" == "404" ]] || fail "GET /api/v1/nope returned ${code}, want 404"
+          grep -qi '^content-type:[[:space:]]*application/json' "${hdrs}" \
+            || fail "GET /api/v1/nope Content-Type is not application/json"
+
+          echo "smoke ok: /ready + /health 200, console HTML served, JSON 404 envelope intact"
+
+      - name: Job summary (digest for promotion)
+        # On a stale run the guard step already wrote its own summary.
+        if: ${{ steps.stale.outputs.stale != 'true' }}
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          BASE_URL: ${{ vars.STAGING_BASE_URL }}
+          DRY_RUN: ${{ inputs.dry_run == true && '1' || '0' }}
+        run: |
+          # promote-production.yml takes this digest as its input — the
+          # summary is the operator's copy source.
+          {
+            echo "## Staging deploy"
+            if [[ "${DRY_RUN}" == "1" ]]; then
+              echo ""
+              echo "**DRY RUN** — GraphQL bodies printed, nothing sent; migrate + smoke skipped."
+            fi
+            echo ""
+            echo "| What | Value |"
+            echo "| --- | --- |"
+            echo "| Image | \`${IMAGE}:${TAG}\` |"
+            echo "| Digest | \`${DIGEST}\` |"
+            echo "| Commit | \`$(git rev-parse HEAD)\` |"
+            echo "| URL | ${BASE_URL} |"
+            echo ""
+            echo "Promote: dispatch **Promote Production** with \`image_digest\` = \`${DIGEST}\`"
+            echo "— production never builds; it rolls exactly what this run verified."
+          } >> "${GITHUB_STEP_SUMMARY}"

@@ -157,7 +157,8 @@ mounted dir.
 make docker-build VERSION=v1.0.0 DOCKER_IMAGE=ghcr.io/acme-corp/buildos
 docker push ghcr.io/acme-corp/buildos:v1.0.0
 
-# Run migrations against the fork's database:
+# Run migrations against the fork's database (works from any working
+# directory — the image bakes MIGRATIONS_DIR=/var/lib/buildos/migrations):
 docker run --rm \
   -e DATABASE_URL="$DATABASE_URL" \
   -e BUILDOS_ROLE=migrate \

@@ -124,6 +124,13 @@ func runAppMigrationsUp(ctx context.Context, pool *pgxpool.Pool, dir string, dry
 	if err != nil {
 		return fmt.Errorf("listing migration files: %w", err)
 	}
+	// An empty glob is ALWAYS a deployment mistake (wrong MIGRATIONS_DIR or
+	// working directory), never a valid state — this repo ships migrations
+	// from 001. Exiting 0 here would let a CD pipeline's migrate-before-roll
+	// gate pass while applying nothing (a green deploy with no schema).
+	if len(files) == 0 {
+		return fmt.Errorf("no *.up.sql files found in %q — set MIGRATIONS_DIR or run from the repo root; refusing to report success having applied nothing", dir)
+	}
 	sort.Strings(files)
 
 	for _, f := range files {

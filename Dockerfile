@@ -211,8 +211,13 @@ COPY --from=builder --chown=nonroot:nonroot /out/buildos-entrypoint /usr/local/b
 
 # Migrations are read at runtime by cmd/migrate. Bake them into the
 # image so a fork deployment doesn't need a separate volume mount or
-# config-map for SQL files.
+# config-map for SQL files. MIGRATIONS_DIR is REQUIRED: cmd/migrate
+# defaults to the relative "migrations" path, and the distroless stage
+# has no WORKDIR — without this ENV the migrate role would glob an
+# empty /migrations and (before the zero-files guard) exit 0 having
+# applied nothing.
 COPY --chown=nonroot:nonroot migrations/ /var/lib/buildos/migrations/
+ENV MIGRATIONS_DIR=/var/lib/buildos/migrations
 
 # Built web console, served same-origin by the server role (Phase 0a).
 # WEB_DIST_DIR points the server at it; worker/migrate ignore it.

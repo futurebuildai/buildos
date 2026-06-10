@@ -29,6 +29,13 @@ import (
 	"github.com/futurebuildai/buildos/internal/store"
 )
 
+// version is stamped via -ldflags "-X main.version=..." at build time
+// (the Dockerfile and deploy workflows pass the tag, e.g.
+// "staging-<sha>"). Surfaced through GET /health so a deploy pipeline
+// can assert the rolled binary is the one it just pinned — a roll that
+// silently kept the old deployment running must not pass smoke.
+var version = "dev"
+
 func main() {
 	// Wrap the JSON handler with obs.CorrelatingHandler so every
 	// context-scoped log line auto-stamps request_id (matching the
@@ -347,6 +354,15 @@ func run(logger *slog.Logger) error {
 	// if proxied.
 	if len(cfg.TrustedProxyCIDRs) == 0 {
 		logger.Warn("TRUSTED_PROXY_CIDRS is empty: X-Forwarded-For is ignored; the rate limiter keys on the direct peer. If behind a load balancer, set it to the LB subnet or all clients share one rate-limit bucket.")
+	} else {
+		// Positive confirmation for the deploy runbook's verify step:
+		// parseCIDRs silently drops malformed entries, so the operator
+		// needs the PARSED list, not the raw env value, to catch typos.
+		cidrs := make([]string, len(cfg.TrustedProxyCIDRs))
+		for i, c := range cfg.TrustedProxyCIDRs {
+			cidrs[i] = c.String()
+		}
+		logger.Info("trusted proxy CIDRs configured: X-Forwarded-For honored from these peers", "cidrs", cidrs)
 	}
 
 	// Build the router with all route groups
@@ -378,6 +394,7 @@ func run(logger *slog.Logger) error {
 		RateLimiter:         middleware.NewIPRateLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst),
 		TrustedProxyCIDRs:   cfg.TrustedProxyCIDRs,
 		WebDistDir:          cfg.WebDistDir,
+		Version:             version,
 	})
 
 	srv := &http.Server{

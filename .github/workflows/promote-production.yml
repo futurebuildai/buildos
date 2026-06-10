@@ -1,0 +1,435 @@
+# Promote to PRODUCTION — manual dispatch only. Takes the image DIGEST the
+# staging deploy verified (copy it from that run's job summary). Production
+# NEVER builds an image: the bytes staging smoked are the bytes prod runs.
+#
+# Order is deliberate and non-negotiable:
+#   1. validate — the input must be a full sha256 digest (tags are mutable
+#                 and would defeat "promote exactly what staging verified").
+#   2. verify   — the digest actually exists in GHCR (typo / never-pushed
+#                 digests die here, before anything touches prod).
+#   3. BACKUP   — pg_dump production → R2 (pre-promote/ prefix).
+#                 NO BACKUP, NO PROMOTE: any dump or upload failure fails
+#                 the job before migrate/roll can run.
+#   4. migrate  — one-shot BUILDOS_ROLE=migrate against
+#                 DATABASE_URL_PRODUCTION (migrate-before-roll,
+#                 docs/deploy-runbook.md §4; expand/contract migrations keep
+#                 the still-running old code compatible while it drains).
+#   5. roll     — Railway GraphQL serviceInstanceUpdate (digest-pinned) +
+#                 serviceInstanceDeployV2 for BOTH production services.
+#   6. smoke    — poll /ready, then poll /health until it reports the
+#                 version label baked into the promoted image (proves the
+#                 NEW deployment is serving, not the draining old one;
+#                 degrades to a loud warning for pre-label images), then
+#                 the full smoke against PROD_BASE_URL.
+#
+# Runs in the GitHub "production" environment so the owner can bolt a
+# required-reviewer gate onto promotes later (Settings → Environments →
+# production) without touching this file.
+#
+# Rollback: dispatch this workflow again with the previous good digest. If a
+# contract migration shipped in between, the old image may not run against
+# the new schema — prefer rolling forward, or restore the pre-promote backup
+# (docs/dr-runbook.md).
+#
+# Secrets/vars consumed here (exact names; the full deploy-secret catalog is
+# documented in deploy-staging.yml's header): RAILWAY_API_TOKEN,
+# RAILWAY_ENV_ID_PRODUCTION, RAILWAY_SVC_ID_SERVER_PRODUCTION,
+# RAILWAY_SVC_ID_WORKER_PRODUCTION, DATABASE_URL_PRODUCTION, R2_ENDPOINT,
+# R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET; vars.PROD_BASE_URL.
+
+name: Promote Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_digest:
+        description: >-
+          Image digest to promote (sha256:<64 hex>). Copy it from the
+          staging deploy run's job summary — production never builds; it
+          rolls the exact digest staging verified.
+        required: true
+        type: string
+      dry_run:
+        description: >-
+          Print the Railway GraphQL request bodies without sending them
+          (backup, migrate, and smoke are skipped too). Use on the first
+          credentialed run to validate field names against the live schema.
+        type: boolean
+        default: false
+
+# One production promote at a time, queued — never cancelled: killing a
+# promote mid-roll could leave server and worker on different digests.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: read # GHCR pull only — this workflow never pushes an image
+
+env:
+  # Canonical image (see deploy-staging.yml for why this is hardcoded).
+  IMAGE: ghcr.io/futurebuildai/buildos
+
+jobs:
+  promote:
+    name: Backup, migrate, roll, smoke (production)
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ vars.PROD_BASE_URL }}
+    steps:
+      - name: Validate digest input
+        env:
+          DIGEST: ${{ inputs.image_digest }}
+        run: |
+          set -euo pipefail
+          # Hard-stop on anything that is not a full sha256 digest. A tag
+          # (mutable) or a truncated digest here would break the "promote
+          # exactly what staging verified" guarantee.
+          if [[ ! "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::image_digest must match ^sha256:[0-9a-f]{64}\$ (got: ${DIGEST})"
+            exit 1
+          fi
+          echo "digest format ok"
+
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify the digest exists in GHCR
+        env:
+          DIGEST: ${{ inputs.image_digest }}
+        run: |
+          set -euo pipefail
+          # manifest inspect fails on never-pushed / GC'd digests — fail
+          # here, before the backup spends minutes dumping the database.
+          docker manifest inspect "${IMAGE}@${DIGEST}" > /dev/null
+          echo "manifest ok: ${IMAGE}@${DIGEST}"
+
+      - name: Install postgresql-client (pg_dump for the pre-promote backup)
+        if: ${{ inputs.dry_run != true }}
+        run: |
+          set -euo pipefail
+          # The Railway Postgres is 16; ubuntu-latest (24.04) ships
+          # postgresql-client 16, so the pg_dump client major matches the
+          # server. If the runner image ever drifts BELOW the server major,
+          # switch to the PGDG apt repo here — pg_dump must be >= the server
+          # major version.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client
+          pg_dump --version
+
+      - name: Pre-promote backup → R2 (no backup, no promote)
+        if: ${{ inputs.dry_run != true }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL_PRODUCTION }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          # R2 ignores the region, but the aws CLI insists on having one.
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          # scripts/backup-db.sh runs `set -euo pipefail` and exits non-zero
+          # if pg_dump OR the upload hook fails, so a failed backup fails
+          # this step and the whole job — migrate/roll below can never run
+          # without a pre-promote snapshot safely in R2.
+          #
+          # --no-prune: the runner is ephemeral, so local retention is
+          # meaningless here; retention lives in R2 lifecycle rules (where
+          # backup-db.sh's own header says it belongs). The script also
+          # uploads the .sha256 integrity sidecar via the same hook.
+          # DATABASE_URL travels via env (never argv) — backup-db.sh reads
+          # it from the environment.
+          export BACKUP_UPLOAD_CMD="aws s3 cp {file} s3://${R2_BUCKET}/pre-promote/ --endpoint-url ${R2_ENDPOINT}"
+          bash scripts/backup-db.sh --no-prune
+
+      - name: Run migrations (one-shot migrate role)
+        if: ${{ inputs.dry_run != true }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL_PRODUCTION }}
+          DIGEST: ${{ inputs.image_digest }}
+        run: |
+          set -euo pipefail
+          # Migrations are NOT a Railway service: the migrate role runs as a
+          # one-shot container on this runner against production's
+          # DATABASE_URL and must exit 0 before any service rolls
+          # (migrate-before-roll, docs/deploy-runbook.md §4). The image
+          # bakes ENV MIGRATIONS_DIR=/var/lib/buildos/migrations, so no
+          # -e MIGRATIONS_DIR is needed here.
+          #
+          # `-e DATABASE_URL` (no value) inherits the variable from the step
+          # env, so the DSN never lands on argv (argv is ps-visible on the
+          # runner; the env of our own child process is not).
+          docker run --rm \
+            -e BUILDOS_ROLE=migrate \
+            -e DATABASE_URL \
+            "${IMAGE}@${DIGEST}"
+
+      - name: Discover the expected version from the image label
+        id: imgver
+        if: ${{ inputs.dry_run != true }}
+        env:
+          DIGEST: ${{ inputs.image_digest }}
+        run: |
+          set -euo pipefail
+          # deploy-staging.yml stamps org.opencontainers.image.version =
+          # staging-<short-sha> onto the image, and the same string is
+          # ldflags-stamped into the binary's /health "version" field (the
+          # VERSION build-arg feeds both). This workflow has no access to
+          # the staging run's outputs, so the image bytes themselves are the
+          # source of truth for what /health must report after the roll.
+          # The migrate step above already pulled the digest, so the label
+          # is readable locally. An EMPTY label means an image built before
+          # the label existed — the version assertion below then degrades to
+          # a loud warning instead of failing the promote.
+          ver="$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "${IMAGE}@${DIGEST}")"
+          echo "expected_version=${ver}" >> "$GITHUB_OUTPUT"
+          echo "image version label: '${ver:-<empty>}'"
+
+      - name: Roll production services to the digest (Railway GraphQL)
+        env:
+          RAILWAY_API: https://backboard.railway.com/graphql/v2
+          RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+          RAILWAY_ENV_ID: ${{ secrets.RAILWAY_ENV_ID_PRODUCTION }}
+          SVC_ID_SERVER: ${{ secrets.RAILWAY_SVC_ID_SERVER_PRODUCTION }}
+          SVC_ID_WORKER: ${{ secrets.RAILWAY_SVC_ID_WORKER_PRODUCTION }}
+          IMAGE_REF: ${{ env.IMAGE }}@${{ inputs.image_digest }}
+          DRY_RUN: ${{ inputs.dry_run == true && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          # IMPORTANT (first credentialed run): Railway's public GraphQL docs
+          # are thin — validate the exact field names used below
+          # (serviceInstanceUpdate / ServiceInstanceUpdateInput /
+          # input.source.image / serviceInstanceDeployV2) against the live
+          # introspected schema before trusting this step. The deploy
+          # mutation in particular has TWO candidates: serviceInstanceDeployV2
+          # (current schema; returns the new deployment id) and
+          # serviceInstanceDeploy (older schemas). The dry-run / first
+          # credentialed run MUST confirm which one the live schema exposes
+          # and adjust Q_DEPLOY to match. That is what the dry_run input is
+          # for: it prints the exact request bodies without sending anything.
+          #
+          # Railway returns HTTP 200 for GraphQL-level failures, so we fail
+          # on any "errors" array in the response BODY and never trust the
+          # HTTP status alone.
+          #
+          # This bash is kept in lockstep with deploy-staging.yml — if you
+          # touch one, touch both (a composite action is the de-dupe path
+          # once the live schema is validated).
+
+          # The token goes in a header FILE (mktemp creates 0600), not argv —
+          # argv is ps-visible on the runner.
+          AUTH_HEADER_FILE="$(mktemp)"
+          trap 'rm -f "${AUTH_HEADER_FILE}"' EXIT
+          printf 'Authorization: Bearer %s\n' "${RAILWAY_API_TOKEN}" > "${AUTH_HEADER_FILE}"
+
+          # read -r -d '' exits non-zero at EOF; '|| true' keeps set -e calm.
+          read -r -d '' Q_UPDATE <<'GQL' || true
+          mutation RollImage($serviceId: String!, $environmentId: String!, $input: ServiceInstanceUpdateInput!) {
+            serviceInstanceUpdate(serviceId: $serviceId, environmentId: $environmentId, input: $input)
+          }
+          GQL
+          # NOT serviceInstanceRedeploy: redeploy re-creates the PREVIOUS
+          # deployment snapshot, so the digest pinned by serviceInstanceUpdate
+          # above might never actually deploy. DeployV2 cuts a NEW deployment
+          # from the service's current (just-updated) config.
+          read -r -d '' Q_DEPLOY <<'GQL' || true
+          mutation Deploy($serviceId: String!, $environmentId: String!) {
+            serviceInstanceDeployV2(serviceId: $serviceId, environmentId: $environmentId)
+          }
+          GQL
+
+          # gql <query> <variables-json> — POST one GraphQL operation.
+          # Fails on transport errors, non-JSON responses (gateway errors),
+          # and any GraphQL "errors" in the body.
+          gql() {
+            local body resp
+            body="$(jq -cn --arg q "$1" --argjson v "$2" '{query: $q, variables: $v}')"
+            if [[ "${DRY_RUN}" == "1" ]]; then
+              echo "[dry-run] would POST to ${RAILWAY_API}:"
+              jq . <<<"${body}"
+              return 0
+            fi
+            resp="$(curl -sS -X POST "${RAILWAY_API}" \
+                      -H @"${AUTH_HEADER_FILE}" \
+                      -H 'Content-Type: application/json' \
+                      --data-binary "${body}")"
+            if ! jq -e . >/dev/null 2>&1 <<<"${resp}"; then
+              echo "::error::Railway returned non-JSON (gateway error?): ${resp:0:200}"
+              return 1
+            fi
+            if jq -e '(.errors // []) | length > 0' >/dev/null <<<"${resp}"; then
+              echo "::error::Railway GraphQL errors: $(jq -c '.errors' <<<"${resp}")"
+              return 1
+            fi
+            jq -c '.data' <<<"${resp}"
+          }
+
+          # roll <name> <serviceId> — pin the digest, then cut a NEW
+          # deployment from it. Both mutations must succeed; either failing
+          # fails the job (gql returns non-zero on any GraphQL "errors", and
+          # the concurrency group keeps a retry from interleaving). DeployV2
+          # returns the new deployment's id — captured and echoed so the run
+          # log ties this roll to a concrete Railway deployment.
+          roll() {
+            local name="$1" sid="$2" out
+            echo "── ${name}: serviceInstanceUpdate → ${IMAGE_REF}"
+            gql "${Q_UPDATE}" "$(jq -cn --arg s "${sid}" --arg e "${RAILWAY_ENV_ID}" --arg img "${IMAGE_REF}" \
+              '{serviceId: $s, environmentId: $e, input: {source: {image: $img}}}')"
+            echo "── ${name}: serviceInstanceDeployV2"
+            out="$(gql "${Q_DEPLOY}" "$(jq -cn --arg s "${sid}" --arg e "${RAILWAY_ENV_ID}" \
+              '{serviceId: $s, environmentId: $e}')")"
+            if [[ "${DRY_RUN}" == "1" ]]; then
+              printf '%s\n' "${out}" # the dry-run request body gql printed
+            else
+              echo "── ${name}: deployment id $(jq -r '.serviceInstanceDeployV2 // "(none in response)"' <<<"${out}")"
+            fi
+          }
+
+          roll server "${SVC_ID_SERVER}"
+          roll worker "${SVC_ID_WORKER}"
+          if [[ "${DRY_RUN}" == "1" ]]; then
+            echo "dry-run complete — nothing was sent to Railway"
+          else
+            echo "rolled both production services to ${IMAGE_REF}"
+          fi
+
+      - name: Wait for production /ready
+        if: ${{ inputs.dry_run != true }}
+        env:
+          BASE_URL: ${{ vars.PROD_BASE_URL }}
+        run: |
+          set -euo pipefail
+          # Poll until the environment serves ready traffic again: 10s
+          # interval, 5-minute budget (image pull + boot + DB ping). Caveat:
+          # during Railway's rolling replace the OUTGOING deployment can
+          # briefly answer 200 here — the version assertion in the next step
+          # is what proves the NEW deployment is the one answering.
+          deadline=$(( $(date +%s) + 300 ))
+          while :; do
+            code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${BASE_URL}/ready" || true)"
+            if [[ "${code}" == "200" ]]; then
+              echo "${BASE_URL}/ready is 200"
+              break
+            fi
+            if (( $(date +%s) >= deadline )); then
+              echo "::error::${BASE_URL}/ready did not return 200 within 300s (last: ${code})"
+              exit 1
+            fi
+            echo "/ready=${code}; retrying in 10s"
+            sleep 10
+          done
+
+      - name: Wait for the promoted version on /health
+        if: ${{ inputs.dry_run != true }}
+        env:
+          BASE_URL: ${{ vars.PROD_BASE_URL }}
+          EXPECTED_VERSION: ${{ steps.imgver.outputs.expected_version }}
+        run: |
+          set -euo pipefail
+          # /ready going 200 above is NOT proof the new deployment answered:
+          # during Railway's rolling replace the OLD deployment keeps serving
+          # (and would pass the smoke) while it drains. GET /health returns
+          # {"status":"ok","version":"<ldflags-stamped>"}, and the discover
+          # step read the same string off the promoted image's version
+          # label — poll until they agree, so the smoke below tests the
+          # promoted bytes. Timeout = the new deployment never took
+          # traffic = a failed promote.
+          if [[ -z "${EXPECTED_VERSION}" ]]; then
+            # Pre-label image: cannot assert which deployment is serving.
+            # Skip the assert, but LOUDLY — the operator must eyeball the
+            # deployment in the Railway dashboard instead.
+            {
+              echo "## ⚠️ Version assertion SKIPPED"
+              echo ""
+              echo "The promoted image carries no \`org.opencontainers.image.version\`"
+              echo "label (built before deploy-staging stamped it), so this promote"
+              echo "CANNOT verify that the smoke ran against the NEW deployment rather"
+              echo "than the old one still draining. Verify the active deployment id"
+              echo "in the Railway dashboard before trusting this promote."
+            } >> "${GITHUB_STEP_SUMMARY}"
+            echo "::warning::promoted image has no version label — /health version assert skipped; smoke may have hit the draining old deployment"
+            exit 0
+          fi
+          deadline=$(( $(date +%s) + 180 ))
+          while :; do
+            got="$(curl -s --max-time 10 "${BASE_URL}/health" | jq -r '.version // empty' 2>/dev/null || true)"
+            if [[ "${got}" == "${EXPECTED_VERSION}" ]]; then
+              echo "/health serves version ${got} — the promoted deployment is live"
+              break
+            fi
+            if (( $(date +%s) >= deadline )); then
+              echo "::error::/health version is '${got:-<none>}', want '${EXPECTED_VERSION}' — promoted deployment never took traffic within 180s"
+              exit 1
+            fi
+            echo "/health version='${got:-<none>}' (want ${EXPECTED_VERSION}); retrying in 10s"
+            sleep 10
+          done
+
+      - name: Smoke test (production)
+        if: ${{ inputs.dry_run != true }}
+        env:
+          BASE_URL: ${{ vars.PROD_BASE_URL }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::smoke(${BASE_URL}): $*"; exit 1; }
+
+          # /ready — DB-touching readiness (docs/deploy-runbook.md §3);
+          # already polled above, asserted once more for the record.
+          code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${BASE_URL}/ready" || true)"
+          [[ "${code}" == "200" ]] || fail "/ready returned ${code}, want 200"
+
+          # /health — process liveness; deliberately no DB check.
+          code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${BASE_URL}/health" || true)"
+          [[ "${code}" == "200" ]] || fail "/health returned ${code}, want 200"
+
+          # GET / — the image bundles the web console (Phase 0a) and the
+          # server serves it same-origin. A missing title means the console
+          # is missing from the image or WEB_DIST_DIR broke at boot.
+          home_html="$(curl -sS --max-time 10 "${BASE_URL}/")"
+          grep -q '<title>BuildOS' <<<"${home_html}" \
+            || fail "GET / did not return HTML containing '<title>BuildOS'"
+
+          # GET /api/v1/nope — an unknown API route must be the API router's
+          # JSON 404, not a host-level HTML error page (proves routing and
+          # the error envelope survive Railway's edge proxy).
+          hdrs="$(mktemp)"
+          code="$(curl -s -D "${hdrs}" -o /dev/null -w '%{http_code}' --max-time 10 "${BASE_URL}/api/v1/nope" || true)"
+          [[ "${code}" == "404" ]] || fail "GET /api/v1/nope returned ${code}, want 404"
+          grep -qi '^content-type:[[:space:]]*application/json' "${hdrs}" \
+            || fail "GET /api/v1/nope Content-Type is not application/json"
+
+          echo "smoke ok: /ready + /health 200, console HTML served, JSON 404 envelope intact"
+
+      - name: Job summary
+        env:
+          DIGEST: ${{ inputs.image_digest }}
+          BASE_URL: ${{ vars.PROD_BASE_URL }}
+          DRY_RUN: ${{ inputs.dry_run == true && '1' || '0' }}
+        run: |
+          # R2_BUCKET is a secret (it would render masked here), so the
+          # summary names the prefix, not the full bucket URL.
+          {
+            echo "## Production promote"
+            if [[ "${DRY_RUN}" == "1" ]]; then
+              echo ""
+              echo "**DRY RUN** — GraphQL bodies printed, nothing sent; backup + migrate + smoke skipped."
+            fi
+            echo ""
+            echo "| What | Value |"
+            echo "| --- | --- |"
+            echo "| Image | \`${IMAGE}@${DIGEST}\` |"
+            echo "| URL | ${BASE_URL} |"
+            echo "| Pre-promote backup | R2, \`pre-promote/\` prefix (dump + .sha256 sidecar) |"
+            echo ""
+            echo "Rollback: dispatch this workflow again with the previous good digest"
+            echo "(or restore the pre-promote backup if a contract migration shipped — docs/dr-runbook.md)."
+          } >> "${GITHUB_STEP_SUMMARY}"

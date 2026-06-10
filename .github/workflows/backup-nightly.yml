@@ -1,0 +1,108 @@
+# Nightly logical backup of the PRODUCTION database → R2.
+#
+# Mechanism: scripts/backup-db.sh — the same script operators run by hand
+# (pg_dump custom format -Fc + a .sha256 integrity sidecar, both handed to
+# the storage-agnostic BACKUP_UPLOAD_CMD hook). This workflow is just its
+# cron + an explicit "did the object actually land" verification.
+#
+# Retention is NOT handled here: the runner is ephemeral so we pass
+# --no-prune (local pruning would be meaningless), and tiered retention
+# (daily/weekly/monthly) lives in R2 lifecycle rules on the nightly/
+# prefix — exactly where backup-db.sh's own header says it belongs.
+# pre-promote/ snapshots (promote-production.yml) get their own prefix so
+# their lifecycle rules can differ.
+#
+# Alerting: a failed dump, upload, or verification leaves this job RED —
+# the repo's existing workflow-failure alerting is the pager; nothing
+# bespoke here.
+#
+# NOTE: GitHub only fires `schedule` triggers from the DEFAULT branch, so
+# this file must be on main before the cron takes effect.
+#
+# Secrets consumed (exact names; full deploy-secret catalog is documented in
+# deploy-staging.yml's header): DATABASE_URL_PRODUCTION, R2_ENDPOINT,
+# R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET.
+
+name: Backup Nightly
+
+on:
+  schedule:
+    # 09:00 UTC daily — 04:00 EST / 05:00 EDT, 01:00 PST / 02:00 PDT;
+    # before the US construction workday either way.
+    - cron: "0 9 * * *"
+  workflow_dispatch: {}
+
+# Never run two backups at once (overlapping uploads of same-named objects
+# are a recipe for a corrupt "latest"). Queued, not cancelled.
+concurrency:
+  group: backup-nightly
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    name: pg_dump production → R2
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install postgresql-client (pg_dump)
+        run: |
+          set -euo pipefail
+          # The Railway Postgres is 16; ubuntu-latest (24.04) ships
+          # postgresql-client 16, so the pg_dump client major matches the
+          # server. If the runner image ever drifts BELOW the server major,
+          # switch to the PGDG apt repo here — pg_dump must be >= the server
+          # major version.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client
+          pg_dump --version
+
+      - name: Dump + upload (scripts/backup-db.sh)
+        id: dump
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL_PRODUCTION }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          # R2 ignores the region, but the aws CLI insists on having one.
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          # backup-db.sh exits non-zero if pg_dump OR the upload hook fails
+          # (set -euo pipefail inside), so any failure reds this job. The
+          # DSN travels via env, never argv. The script uploads the .sha256
+          # sidecar through the same hook automatically.
+          export BACKUP_UPLOAD_CMD="aws s3 cp {file} s3://${R2_BUCKET}/nightly/ --endpoint-url ${R2_ENDPOINT}"
+          bash scripts/backup-db.sh --no-prune
+
+          # Hand the dump's basename to the verify step below. Exactly one
+          # dump exists: the runner started empty and we took one dump.
+          dump_file="$(basename "$(ls backups/buildos-*.dump)")"
+          echo "dump_file=${dump_file}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the upload landed in R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          DUMP_FILE: ${{ steps.dump.outputs.dump_file }}
+        run: |
+          set -euo pipefail
+          # NOT `aws s3 ls` — that is PREFIX matching, so the .sha256
+          # sidecar landing alone would satisfy a check for the .dump.
+          # `s3api head-object` is an exact-key metadata GET: it exits
+          # non-zero unless that exact object exists, so a silently-lost
+          # upload (or a typo'd prefix) reds the job here even if the cp
+          # above claimed success. Verify the sidecar too — restore refuses
+          # to proceed without its checksum.
+          aws s3api head-object --bucket "${R2_BUCKET}" \
+            --key "nightly/${DUMP_FILE}" --endpoint-url "${R2_ENDPOINT}"
+          aws s3api head-object --bucket "${R2_BUCKET}" \
+            --key "nightly/${DUMP_FILE}.sha256" --endpoint-url "${R2_ENDPOINT}"
+          echo "verified: nightly/${DUMP_FILE} (+ .sha256) present in R2"
