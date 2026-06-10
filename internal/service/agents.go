@@ -14,6 +14,12 @@ import (
 	"github.com/futurebuildai/buildos/internal/store"
 )
 
+// maxTaskDurationDays mirrors the project_tasks.duration_days CHECK added in
+// migration 019 (0..36500). The AI duration-adjuster skips any out-of-range
+// model output rather than letting it violate the constraint and roll back the
+// whole apply tx.
+const maxTaskDurationDays = 36500
+
 // ErrAgentsAIUnavailable is returned by agent flows when the service
 // was constructed without a corresponding AI client (e.g. the worker
 // binary doesn't wire DailyBriefer/ScheduleAdjuster). Lets handlers
@@ -386,12 +392,12 @@ func (s *AgentsService) RecommendScheduleAdjustments(ctx context.Context, caller
 				skipped++
 				continue
 			}
-			if *adj.NewDurationDays < 0 {
-				// Defensive — the model shouldn't return negative
+			if *adj.NewDurationDays < 0 || *adj.NewDurationDays > maxTaskDurationDays {
+				// Defensive — the model shouldn't return out-of-range
 				// durations, but if it does we drop the row rather than
-				// violating the CHECK constraint downstream and rolling
-				// back the whole batch. Skipped rows still appear in
-				// audit metadata.
+				// violating the duration CHECK (migration 019: 0..36500)
+				// downstream and rolling back the whole batch. Skipped rows
+				// still appear in audit metadata.
 				skipped++
 				continue
 			}

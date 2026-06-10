@@ -47,7 +47,9 @@ func clientIPFromHeaders(r *http.Request, trusted []*net.IPNet) string {
 		return ""
 	}
 	// Trusted peer: walk X-Forwarded-For right-to-left, take the first entry
-	// that isn't itself a trusted proxy (the real client).
+	// that isn't itself a trusted proxy (the real client). If XFF is PRESENT but
+	// every entry is trusted, fall back to the peer — NOT to X-Real-IP, which a
+	// proxy that appends XFF may not strip, so a client could forge it.
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		parts := strings.Split(xff, ",")
 		for i := len(parts) - 1; i >= 0; i-- {
@@ -56,7 +58,9 @@ func clientIPFromHeaders(r *http.Request, trusted []*net.IPNet) string {
 				return cand.String()
 			}
 		}
+		return "" // XFF present, all trusted → use the TCP peer
 	}
+	// No XFF: a trusted proxy that uses X-Real-IP instead.
 	if xr := strings.TrimSpace(r.Header.Get("X-Real-IP")); xr != "" {
 		if net.ParseIP(xr) != nil {
 			return xr

@@ -313,6 +313,15 @@ func run(logger *slog.Logger) error {
 		integrationsSvc = vaultService
 	}
 
+	// Surface the X-Forwarded-For trust posture once at boot: with no trusted
+	// proxies, the per-IP rate limiter keys on the direct TCP peer — correct for
+	// a directly-exposed fork, but behind a load balancer it collapses ALL
+	// clients into one shared bucket. Set TRUSTED_PROXY_CIDRS to the LB subnet
+	// if proxied.
+	if len(cfg.TrustedProxyCIDRs) == 0 {
+		logger.Warn("TRUSTED_PROXY_CIDRS is empty: X-Forwarded-For is ignored; the rate limiter keys on the direct peer. If behind a load balancer, set it to the LB subnet or all clients share one rate-limit bucket.")
+	}
+
 	// Build the router with all route groups
 	router := api.NewRouter(api.RouterConfig{
 		Pool:                pool,

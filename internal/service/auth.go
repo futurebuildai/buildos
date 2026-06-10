@@ -118,10 +118,12 @@ func NewAuthService(cfg AuthServiceConfig) (*AuthService, error) {
 	}
 	// Precompute a fixed argon2id hash once at startup. Login verifies against
 	// it on the unknown-email / no-password paths so every attempt spends the
-	// same KDF cost — defeating account enumeration by response timing.
+	// same KDF cost — defeating account enumeration by response timing. Fail
+	// fast: an empty dummyHash would make VerifyPassword short-circuit (no KDF)
+	// and silently reopen the timing oracle, so refuse to start instead.
 	dummyHash, derr := auth.HashPassword("buildos-login-timing-equalizer")
 	if derr != nil {
-		cfg.Logger.Warn("auth: could not precompute timing-equalizer hash", "error", derr)
+		return nil, fmt.Errorf("auth: precompute timing-equalizer hash: %w", derr)
 	}
 	return &AuthService{
 		pool:       cfg.Pool,

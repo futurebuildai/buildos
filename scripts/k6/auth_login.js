@@ -26,8 +26,10 @@ export const options = {
     },
   },
   thresholds: {
-    // The server must never 5xx and the limiter must actually throttle.
-    checks: ['rate>0.99'],
+    // Per-check (NOT the global `checks` rate — the throttle sub-check is
+    // expected to fail for the pre-burst 401s, which would sink a global gate):
+    // the server must never 5xx, and the limiter must shed a real share to 429.
+    'checks{check:no 5xx (limiter absorbs the flood)}': ['rate>0.99'],
     'checks{check:limiter throttles past the burst}': ['rate>0.10'],
   },
 };

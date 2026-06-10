@@ -62,6 +62,23 @@ func TestRealIP(t *testing.T) {
 			xRealIP:  "198.51.100.42",
 			wantHost: "198.51.100.42",
 		},
+		{
+			// XFF present but all-trusted → use the peer, do NOT honor a
+			// (potentially forged) X-Real-IP. Regression for the spoof gap.
+			name:     "trusted proxy, all-trusted XFF: ignore X-Real-IP, use peer",
+			trusted:  lb,
+			peer:     "10.0.0.5:443",
+			xff:      "10.0.0.9", // an internal hop, trusted
+			xRealIP:  "1.2.3.4",  // forged
+			wantHost: "10.0.0.5",
+		},
+		{
+			name:     "IPv6 trusted proxy: forwarded IPv6 client is honored",
+			trusted:  []*net.IPNet{mustCIDR(t, "2001:db8::/32")},
+			peer:     "[2001:db8::5]:443",
+			xff:      "2001:db9::99", // a different /32 → the real client
+			wantHost: "2001:db9::99",
+		},
 	}
 
 	for _, tt := range tests {

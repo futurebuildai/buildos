@@ -47,6 +47,11 @@ func (c *Client) fetchDocumentImage(ctx context.Context, rawURL string) (mediaTy
 	if perr != nil || u.Scheme != "https" || u.Host == "" {
 		return "", "", fmt.Errorf("%w: document_url must be an absolute https URL", ErrUnsupportedMediaType)
 	}
+	// The AUTHORITATIVE SSRF guard is the egress dial Control hook on
+	// c.docHTTPClient: it blocks the RESOLVED private/metadata IP at connect
+	// time (so a literal private IP OR a hostname that resolves to one is
+	// refused, defeating DNS-rebind), and refuses redirects. The scheme check
+	// above is the cheap first layer.
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return "", "", fmt.Errorf("ai: build image request: %w", err)

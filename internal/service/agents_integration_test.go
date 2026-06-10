@@ -243,6 +243,39 @@ func TestAgentsService_RecommendScheduleAdjustments(t *testing.T) {
 	})
 }
 
+// An over-cap model duration (> the duration CHECK from migration 019) must be
+// SKIPPED, not violate the constraint and roll back the whole batch — the valid
+// adjustment in the same response must still apply.
+func TestAgentsService_RecommendScheduleAdjustments_SkipsOutOfRangeDuration(t *testing.T) {
+	sched, fx := newScheduleService(t)
+	ctx := context.Background()
+
+	a := seedSchedTask(t, sched.pool, fx.projectID, "1.0", "Foundation", 5)
+	b := seedSchedTask(t, sched.pool, fx.projectID, "2.0", "Framing", 3)
+
+	huge := maxTaskDurationDays + 1 // would violate project_tasks_duration_days_sane
+	good := 7
+	adjuster := &fakeAdjuster{resp: &ai.UpdateScheduleResponse{Adjustments: []ai.ScheduleAdjustment{
+		{TaskID: a, NewDurationDays: &huge, Rationale: "hallucinated huge duration"},
+		{TaskID: b, NewDurationDays: &good, Rationale: "ok"},
+	}}}
+	agents := NewAgentsService(sched.pool, nil, nil, store.NewScheduleStore(), sched, nil, adjuster, &capturingAuditRecorder{})
+
+	got, err := agents.RecommendScheduleAdjustments(ctx, fx.orgID, "owner-sub", fx.projectID)
+	if err != nil {
+		t.Fatalf("over-cap duration must be skipped, not roll back the batch: %v", err)
+	}
+	if got.AppliedDeltas != 1 {
+		t.Errorf("AppliedDeltas = %d, want 1 (over-cap skipped, valid applied)", got.AppliedDeltas)
+	}
+	if d := taskDuration(t, sched.pool, a); d != 5 {
+		t.Errorf("task a duration = %d, want 5 (over-cap row untouched)", d)
+	}
+	if d := taskDuration(t, sched.pool, b); d != good {
+		t.Errorf("task b duration = %d, want %d (valid delta applied)", d, good)
+	}
+}
+
 // TestAgentsService_RecommendScheduleAdjustments_NoTasks covers the
 // empty-graph guard: a valid project with no tasks fails the flow with
 // ErrInvalidInput before any AI dispatch.
