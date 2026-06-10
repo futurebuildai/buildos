@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -319,6 +320,21 @@ func run(logger *slog.Logger) error {
 		integrationsSvc = vaultService
 	}
 
+	// Same-origin SPA serving (Phase 0a). Validate eagerly: a set-but-
+	// broken WEB_DIST_DIR is a deployment mistake (the production image
+	// bakes the console at a fixed path), and failing at boot beats a
+	// blank page at first login. Empty = disabled — dev rigs run Vite
+	// with an /api proxy instead.
+	if cfg.WebDistDir != "" {
+		indexPath := filepath.Join(cfg.WebDistDir, "index.html")
+		if _, err := os.Stat(indexPath); err != nil {
+			return fmt.Errorf("WEB_DIST_DIR=%q set but %s is unreadable (%w); unset WEB_DIST_DIR or fix the path", cfg.WebDistDir, indexPath, err)
+		}
+		logger.Info("same-origin SPA serving enabled", "web_dist_dir", cfg.WebDistDir)
+	} else {
+		logger.Info("same-origin SPA serving disabled (WEB_DIST_DIR unset)")
+	}
+
 	// Surface the X-Forwarded-For trust posture once at boot: with no trusted
 	// proxies, the per-IP rate limiter keys on the direct TCP peer — correct for
 	// a directly-exposed fork, but behind a load balancer it collapses ALL
@@ -355,6 +371,7 @@ func run(logger *slog.Logger) error {
 		SentryEnabled:       sentryOK,
 		RateLimiter:         middleware.NewIPRateLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst),
 		TrustedProxyCIDRs:   cfg.TrustedProxyCIDRs,
+		WebDistDir:          cfg.WebDistDir,
 	})
 
 	srv := &http.Server{

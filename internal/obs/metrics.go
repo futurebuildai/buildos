@@ -195,11 +195,13 @@ func (m *Metrics) HTTPMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(ww, r)
 
 		// Pull the chi route pattern AFTER the handler runs — that's
-		// when chi has populated the routing context. Falls back to
-		// the raw URL path when no route matched (404s, /health, etc.).
+		// when chi has populated the routing context. Unmatched paths
+		// (chi NotFound — API typos, scanner probes, and every SPA
+		// deep link served by the catch-all) collapse into one sentinel
+		// label: the raw URL would make label cardinality unbounded.
 		route := chi.RouteContext(r.Context()).RoutePattern()
 		if route == "" {
-			route = r.URL.Path
+			route = "(unmatched)"
 		}
 		method := r.Method
 		status := statusClass(ww.status)

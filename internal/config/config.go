@@ -21,6 +21,13 @@ type Config struct {
 	// Server
 	Port string
 
+	// WebDistDir is the directory holding the built web console
+	// (web/dist). Non-empty enables same-origin SPA serving from
+	// cmd/server (the production image bakes the console in and sets
+	// WEB_DIST_DIR); empty disables it (dev rigs run Vite with an /api
+	// proxy). Non-secret scalar — direct env read.
+	WebDistDir string
+
 	// Native auth (WS1). BuildOS mints + validates its own RS256 JWTs
 	// against a per-fork keypair; there is no external IdP. The PEM
 	// material is secret-sourced; the issuer/audience are wire-protocol
@@ -165,7 +172,8 @@ func LoadWithSource(ctx context.Context, src SecretSource) (*Config, error) {
 		DBPoolMin:   getEnvInt("DB_POOL_MIN", 5),
 		DBTimeout:   getEnvDuration("DB_TIMEOUT", 5*time.Second),
 
-		Port: getEnvStr("PORT", "8080"),
+		Port:       getEnvStr("PORT", "8080"),
+		WebDistDir: getEnvStr("WEB_DIST_DIR", ""),
 
 		JWTPrivateKeyPEM: secret("JWT_PRIVATE_KEY_PEM"),
 		JWTPublicKeyPEM:  secret("JWT_PUBLIC_KEY_PEM"),

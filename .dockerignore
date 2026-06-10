@@ -19,10 +19,12 @@ bin/
 .DS_Store
 *.swp
 
-# Local env
-.env
-.env.*
-!.env.example
+# Local env — recursive: dockerignore root patterns don't descend, and
+# the web console is now part of the build context (a stray web/.env
+# must not reach the webbuilder stage, where Vite would bake it in).
+**/.env
+**/.env.*
+!**/.env.example
 
 # Tests + fixtures (the running image doesn't need them)
 **/*_test.go
@@ -40,7 +42,20 @@ docs
 # Worktree scaffolding (Claude Code work dir)
 tools/.claude
 
-# Frontend surfaces — not part of the Go backend image build context.
-# (The web console is built/served separately; see web/README.md.)
-web
+# Frontend surfaces. The web console IS part of the image now (the
+# webbuilder stage builds web/dist for same-origin serving — Phase 0a);
+# only its heavyweight local artifacts are excluded. The Flutter app is
+# not part of the image.
+web/node_modules
+web/dist
+web/test-results
+web/playwright-report
+web/coverage
 mobile
+
+# fork-init outputs — live signing/vault keys. `make fork-init OUT=./forks/...`
+# writes them into the repo tree; they must never reach the docker daemon.
+forks
+**/private.pem
+**/vault_master_key.txt
+**/bootstrap_token.txt

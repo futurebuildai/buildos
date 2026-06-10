@@ -26,7 +26,12 @@ export default defineConfig({
   },
   build: {
     target: 'es2022',
-    sourcemap: true,
+    // 'hidden' emits .map files WITHOUT the sourceMappingURL comment in
+    // the bundles: local/CI builds keep maps for debugging, but the
+    // production image deletes them (Dockerfile webbuilder stage) — the
+    // maps embed the full original TypeScript (sourcesContent) and the
+    // server would otherwise serve them unauthenticated under /assets/.
+    sourcemap: 'hidden',
   },
   test: {
     environment: 'happy-dom',

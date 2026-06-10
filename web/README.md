@@ -57,6 +57,23 @@ make db-up && make migrate
 DEV_AUTH_MODE=header go run ./cmd/server
 ```
 
+## Production serving (same-origin)
+
+The production image builds this app in a `node:20-alpine` Docker stage and the
+Go server serves `web/dist` itself — same origin as the API, no separate static
+host. `WEB_DIST_DIR` (baked into the image as `/var/lib/buildos/web`) points the
+server at the bundle; `internal/api/spa.go` owns the serving contract: SPA
+fallback to `index.html` for client-routed paths, year-long immutable cache for
+hashed `/assets/*`, `no-cache` + `Content-Security-Policy` on the HTML, and
+JSON 404s for `/api/*` misses. Local rigs leave `WEB_DIST_DIR` unset and use the
+Vite proxy above.
+
+Two production-serving caveats: source maps are emitted `hidden` and **stripped
+from the image** (they embed the full TypeScript source; see the Dockerfile
+webbuilder stage), and the server-stamped CSP (`script-src 'self'`,
+`connect-src 'self'`) blocks the opt-in browser-Sentry hook (`src/obs/sentry.ts`)
+unless a fork extends `spaCSP` in `internal/api/spa.go` with its Sentry origins.
+
 ## Conventions
 
 - **Money:** integer `*Cents` (string) + sibling `*CurrencyCode`. Never a float

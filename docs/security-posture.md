@@ -26,7 +26,7 @@ rest are fixed, deployment-required, or tracked below.
 | H-2 | High | **Rate-limit bypass** — `chi.RealIP` trusts `X-Forwarded-For` unconditionally, so the only per-IP brute-force defense on `/auth/login` + `/password-reset/*` is spoofable; no per-account lockout | **FIXED (XFF) + tracked (lockout)** — `mw.RealIP(trustedProxyCIDRs)` honors forwarding headers only from a configured trusted-proxy allowlist (`TRUSTED_PROXY_CIDRS`); empty default = use the real TCP peer (fail-safe). Test `TestRealIP`. Per-account lockout = tracked follow-up (the XFF fix restores IP-based limiting; see below). |
 | M-1 | Med | Expensive AI endpoints (daily-briefing, chat, recommend-adjustments) have no per-(org,user) cooldown — one caller can run up the org's Anthropic bill | **Tracked** — partially mitigated by the global per-IP limiter (now spoof-resistant); a dedicated per-(org,user) AI throttle is the follow-up. |
 | L-1 | Low | Login timing side-channel enables email enumeration | **FIXED** — the unknown-email / no-password paths now run argon2id against a fixed dummy hash (constant-time). `internal/service/auth.go`. |
-| L-2 | Low | Missing `X-Content-Type-Options` / `Referrer-Policy` / `X-Frame-Options` | **FIXED (API)** — `mw.SecurityHeaders` sets nosniff + `Referrer-Policy: no-referrer` + `X-Frame-Options: DENY` on every API/4xx/5xx response. **NOTE:** the Go server serves no static assets — the SPA HTML/JS/CSS are served by a separate static host/reverse proxy, which **must set its own** `X-Frame-Options`/`nosniff`/**CSP** (the browser-rendered console is where clickjacking/XSS-DiD headers matter). See deployment hardening below. |
+| L-2 | Low | Missing `X-Content-Type-Options` / `Referrer-Policy` / `X-Frame-Options` | **FIXED** — `mw.SecurityHeaders` sets nosniff + `Referrer-Policy: no-referrer` + `X-Frame-Options: DENY` on every response (API and SPA — the catch-all runs inside the global middleware chain). Phase 0a made the Go server the SPA host (`WEB_DIST_DIR`, `internal/api/spa.go`): the console's HTML now also carries a `Content-Security-Policy` (`script-src 'self'`, `frame-ancestors 'none'`, Google-Fonts allowances) stamped by the server itself — no separate static host to configure. Tests `TestSPA_RootServesIndex` (CSP + headers). |
 | L-3 | Low | No HSTS | **Deployment-required** — the Go server runs plain HTTP behind a TLS terminator; emit `Strict-Transport-Security` *there*. See [fork-onboarding](./fork-onboarding.md). |
 | L-4 | Low | Unbounded `duration_days` → CPM per-day loop is a cheap authenticated DoS | **FIXED** — migration `019` adds a `CHECK (duration_days BETWEEN 0 AND 36500)` guarding every write path. |
 | L-5 | Low | PII catalog omitted password/token/secret field names | **FIXED** — added `password`, `*_token`, `secret`, `api_key`, `private_key`, `authorization`, `jwt`, etc. at Restricted in `pii.FieldClass`. |
@@ -49,10 +49,12 @@ and the per-IP limiter are mounted; no secrets in code or git history.
    while proxied, every client collapses into ONE shared rate-limit bucket and
    the whole org trips 429s** (the server logs a WARN at boot when it's empty).
    Leave empty ONLY for a directly-exposed fork — spoofed headers are then ignored.
-3. **SPA security headers** — the static host/reverse proxy serving the web
-   console must set `X-Frame-Options: DENY` (or CSP `frame-ancestors`),
-   `X-Content-Type-Options: nosniff`, and a `Content-Security-Policy` on the
-   HTML/JS responses (the Go server only covers the API).
+3. **SPA security headers** — **handled natively since Phase 0a**: the Go server
+   serves the console same-origin (`WEB_DIST_DIR`) and stamps
+   `X-Frame-Options: DENY`, `nosniff`, and a `Content-Security-Policy`
+   (`script-src 'self'`, `frame-ancestors 'none'`) on the HTML itself. Nothing
+   to configure at the proxy — but if a fork serves the SPA from a separate
+   static host instead, that host must set these headers itself.
 4. **Network-restrict `/metrics`** to the Prometheus scraper (unauth by convention).
 5. Run the **k6 harness** (`scripts/k6/`) against a staging instance; the
    `auth_login.js` flood must show 429s (limiter shedding) and zero 5xx.
@@ -60,6 +62,12 @@ and the per-IP limiter are mounted; no secrets in code or git history.
 ## Tracked follow-ups (non-blocking)
 - Per-account login lockout (store-backed failed-attempt counter + backoff,
   survives IP rotation) and a dedicated stricter throttle on the auth routes.
+- The SPA CSP (`internal/api/spa.go`, `script-src 'self'` + `connect-src 'self'`)
+  blocks the console's **opt-in browser-Sentry hook** (`web/src/obs/sentry.ts`:
+  host-page-loaded SDK + `VITE_SENTRY_DSN`) on both legs — SDK load and ingest
+  POST — and the failure is silent. A fork enabling browser telemetry must
+  extend `spaCSP` with its Sentry origins; if that opt-in gets productized,
+  make the CSP allowances configurable instead of hand-edited.
 - A per-(org,user) rate limit on the AI endpoints (cost-abuse guard).
 - Audit-log free-text PII handling (M-style: structured-only + content hash).
 - The web `vite`/`esbuild` dev-server advisories (vite 5→8 major bump).

@@ -104,6 +104,36 @@ func TestHTTPMiddleware_CountsAndLabels(t *testing.T) {
 	}
 }
 
+// TestHTTPMiddleware_UnmatchedRouteCollapsesLabel proves requests that
+// match no chi route (NotFound — API typos, scanner probes, SPA deep
+// links served by the catch-all) all land under one "(unmatched)" route
+// label. Labeling them by raw URL would make cardinality unbounded —
+// the exact failure mode the route-pattern labeling exists to prevent.
+func TestHTTPMiddleware_UnmatchedRouteCollapsesLabel(t *testing.T) {
+	m := NewMetrics()
+	r := chi.NewRouter()
+	r.Use(m.HTTPMiddleware)
+	r.Get("/known", func(w http.ResponseWriter, _ *http.Request) {})
+
+	for _, target := range []string{"/projects/a", "/projects/b", "/scanner/../probe"} {
+		r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, target, nil))
+	}
+
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+
+	wantLine := `buildos_http_requests_total{method="GET",route="(unmatched)",status="4xx"} 3`
+	if !strings.Contains(body, wantLine) {
+		t.Errorf("expected collapsed counter line %q\ngot:\n%s", wantLine, body)
+	}
+	for _, raw := range []string{`route="/projects/a"`, `route="/projects/b"`} {
+		if strings.Contains(body, raw) {
+			t.Errorf("raw URL leaked into route label: %s", raw)
+		}
+	}
+}
+
 func TestHTTPMiddleware_5xxStatusClassed(t *testing.T) {
 	m := NewMetrics()
 	r := chi.NewRouter()

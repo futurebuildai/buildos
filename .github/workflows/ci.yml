@@ -318,6 +318,10 @@ jobs:
           # tag events, where signing keys are provisioned.
           load: false
           tags: buildos:ci
+          # Layer cache (matches release.yml): the webbuilder stage
+          # (npm ci + tsc + vite) would otherwise run cold every CI run.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
             COMMIT=${{ steps.meta.outputs.commit }}
@@ -330,6 +334,7 @@ jobs:
           push: false
           load: true
           tags: buildos:ci-smoke
+          cache-from: type=gha
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
             COMMIT=${{ steps.meta.outputs.commit }}
@@ -358,3 +363,17 @@ jobs:
           exit-code: 1
           severity: HIGH,CRITICAL
           vuln-type: os,library
+      - name: Trivy JS lockfile scan (CI-blocking on HIGH/CRITICAL)
+        # The image ships the BUNDLED web console (Phase 0a) — no
+        # package-lock.json / node_modules inside it, so the image scan
+        # above cannot see JS CVEs (e.g. a lit XSS advisory). Scan the
+        # lockfile directly so the deps that get bundled are gated too.
+        # Like govulncheck, a freshly-published CVE can red this step
+        # with no code change — that's the gate working as intended.
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: web/package-lock.json
+          format: table
+          exit-code: 1
+          severity: HIGH,CRITICAL

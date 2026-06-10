@@ -34,7 +34,31 @@
 
 ARG GO_VERSION=1.26
 ARG ALPINE_VERSION=3.22
+ARG NODE_VERSION=20
 ARG DISTROLESS_TAG=nonroot
+
+# ----------------------------------------------------------------
+# Stage 0 — web console build (Phase 0a: same-origin SPA serving).
+# Vite emits a static bundle (web/dist) that the server serves itself
+# (WEB_DIST_DIR); no separate static host. Runs on $BUILDPLATFORM —
+# the output is platform-independent, so multi-arch builds run it once.
+# npm ci is lockfile-pinned; `npm run build` typechecks then builds.
+# ----------------------------------------------------------------
+FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-alpine AS webbuilder
+
+WORKDIR /web
+
+# Lockfile layer first so dependency downloads cache across rebuilds.
+COPY web/package.json web/package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci
+
+COPY web/ .
+# Build, then strip source maps: they embed the complete original
+# TypeScript (sourcesContent) and anything under dist/ is served
+# unauthenticated by the server. sourcemap:'hidden' (vite.config.ts)
+# already keeps the sourceMappingURL comment out of the bundles, so
+# deleting the .map files leaves no dangling references.
+RUN npm run build && find dist -name '*.map' -delete
 
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS builder
 
@@ -189,6 +213,11 @@ COPY --from=builder --chown=nonroot:nonroot /out/buildos-entrypoint /usr/local/b
 # image so a fork deployment doesn't need a separate volume mount or
 # config-map for SQL files.
 COPY --chown=nonroot:nonroot migrations/ /var/lib/buildos/migrations/
+
+# Built web console, served same-origin by the server role (Phase 0a).
+# WEB_DIST_DIR points the server at it; worker/migrate ignore it.
+COPY --from=webbuilder --chown=nonroot:nonroot /web/dist /var/lib/buildos/web/
+ENV WEB_DIST_DIR=/var/lib/buildos/web
 
 # Run as the distroless nonroot uid. Even if the entrypoint is
 # compromised, the process can't read /etc/shadow or write outside

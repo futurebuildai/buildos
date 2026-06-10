@@ -48,3 +48,12 @@ mobile/.dart_tool/
 
 # Claude Code local state
 .claude/
+
+# fork-init secret outputs (make fork-init OUT=./forks/...) — the JWT
+# signing key, vault master key, and bootstrap token must never be
+# committed. public.pem/fork.yaml are committable but live in customer
+# fork repos, not here.
+forks/
+**/private.pem
+**/vault_master_key.txt
+**/bootstrap_token.txt

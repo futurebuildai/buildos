@@ -11,6 +11,7 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/trace"
 
 	mw "github.com/futurebuildai/buildos/internal/api/middleware"
 	"github.com/futurebuildai/buildos/internal/auth"
@@ -58,6 +59,7 @@ type RouterConfig struct {
 	SentryEnabled       bool                 // when true, the Sentry HTTP middleware is mounted to capture panics
 	RateLimiter         *mw.IPRateLimiter    // optional — when nil, no rate limiting is applied
 	TrustedProxyCIDRs   []*net.IPNet         // forwarding headers (XFF) are honored ONLY from these peers; empty = ignore XFF, use the TCP peer (fail-safe)
+	WebDistDir          string               // optional — built web console dir (web/dist); empty = no SPA serving (dev rigs proxy via Vite)
 }
 
 // NewRouter creates the Chi router with all route groups and middleware.
@@ -95,14 +97,34 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	r.Use(func(next http.Handler) http.Handler {
 		return otelhttp.NewHandler(next, "buildos.http",
 			otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
-				// Default span name is the HTTP method which doesn't
-				// distinguish routes. Postpone naming to chi's
-				// post-routing hook so we get the matched pattern
-				// (e.g. "GET /api/v1/projects/{projectID}") rather
-				// than the raw URL.
+				// Provisional name only — the formatter runs BEFORE
+				// routing, so the matched pattern isn't known yet. The
+				// middleware just below renames the span post-routing.
 				return r.Method + " " + r.URL.Path
 			}),
 		)
+	})
+	// Rename the server span AFTER routing so it carries chi's matched
+	// pattern (e.g. "GET /api/v1/projects/{projectID}") instead of the
+	// raw URL. Unmatched paths — which, with the SPA catch-all, include
+	// every client-routed deep link and hashed asset URL — collapse to
+	// one "(unmatched)" name: raw URLs would make span-name cardinality
+	// unbounded for any backend deriving per-name metrics (same failure
+	// mode the Prometheus middleware guards against). SetName runs
+	// before otelhttp ends the span on unwind, so the rename sticks.
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			next.ServeHTTP(w, req)
+			span := trace.SpanFromContext(req.Context())
+			if !span.IsRecording() {
+				return
+			}
+			if pattern := chi.RouteContext(req.Context()).RoutePattern(); pattern != "" {
+				span.SetName(req.Method + " " + pattern)
+			} else {
+				span.SetName(req.Method + " (unmatched)")
+			}
+		})
 	})
 	// Baseline security headers on every response (incl. 429s/errors below).
 	r.Use(mw.SecurityHeaders)
@@ -453,6 +475,33 @@ func NewRouter(cfg RouterConfig) http.Handler {
 			r.Post("/daily-log", field.DailyLog)
 		})
 	})
+
+	// ------------------------------------------------------------
+	// NotFound handling + same-origin SPA serving (Phase 0a).
+	//
+	// chi propagates a root NotFound handler into every mounted
+	// subrouter, so this fires both for top-level unmatched paths AND
+	// for unmatched paths inside API subtrees (where the group's
+	// middleware — auth, SetupGate — runs first). It executes inside
+	// the global middleware chain (security headers, rate limit,
+	// metrics) but outside the auth group for top-level paths — the
+	// login page must load unauthenticated.
+	//
+	// With WebDistDir set (production image) the SPA handler serves the
+	// web console and keeps /api/* misses as JSON 404s. With it empty
+	// (dev rigs — Vite proxies /api) there is no console to serve, but
+	// the JSON 404 is registered anyway so unmatched-path response
+	// bodies are identical in both modes (API clients should never see
+	// chi's text/plain default in one environment and the envelope in
+	// the other).
+	// ------------------------------------------------------------
+	if cfg.WebDistDir != "" {
+		r.NotFound(newSPAHandler(cfg.WebDistDir).ServeHTTP)
+	} else {
+		r.NotFound(func(w http.ResponseWriter, req *http.Request) {
+			writeErrorResponse(w, req, http.StatusNotFound, "NOT_FOUND", "route not found")
+		})
+	}
 
 	return r
 }

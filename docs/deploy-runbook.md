@@ -32,6 +32,15 @@ The image is built `-tags=prod` (D8 hardening): the dev `X-Dev-Auth` bypass is a
 no-op, and **the server refuses to start if `DEV_AUTH_MODE` is set** — fail fast
 beats serving uniform 401s. Never set `DEV_AUTH_MODE` in production.
 
+**The image also contains the web console** (Phase 0a): a `node:20-alpine` build
+stage compiles `web/` and the server role serves the bundle same-origin from
+`WEB_DIST_DIR` (baked in at `/var/lib/buildos/web`). `GET /` is the operator
+console; `/api/*`, `/health`, `/ready`, `/metrics` are untouched. SPA fallback,
+asset caching, and the console's `Content-Security-Policy` are owned by
+`internal/api/spa.go` — no separate static host or proxy-level header config is
+needed. The server **fails at boot** if `WEB_DIST_DIR` is set but unreadable;
+unset it to run API-only.
+
 ## 2. Configuration
 
 Secrets are resolved through `CONFIG_SOURCE` (`internal/config`): empty/`env` reads
@@ -51,7 +60,9 @@ Transport errors short-circuit (a Vault outage is **not** a silent downgrade to 
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | trace collector | Optional; empty = no-op exporter (W3C propagation still works). |
 
 **Non-secret scalars (direct env):** `PORT` (8080), `DB_POOL_MAX` (25), `DB_POOL_MIN`,
-DB connect timeout, `OTEL_*` sample/insecure flags, `SENTRY_ENVIRONMENT`/`SENTRY_RELEASE`.
+DB connect timeout, `OTEL_*` sample/insecure flags, `SENTRY_ENVIRONMENT`/`SENTRY_RELEASE`,
+`WEB_DIST_DIR` (same-origin web console dir; baked into the image as
+`/var/lib/buildos/web` — override only to relocate, unset to run API-only).
 
 First-time keypair/vault-key/bootstrap-token generation is one command —
 `make fork-init OUT=… KID=… ORG_ID=…` — see [fork-onboarding.md](fork-onboarding.md).
