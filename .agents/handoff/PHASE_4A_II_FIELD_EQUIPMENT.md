@@ -1,6 +1,6 @@
 # Phase 4a-ii — read-only "equipment on my projects" (field)
 
-**Status:** BUILT on `feat/phase-4a-ii-field-equipment` (committed, not pushed/merged). CROSS-STACK (Go + Flutter). All gates green. Awaiting owner review → merge.
+**Status:** DONE — merged (fast-forward) + PUSHED to `origin/main` (HEAD `f0c2df0`). CROSS-STACK (Go + Flutter). Built + reviewed via the ultra-loop (8-agent ultraplan + `/code-review max`, 6 findings fixed). **Closes Phase 4a.**
 **Gated decision resolved:** owner chose the read-only option (Option B) — see [ESCALATION_LOG.md](./ESCALATION_LOG.md) ESC-003. This file is the **working spec** (the screen was unspecified by any binding doc; Antigravity owes the spec backfill listed in ESC-003).
 Planned by the 4a-ii ultraplan (8-agent ground → design → critique → plan).
 
