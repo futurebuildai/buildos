@@ -178,7 +178,7 @@ export class FbAgentsPage extends SignalWatcher(FBElement) {
       .preview {
         margin: var(--fb-spacing-sm) 0 var(--fb-spacing-md);
         font-size: var(--fb-text-body-sm);
-        color: var(--fb-text-muted);
+        color: var(--fb-text-secondary);
       }
       .num {
         max-width: 160px;
@@ -213,7 +213,7 @@ export class FbAgentsPage extends SignalWatcher(FBElement) {
         border: 1px solid var(--fb-gable-green);
       }
       .toast.err {
-        color: var(--fb-safety-red);
+        color: var(--fb-safety-red-text);
         background: color-mix(in srgb, var(--fb-safety-red) 10%, transparent);
         border: 1px solid var(--fb-safety-red);
       }

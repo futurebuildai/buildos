@@ -99,7 +99,9 @@ test.describe.serial('live admin-config a11y', () => {
     await floatInput.fill('');
     await page.getByRole('button', { name: 'Save thresholds' }).click();
     // The fb-form error summary appears (role=alert); wait for it before axing.
-    await expect(page.getByRole('alert')).toBeVisible({ timeout: 10_000 });
+    // Two role=alert nodes appear by design (the fb-form summary + the
+    // per-field error) — target the summary to satisfy strict mode.
+    await expect(page.getByRole('alert').first()).toBeVisible({ timeout: 10_000 });
 
     const foresightErrAxe = await new AxeBuilder({ page })
       .withTags(['wcag2a', 'wcag2aa'])

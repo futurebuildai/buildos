@@ -94,7 +94,7 @@ export class FbConnectorsPage extends FBElement {
         border: 1px solid var(--fb-gable-green);
       }
       .notice.err {
-        color: var(--fb-safety-red);
+        color: var(--fb-safety-red-text);
         background: color-mix(in srgb, var(--fb-safety-red) 10%, transparent);
         border: 1px solid var(--fb-safety-red);
       }
@@ -107,7 +107,7 @@ export class FbConnectorsPage extends FBElement {
         margin: 0;
         padding: var(--fb-spacing-sm) var(--fb-spacing-md);
         font-size: var(--fb-text-body-sm);
-        color: var(--fb-safety-red);
+        color: var(--fb-safety-red-text);
         background: color-mix(in srgb, var(--fb-safety-red) 10%, transparent);
         border: 1px solid var(--fb-safety-red);
         border-radius: var(--fb-radius-sm);
@@ -118,7 +118,7 @@ export class FbConnectorsPage extends FBElement {
         font-weight: 600;
         letter-spacing: 0.04em;
         text-transform: uppercase;
-        color: var(--fb-text-muted);
+        color: var(--fb-text-secondary);
       }
       .grid {
         display: flex;

@@ -28,7 +28,7 @@ export class FbField extends FBElement {
         color: var(--fb-text-primary);
       }
       .req {
-        color: var(--fb-safety-red);
+        color: var(--fb-safety-red-text);
         margin-inline-start: 2px;
       }
       .hint {
@@ -42,7 +42,7 @@ export class FbField extends FBElement {
         gap: var(--fb-spacing-xs);
         margin-top: var(--fb-spacing-xs);
         font-size: var(--fb-text-body-sm);
-        color: var(--fb-safety-red);
+        color: var(--fb-safety-red-text);
       }
     `,
   ];

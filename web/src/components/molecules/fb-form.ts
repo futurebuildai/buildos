@@ -27,7 +27,7 @@ export class FbForm extends FBElement {
         gap: var(--fb-spacing-sm);
         margin-bottom: var(--fb-spacing-md);
         padding: var(--fb-spacing-md);
-        color: var(--fb-safety-red);
+        color: var(--fb-safety-red-text);
         background: color-mix(in srgb, var(--fb-safety-red) 10%, transparent);
         border: 1px solid var(--fb-safety-red);
         border-radius: var(--fb-radius-sm);
@@ -37,7 +37,7 @@ export class FbForm extends FBElement {
         padding-inline-start: var(--fb-spacing-md);
       }
       .summary a {
-        color: var(--fb-safety-red);
+        color: var(--fb-safety-red-text);
       }
     `,
   ];

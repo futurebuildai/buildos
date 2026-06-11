@@ -104,7 +104,7 @@ export class FbConnectorCard extends FBElement {
         margin-top: var(--fb-spacing-sm);
         padding: var(--fb-spacing-sm) var(--fb-spacing-md);
         font-size: var(--fb-text-body-sm);
-        color: var(--fb-safety-red);
+        color: var(--fb-safety-red-text);
         background: color-mix(in srgb, var(--fb-safety-red) 10%, transparent);
         border: 1px solid var(--fb-safety-red);
         border-radius: var(--fb-radius-sm);

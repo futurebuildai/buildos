@@ -15,6 +15,14 @@ import { defineConfig, devices } from '@playwright/test';
  * dependent (the one-shot bootstrap claim must precede login), so they run
  * serially on a single worker with no retries — replaying a consumed claim is
  * meaningless.
+ *
+ * ORDERING IS LOAD-BEARING: onboarding.live.spec.ts performs the one-shot
+ * owner CLAIM that creates the account every other spec signs in with.
+ * Alphabetical file order put admin-config (and later feedback-widget)
+ * BEFORE onboarding, so their sign-in hit "Email or password is incorrect"
+ * — the long-red E2E lane. The two projects below make the dependency
+ * explicit: `journey` (the claim + wizard) always runs first; `authed`
+ * (everything else) only starts after it succeeds.
  */
 export default defineConfig({
   testDir: './tests/live',
@@ -27,7 +35,19 @@ export default defineConfig({
     baseURL: 'http://localhost:5173',
     trace: 'on-first-retry',
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  projects: [
+    {
+      name: 'journey',
+      use: { ...devices['Desktop Chrome'] },
+      testMatch: /onboarding\.live\.spec\.ts/,
+    },
+    {
+      name: 'authed',
+      use: { ...devices['Desktop Chrome'] },
+      testIgnore: /onboarding\.live\.spec\.ts/,
+      dependencies: ['journey'],
+    },
+  ],
   webServer: {
     command: 'npm run dev',
     url: 'http://localhost:5173',

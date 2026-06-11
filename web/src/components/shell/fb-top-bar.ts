@@ -97,7 +97,9 @@ export class FbTopBar extends FBElement {
         gap: var(--fb-spacing-sm);
         font: inherit;
         font-size: var(--fb-text-body-sm);
-        color: var(--fb-text-muted);
+        /* secondary, not muted: the palette hint is real text — muted
+           fails WCAG AA contrast on surface-2 (live axe sweep). */
+        color: var(--fb-text-secondary);
         background: var(--fb-surface-2);
         border: 1px solid var(--md-sys-color-outline);
         border-radius: var(--fb-radius-sm);

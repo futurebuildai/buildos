@@ -113,7 +113,9 @@ test.describe.serial('live feedback-widget a11y', () => {
     // (so this works regardless of backend state) and surfaces the
     // aria-invalid + aria-describedby error wiring.
     await dialog.getByRole('button', { name: 'Send feedback' }).click();
-    await expect(page.getByText('Enter a message before sending.')).toBeVisible();
+    // The text appears twice by design: the inline field error AND the
+    // polite live-region announcement — assert the visible inline one.
+    await expect(page.locator('#fb-feedback-message-error')).toBeVisible();
 
     const errorAxe = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
     expect(errorAxe.violations).toEqual([]);

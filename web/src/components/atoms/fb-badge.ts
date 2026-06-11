@@ -35,7 +35,7 @@ const STATUS_META: Record<BadgeStatus, StatusMeta> = {
   complete: { color: 'var(--fb-gable-green-bright)', icon: 'check' },
   pending: { color: 'var(--fb-status-pending)', icon: 'clock' },
   offline: { color: 'var(--fb-status-offline)', icon: 'wifi-off' },
-  neutral: { color: 'var(--fb-text-secondary)', icon: 'info' },
+  neutral: { color: 'var(--fb-status-neutral)', icon: 'info' },
   'key-connected': { color: 'var(--fb-key-connected)', icon: 'shield-check' },
   'key-untested': { color: 'var(--fb-key-untested)', icon: 'info' },
   'key-error': { color: 'var(--fb-key-error)', icon: 'alert-circle' },

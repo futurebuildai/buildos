@@ -61,7 +61,7 @@ export class FbFileUpload extends FBElement {
         align-items: center;
         gap: var(--fb-spacing-xs);
         margin-top: var(--fb-spacing-sm);
-        color: var(--fb-safety-red);
+        color: var(--fb-safety-red-text);
         font-size: var(--fb-text-body-sm);
       }
     `,

@@ -160,7 +160,7 @@ export class FbSetupPage extends FBElement {
         border: 1px solid var(--fb-gable-green);
       }
       .notice.err {
-        color: var(--fb-safety-red);
+        color: var(--fb-safety-red-text);
         background: color-mix(in srgb, var(--fb-safety-red) 10%, transparent);
         border: 1px solid var(--fb-safety-red);
       }

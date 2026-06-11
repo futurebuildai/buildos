@@ -168,7 +168,10 @@ export class FbNavRail extends FBElement {
         font-weight: 700;
         letter-spacing: 0.06em;
         text-transform: uppercase;
-        color: var(--fb-text-muted);
+        /* secondary, not muted: group labels are real text — muted
+           (#5a5b66) is ~2.9:1 on the rail surface, below WCAG AA 4.5:1
+           (caught by the live axe sweep once it could actually run). */
+        color: var(--fb-text-secondary);
       }
       :host([collapsed]) .group-label {
         display: none;

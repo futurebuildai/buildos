@@ -145,7 +145,7 @@ export class FbFeedbackWidget extends FBElement {
       }
       select[aria-invalid='true'],
       textarea[aria-invalid='true'] {
-        border-color: var(--fb-safety-red);
+        border-color: var(--fb-safety-red-text);
       }
       .error {
         display: flex;
@@ -153,7 +153,7 @@ export class FbFeedbackWidget extends FBElement {
         gap: var(--fb-spacing-xs);
         margin: 0;
         font-size: var(--fb-text-body-sm);
-        color: var(--fb-safety-red);
+        color: var(--fb-safety-red-text);
       }
       .actions {
         display: flex;

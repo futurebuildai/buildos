@@ -26,6 +26,10 @@
   --fb-slate-steel-elevated: #252836;
   --fb-blueprint-blue: #38bdf8;
   --fb-safety-red: #f43f5e;
+  /* text-grade error red: the saturated safety red is ~4.2:1 as TEXT on
+     dark surfaces (axe AA fail) — keep it for borders/icons/tints, use
+     this for error copy. */
+  --fb-safety-red-text: #fb7185;
   --fb-amber-warning: #f59e0b;
 
   /* ====================== Surface elevation scale (§2.2) ====================== */
@@ -141,6 +145,10 @@
   --fb-status-complete: #005234;
   --fb-status-pending: #38bdf8;
   --fb-status-offline: #5a5b66;
+  /* neutral badge text: must clear WCAG AA 4.5:1 INSIDE fb-badge's 14%
+     color-mix tint on card surfaces — text-secondary lands ~4.3:1 there
+     (live axe sweep); this lighter grey clears it with margin. */
+  --fb-status-neutral: #9ba0b0;
 
   /* ========================= Money variance (DSC §2.1) ===================== */
   --fb-variance-positive: #00ffa3;
