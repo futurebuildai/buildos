@@ -282,9 +282,13 @@ fi
 
 # NOTE: every operation below is best-effort against thin public docs —
 # validate the field names via introspection on the first credentialed run.
-# Q_PROJECTS in particular works with PERSONAL tokens only: TEAM/workspace
-# tokens get "Not Authorized" from `me` — use --project-id instead.
-Q_PROJECTS='query buildosProjects { me { projects { edges { node { id name } } } } }'
+# VALIDATED ON THE FIRST CREDENTIALED RUN (2026-06-10): projects live under
+# the WORKSPACE, not under `me.projects` (which returns empty for
+# workspace-homed accounts), and ProjectCreateInput REQUIRES workspaceId.
+# Q_WORKSPACES/Q_PROJECTS below reflect the live schema. TEAM/workspace
+# tokens still cannot query `me` at all — use --project-id for those.
+Q_WORKSPACES='query buildosWorkspaces { me { workspaces { id name } } }'
+Q_PROJECTS='query buildosProjects($workspaceId: String!) { projects(workspaceId: $workspaceId) { edges { node { id name } } } }'
 Q_PROJECT_DETAIL='query buildosProjectDetail($id: String!) { project(id: $id) { id name environments { edges { node { id name } } } services { edges { node { id name } } } } }'
 # Q_DOMAINS surfaces the DNS (CNAME) target the Cloudflare step needs; the
 # `status { dnsRecords ... }` selection is the schema-uncertain part — its
@@ -360,35 +364,53 @@ PROJECT_DETAIL='{"data":{}}'
 # ensure_project — two paths:
 #   * --project-id given: trust it and SKIP lookup/create entirely. This is
 #     the path for TEAM/workspace tokens, which cannot query `me` at all.
-#   * otherwise (personal tokens): look the project up by name via
-#     `me { projects }` and create it when missing.
+#   * otherwise (personal tokens): discover the workspace via
+#     `me { workspaces }`, look the project up by name in that workspace
+#     (projects(workspaceId:) — me.projects is EMPTY for workspace-homed
+#     accounts), and create it (with the required workspaceId) when missing.
 ensure_project() {
-  local vars="${WORK_DIR}/vars.json" resp id
+  local vars="${WORK_DIR}/vars.json" resp id ws_id ws_count
   if [[ -n "${PROJECT_ID_ARG}" ]]; then
     PROJECT_ID="${PROJECT_ID_ARG}"
     log "using existing project ${PROJECT_ID} (--project-id) — lookup/create skipped (team-token-safe path)"
     return 0
   fi
   jq -n '{}' > "${vars}"
-  if ! resp="$(gql "projects lookup" "${Q_PROJECTS}" "${vars}" '{}')"; then
+  if ! resp="$(gql "workspaces lookup" "${Q_WORKSPACES}" "${vars}" '{}')"; then
     if last_gql_error_matches 'not authorized'; then
-      err "Railway rejected the 'me { projects }' lookup with Not Authorized."
+      err "Railway rejected the 'me' lookup with Not Authorized."
       err "TEAM/workspace tokens cannot query 'me' — only PERSONAL tokens can."
       err "Fix (the recommended path for team tokens): create the empty project"
       err "'${PROJECT_NAME}' once in the Railway dashboard, then re-run with"
       err "--project-id <its-id> to skip the lookup/create entirely."
       exit 2
     fi
-    die "project lookup failed"
+    die "workspace lookup failed"
   fi
+  ws_count="$(jq -r '.data.me.workspaces | length' <<<"${resp}" 2>/dev/null || printf '0')"
+  if (( DRY_RUN )) && [[ "${ws_count}" == "0" || -z "${ws_count}" ]]; then
+    ws_id="DRY_RUN_WORKSPACE_ID"
+  elif [[ "${ws_count}" == "1" ]]; then
+    ws_id="$(jq -r '.data.me.workspaces[0].id' <<<"${resp}")"
+  else
+    err "expected exactly one Railway workspace, found ${ws_count}:"
+    jq -r '.data.me.workspaces[] | "  - " + .name + " (" + .id + ")"' <<<"${resp}" >&2 || true
+    die "ambiguous workspace — create the project in the dashboard and re-run with --project-id"
+  fi
+  log "workspace ${ws_id}"
+
+  jq -n --arg w "${ws_id}" '{workspaceId: $w}' > "${vars}"
+  resp="$(gql "projects lookup (workspace)" "${Q_PROJECTS}" "${vars}" "$(<"${vars}")")" \
+    || die "project lookup failed"
   id="$(jq -r --arg n "${PROJECT_NAME}" \
-        '.data.me.projects.edges[]?.node | select(.name == $n) | .id' <<<"${resp}" | head -n1)"
+        '.data.projects.edges[]?.node | select(.name == $n) | .id' <<<"${resp}" | head -n1)"
   if [[ -n "${id}" ]]; then
     log "project '${PROJECT_NAME}' already exists (${id}) — reusing"
     PROJECT_ID="${id}"
     return 0
   fi
-  jq -n --arg name "${PROJECT_NAME}" '{input: {name: $name}}' > "${vars}"
+  jq -n --arg name "${PROJECT_NAME}" --arg w "${ws_id}" \
+    '{input: {name: $name, workspaceId: $w}}' > "${vars}"
   resp="$(gql "projectCreate(${PROJECT_NAME})" "${M_PROJECT_CREATE}" "${vars}" "$(<"${vars}")")" \
     || die "projectCreate(${PROJECT_NAME}) failed"
   id="$(jq -r '.data.projectCreate.id // empty' <<<"${resp}")"
