@@ -19,7 +19,12 @@ const (
 	defaultLoopMaxToolCalls    = 12
 	defaultLoopMaxToolsPerTurn = 4
 	defaultLoopMaxResultBytes  = 256 * 1024 // 256 KiB
-	defaultLoopTimeout         = 30 * time.Second
+	// A multi-iteration tool loop (e.g. "which projects have critical-path
+	// risk?" → list_projects then a schedule read per project then synthesize)
+	// legitimately runs several model round-trips and exceeds 30s. 90s leaves
+	// headroom under both the server WriteTimeout (120s) and Cloudflare's ~100s
+	// edge timeout so the answer returns instead of 502-ing mid-stream.
+	defaultLoopTimeout         = 90 * time.Second
 
 	// loopMaxTokens is the per-turn output cap. Matches callTool/callText.
 	loopMaxTokens = 4096

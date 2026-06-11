@@ -412,9 +412,15 @@ func run(logger *slog.Logger) error {
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           router,
-		ReadHeaderTimeout: 10 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second, // slowloris guard on the request side
+		// WriteTimeout bounds the whole response. The conversational assistant
+		// (/agents/chat) runs a bounded multi-iteration tool loop (cap 90s) that
+		// legitimately exceeds 30s; a 30s WriteTimeout force-closed those
+		// responses mid-stream → 502. 120s covers the AI path with headroom;
+		// normal responses still finish in milliseconds. ReadHeaderTimeout keeps
+		// the slowloris protection independent of this.
+		WriteTimeout: 120 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
 
 	errCh := make(chan error, 1)
