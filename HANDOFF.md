@@ -273,6 +273,30 @@ govulncheck clean. PRs #9 onward also have CI green at merge time
 
 ## In flight
 
+### 🟢 STAGING IS LIVE — https://staging.futurebuild.ai (2026-06-11, demo-ready for Grant)
+- **Branded URL works end to end:** HTTPS (valid cert), console renders, `/health` returns the
+  build version, `/api/*` 404s are JSON, hashed assets carry the immutable cache header.
+- **Owner claimed + onboarded:** `colton@futurebuild.ai` (password handed to the owner in chat —
+  rotate after the demo). Org onboarded as **Kelbrook Construction** (general_contractor, US-CT,
+  GC trade, 01-00-00 cost code, Mon-Fri calendar). SetupGate open; login + portfolio verified.
+- **TLS topology (IMPORTANT):** Railway's custom-domain ACME wedged at VALIDATING_OWNERSHIP across
+  every recreate (likely LE rate-limit from rapid cycling). Pivoted to a **Cloudflare Worker
+  edge-proxy** (`buildos-staging-proxy`, route `staging.futurebuild.ai/*`) → Railway NATIVE origin
+  `server-staging-58c3.up.railway.app` (which has a valid cert + routes by Host). Cloudflare
+  Universal SSL serves the public cert. DNS-only CNAME → proxied; Host-header Origin Rule is
+  paywalled on this plan, hence the Worker. **Follow-up:** once LE cooldown passes, a native Railway
+  custom domain can replace the Worker (delete worker route + re-add custom domain DNS-only), but the
+  Worker is a fine durable state.
+- **Pipeline fully green:** CI e2e lane fixed (ordering + real WCAG-AA contrast) and merged; the
+  **migration 021 fix** (fresh forks were unclaimable — no org seeded) shipped; `deploy-staging`
+  ran end-to-end (build → migrate → roll → version-asserted smoke through the branded domain).
+- **Remaining for full prod:** (1) **R2 backup secrets** (`R2_*`) still unset — `backup-nightly`
+  fails until provided; (2) **production / app.futurebuild.ai** not deployed yet (services + DNS +
+  Worker-or-cert exist for prod env; promote a staging digest via `promote-production.yml` when
+  ready — needs its own owner claim); (3) Cloudflare Full-strict + HSTS hardening (zone-wide, deferred
+  — other proxied siblings share the zone); (4) rotate the demo owner password.
+
+
 **▶ ACTIVE: the deployment & launch plan (owner-approved ultraplan, 2026-06-09).** Kelbrook is the first
 customer; this repo is "fork zero" (staging.futurebuild.ai auto-deploys `main`, app.futurebuild.ai promotes
 pinned digests; true per-customer forks start with builder #2). Phases: **0a** SPA same-origin serving →
