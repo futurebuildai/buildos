@@ -584,6 +584,126 @@ func (c *Client) DelayCascadeReason(ctx context.Context, req DelayCascadeReasonR
 	return &out, nil
 }
 
+// ---- daily_report_digest -----------------------------------------------
+
+// DailyReportDigestRequest is the input for the office digest — an INTERNAL
+// summary of one day's field activity for the operating team. It INCLUDES
+// operationally-sensitive context the office needs: safety incidents, crew
+// counts, and any schedule deltas. It is NEVER shown to a homeowner — the
+// client-safe surface is ClientProgressUpdate, built from a separate allowlist.
+//
+// All fields are pre-projected by the service from the derived daily report;
+// the model receives only what the service hands it (the request struct is the
+// boundary, not the model's discretion).
+type DailyReportDigestRequest struct {
+	ProjectName       string   `json:"project_name"`
+	LogDate           string   `json:"log_date"` // YYYY-MM-DD
+	WeatherConditions string   `json:"weather_conditions,omitempty"`
+	WorkSummary       string   `json:"work_summary,omitempty"`
+	SafetyIncidents   string   `json:"safety_incidents,omitempty"` // INTERNAL — office only
+	CrewCount         int      `json:"crew_count"`
+	PhotoCount        int      `json:"photo_count"`
+	TaskProgress      []string `json:"task_progress,omitempty"` // "WBS Name — NN%" lines
+}
+
+// DailyReportDigestResponse carries the rendered office digest prose.
+type DailyReportDigestResponse struct {
+	Digest string `json:"digest"`
+}
+
+const dailyReportDigestSystem = `You are the BuildOS field-operations assistant writing an INTERNAL office digest of one construction project day. ` +
+	`The audience is the general contractor's office team — superintendents, PMs, owners. ` +
+	`Write a terse, scannable recap in plain prose: lead with anything that needs office attention (safety incidents, schedule deltas), then the day's work, crew level, and photo coverage. ` +
+	`This is an internal note — include safety incidents and crew/schedule context candidly. Keep it under 180 words. Do not invent facts not present in the context.`
+
+// DailyReportDigest generates the internal office digest of a day's field
+// activity. Uses FastModel (cheap prose). Inherits ErrUnconfigured from callText
+// when no Anthropic key is configured for the org.
+func (c *Client) DailyReportDigest(ctx context.Context, req DailyReportDigestRequest) (*DailyReportDigestResponse, error) {
+	if req.ProjectName == "" {
+		return nil, fmt.Errorf("ai.DailyReportDigest: project_name is required")
+	}
+	prompt, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("ai.DailyReportDigest: marshal prompt: %w", err)
+	}
+	reply, err := c.callText(ctx, "daily_report_digest", c.fastModel, dailyReportDigestSystem, []contentBlock{
+		textBlock("Write the office digest for this field day:\n" + string(prompt)),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ai.DailyReportDigest: %w", err)
+	}
+	return &DailyReportDigestResponse{Digest: reply}, nil
+}
+
+// ---- client_progress_update --------------------------------------------
+
+// ClientProgressUpdateRequest is the input for the CLIENT-SAFE homeowner
+// progress narrative. It carries ONLY allowlisted, redaction-safe fields — the
+// service builds it from a strict allowlist and asserts no Restricted-classed
+// data leaks in (the redaction gate is the service boundary, NOT this struct's
+// hope that the model behaves). There is deliberately NO field here for
+// safety incidents, crew identities, GPS, or monetary amounts: those data
+// cannot reach the model because the struct cannot carry them.
+type ClientProgressUpdateRequest struct {
+	ProjectName       string   `json:"project_name"`
+	PeriodStart       string   `json:"period_start"` // YYYY-MM-DD
+	PeriodEnd         string   `json:"period_end"`   // YYYY-MM-DD
+	WeatherConditions string   `json:"weather_conditions,omitempty"`
+	WorkSummary       string   `json:"work_summary,omitempty"`     // sanitized work-summary prose
+	HighlightLines    []string `json:"highlight_lines,omitempty"`  // "Name — NN%" task highlights (no crew identities)
+	PhotoCount        int      `json:"photo_count"`
+}
+
+// ClientProgressUpdateResponse carries the warm homeowner-facing draft. The
+// operator edits it before any send (Chunk D); Chunk C only produces the draft.
+type ClientProgressUpdateResponse struct {
+	Subject string `json:"subject"`
+	Body    string `json:"body"`
+}
+
+const clientProgressUpdateSystem = `You write a warm, plain-language home-construction progress update FOR THE HOMEOWNER (the client), as if from their builder. ` +
+	`Audience: a non-technical homeowner who wants reassurance their project is moving. Friendly, concrete, encouraging tone. ` +
+	`Use ONLY the information provided. Do NOT mention costs, budgets, dollar amounts, crew member names, safety incidents, liability, GPS/locations, or internal scheduling jargon — none of that is in your context and you must not invent it. ` +
+	`Return a short, friendly email: a one-line subject and a 2-4 short-paragraph body. Reference the photo count if photos are included. This is a draft the builder will review before sending.`
+
+var clientProgressUpdateSchema = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "subject": {"type": "string", "description": "a short, friendly email subject line"},
+    "body": {"type": "string", "description": "the warm 2-4 paragraph homeowner progress body"}
+  },
+  "required": ["subject", "body"]
+}`)
+
+// ClientProgressUpdate produces the client-safe homeowner progress draft. Tool
+// call (structured subject+body), uses FastModel (prose). Inherits
+// ErrUnconfigured from callTool when no Anthropic key is configured for the org.
+//
+// SECURITY: this method is downstream of the service-layer redaction allowlist.
+// The request struct physically cannot carry safety/crew/GPS/cents fields; the
+// system prompt is belt-and-suspenders, not the gate.
+func (c *Client) ClientProgressUpdate(ctx context.Context, req ClientProgressUpdateRequest) (*ClientProgressUpdateResponse, error) {
+	if req.ProjectName == "" {
+		return nil, fmt.Errorf("ai.ClientProgressUpdate: project_name is required")
+	}
+	prompt, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("ai.ClientProgressUpdate: marshal prompt: %w", err)
+	}
+	raw, err := c.callTool(ctx, "client_progress_update", c.fastModel, clientProgressUpdateSystem,
+		[]contentBlock{textBlock("Write the homeowner progress update from this context:\n" + string(prompt))},
+		"compose_client_update", clientProgressUpdateSchema)
+	if err != nil {
+		return nil, fmt.Errorf("ai.ClientProgressUpdate: %w", err)
+	}
+	var out ClientProgressUpdateResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("ai.ClientProgressUpdate: decode tool output: %w", err)
+	}
+	return &out, nil
+}
+
 // ---- foresight_risk ----------------------------------------------------
 
 // ForesightProcurementRisk is one procurement line the deterministic engine

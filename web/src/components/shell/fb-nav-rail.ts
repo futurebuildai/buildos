@@ -84,6 +84,13 @@ const NAV_MODEL: NavGroupDef[] = [
         icon: 'sparkles',
         gate: { minRole: 'superintendent' },
       },
+      {
+        // Daily Reports (Chunk C) — field→office recap + AI compositions.
+        label: 'Daily Reports',
+        href: '/command/reports',
+        icon: 'inbox',
+        gate: { minRole: 'superintendent' },
+      },
     ],
   },
   {

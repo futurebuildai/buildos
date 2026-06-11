@@ -165,6 +165,8 @@ func run(logger *slog.Logger) error {
 		aiRecommender service.ProcurementRecommender
 		aiBriefer     service.DailyBriefer
 		aiAdjuster    service.ScheduleAdjuster
+		aiDigester    service.DailyReportDigester
+		aiDrafter     service.ClientProgressUpdater
 	)
 	if cfg.VaultMasterKey != "" {
 		masterKey, err := cryptobox.ParseMasterKey(cfg.VaultMasterKey)
@@ -185,6 +187,8 @@ func run(logger *slog.Logger) error {
 		aiRecommender = aiClient
 		aiBriefer = aiClient
 		aiAdjuster = aiClient
+		aiDigester = aiClient
+		aiDrafter = aiClient
 
 		resendMailer = mailer.NewResendMailer(vaultService, cfg.MailFrom, cfg.MailFromName, mailer.WithLogger(logger))
 		logger.Info("vault enabled", "key_version", cfg.VaultKeyVersion)
@@ -270,6 +274,7 @@ func run(logger *slog.Logger) error {
 	// boots and serves the core domain. Server-only — cmd/worker never
 	// constructs this.
 	var assetService api.AssetServicer
+	var assetSvc *service.AssetService // concrete handle reused as the daily-report PhotoResolver
 	{
 		var credsResolver service.ObjectStoreCredsResolver
 		if vaultService != nil {
@@ -280,14 +285,27 @@ func run(logger *slog.Logger) error {
 			Bucket:   cfg.R2Bucket,
 			Region:   cfg.StorageRegion,
 		}, credsResolver)
-		as := service.NewAssetService(pool, store.NewAssetStore(), resolver, auditService, logger, nil)
-		assetService = as
+		assetSvc = service.NewAssetService(pool, store.NewAssetStore(), resolver, auditService, logger, nil)
+		assetService = assetSvc
 		if cfg.R2Endpoint != "" && cfg.R2Bucket != "" && vaultService != nil {
 			logger.Info("object storage enabled (R2)", "bucket", cfg.R2Bucket)
 		} else {
 			logger.Warn("object storage disabled — set OBJECT_STORE_ENDPOINT/_BUCKET + seal the object_store vault credential to enable photo uploads")
 		}
 	}
+
+	// ----------------------------------------------------------------
+	// Daily Reports (Chunk C — DAILY_REPORTS_CLIENT_UPDATES). A derived
+	// read model (daily_logs + crew_checkins + task_progress aggregated
+	// per project/date — NO table) plus the two AI compositions (internal
+	// office digest + client-safe homeowner draft). The PhotoResolver is
+	// the concrete AssetService: it soft-fails to count-only when storage
+	// is unconfigured, so reports work text-only without R2. aiDigester /
+	// aiDrafter are nil-interface when the vault/AI is off → the AI methods
+	// return 503; the text reads always work. Server-only.
+	reportsService := service.NewReportsService(
+		pool, fieldStore, projectStore, assetSvc, aiDigester, aiDrafter, auditService,
+	)
 
 	// Invoice ingestion (Phase 2a). NewIngestionService is typed-nil-safe:
 	// a nil aiClient (vault/AI unconfigured) leaves the internal extractor
@@ -434,6 +452,7 @@ func run(logger *slog.Logger) error {
 		Assistant:           assistantService,
 		IngestionService:    ingestionService,
 		AssetService:        assetService,
+		ReportsService:      reportsService,
 		SetupService:        setupService,
 		SentryEnabled:       sentryOK,
 		RateLimiter:         middleware.NewIPRateLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst),

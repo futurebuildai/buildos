@@ -789,3 +789,72 @@ export interface Feedback {
   created_at: string;
   updated_at: string;
 }
+
+// ---------------------------------------------------------------------------
+// Daily Reports (Chunk C — DAILY_REPORTS_CLIENT_UPDATES). A DERIVED read model
+// (no daily_reports table) assembled per (project, date) from daily_logs +
+// crew_checkins + task_progress. SafetyIncidents IS present on the operator
+// surface; the client-safe homeowner draft is a separately-redacted projection
+// built server-side from an allowlist. Mirrors internal/models/dailyreport.go.
+// ---------------------------------------------------------------------------
+
+/** A resolved photo on a daily report: asset id + short-lived signed GET URL. */
+export interface PhotoRef {
+  asset_id: string;
+  thumb_url: string;
+  created_at?: string;
+}
+
+/** One per-task progress line folded into a daily report (no crew identity/GPS). */
+export interface TaskProgressLine {
+  task_id: string;
+  wbs_code: string;
+  name: string;
+  percent_complete: number;
+  notes?: string;
+  reported_at: string;
+}
+
+/** GET /api/v1/projects/{id}/daily-reports/{date} — one day's full derived report. */
+export interface DailyReport {
+  project_id: string;
+  project_name: string;
+  log_date: string;
+  weather_conditions?: string;
+  work_summary: string;
+  /** INTERNAL — present on the operator surface, never on a client update. */
+  safety_incidents?: string;
+  photos?: PhotoRef[];
+  photo_count: number;
+  reported_by: string;
+  crew_count: number;
+  task_progress?: TaskProgressLine[];
+  reported_at: string;
+  has_log: boolean;
+}
+
+/** GET /api/v1/projects/{id}/daily-reports — list-row summary projection. */
+export interface DailyReportSummary {
+  project_id: string;
+  log_date: string;
+  weather_conditions?: string;
+  work_summary: string;
+  has_safety_incident: boolean;
+  photo_count: number;
+  crew_count: number;
+  task_progress_count: number;
+  reported_at: string;
+}
+
+/**
+ * POST /api/v1/projects/{id}/daily-reports/{date}/client-update-draft — the
+ * AI-generated, client-SAFE homeowner draft. Chunk C produces the draft only;
+ * the editable composer + send is Chunk D.
+ */
+export interface ClientUpdateDraft {
+  subject: string;
+  body: string;
+  period_start: string;
+  period_end: string;
+  photo_count: number;
+}

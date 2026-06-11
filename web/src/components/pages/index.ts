@@ -31,3 +31,6 @@ import './fb-activity-page.js';
 // Phase 3c — admin config UI (AI agents + connectors).
 import './fb-agents-page.js';
 import './fb-connectors-page.js';
+
+// Chunk C — operator Daily Reports surface (DAILY_REPORTS_CLIENT_UPDATES).
+import './fb-reports-page.js';

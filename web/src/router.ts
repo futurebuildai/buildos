@@ -147,6 +147,17 @@ export const routes: RouteDef[] = [
     gate: { minRole: 'superintendent' },
     title: 'AI Assistant',
   },
+  {
+    // Daily Reports (Chunk C) — the operator office surface. Min-superintendent
+    // for the read + office digest; the owner/admin-only client-update draft is
+    // a page-internal action gated in the component (the route itself is the
+    // superintendent reading surface).
+    path: '/command/reports',
+    tag: 'fb-reports-page',
+    shell: 'org',
+    gate: { minRole: 'superintendent' },
+    title: 'Daily Reports',
+  },
 
   // Activity / Settings / Profile
   {

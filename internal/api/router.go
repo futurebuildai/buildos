@@ -60,6 +60,7 @@ type RouterConfig struct {
 	Assistant           AssistantConverser   // optional — when nil, POST /agents/chat doesn't mount (no AI client)
 	IngestionService    InvoiceIngestor      // optional — when nil, the /invoices/ingest route doesn't mount (AI unconfigured)
 	AssetService        AssetServicer        // optional — when nil, /assets + /projects/{id}/assets routes don't mount (object storage)
+	ReportsService      ReportsServicer      // optional — when nil, /projects/{id}/daily-reports routes don't mount (daily reports + AI compose)
 	Metrics             MetricsRecorder      // optional — when nil, /metrics doesn't mount and HTTP middleware is skipped
 	SentryEnabled       bool                 // when true, the Sentry HTTP middleware is mounted to capture panics
 	RateLimiter         *mw.IPRateLimiter    // optional — when nil, no rate limiting is applied
@@ -225,6 +226,10 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	var assets *AssetHandler
 	if cfg.AssetService != nil {
 		assets = NewAssetHandler(cfg.AssetService)
+	}
+	var reports *ReportsHandler
+	if cfg.ReportsService != nil {
+		reports = NewReportsHandler(cfg.ReportsService)
 	}
 
 	// Auth middleware
@@ -526,6 +531,21 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		// --------------------------------------------------------
 		if assets != nil {
 			MountAssetRoutes(r, assets)
+		}
+
+		// --------------------------------------------------------
+		// 4.6 Daily Reports (Chunk C) — the operator office surface.
+		//     A derived read model (daily_logs + crew_checkins +
+		//     task_progress aggregated per project/date, NO table) plus
+		//     the two AI compositions (internal office digest +
+		//     client-safe homeowner draft). RBAC is enforced per-route
+		//     inside MountReportsRoutes (read/digest = superintendent+,
+		//     client-update draft = owner/admin). Mounts only when the
+		//     ReportsService is wired; the AI methods soft-fail to 503
+		//     when no Anthropic key is configured (text reads still work).
+		// --------------------------------------------------------
+		if reports != nil {
+			MountReportsRoutes(r, reports)
 		}
 	})
 
