@@ -935,6 +935,65 @@ never the free text.
 
 ---
 
+## 13e. Assets (Object-Storage Substrate — Chunk A)
+
+The per-fork S3-compatible (Cloudflare R2) blob store for jobsite photos. Bytes
+go **direct to/from R2 via presigned URLs** — they never transit the Go server on
+the happy path. Every path is **org+project-scoped**; a cross-org id is a uniform
+`404 NOT_FOUND`. The raw object key is **never** serialized to clients (they get
+short-lived signed URLs). Each mutation writes an `asset.*` audit row.
+
+Storage is **opt-in per fork**: endpoint + bucket via env
+(`OBJECT_STORE_ENDPOINT` / `OBJECT_STORE_BUCKET`, falling back to `R2_ENDPOINT` /
+`R2_BUCKET`); access key + secret sealed in the vault under provider
+`object_store`. **Unconfigured ⇒ every upload/serve path soft-fails `503
+STORAGE_UNAVAILABLE`** (server still boots), the same posture as AI/email. Limits
+(spec §9): content-type allowlist `image/jpeg|png|webp|heic`, size ≤ 15 MiB,
+≤ 20 photos/daily-log (enforced at daily-log persist in Chunk B).
+
+### POST /api/v1/projects/{projectID}/assets/presign-put
+- **Auth:** JWT, **minRole superintendent** (the field_worker-facing variant lands in Chunk B).
+- **Body:** `{ content_type: string, byte_size: number, filename?: string }`
+  - `content_type` ∈ `image/jpeg|image/png|image/webp|image/heic`; `byte_size` in `(0, 15 MiB]`.
+  - The content-type + content-length are **signed into the presigned PUT**, so R2 rejects a mismatched body.
+- **Response:** `201 { data: { asset_id, upload_url, signed_headers, expires_at } }`. Creates a `pending` asset row; the client PUTs bytes to `upload_url` echoing `signed_headers`, then calls confirm.
+- **Errors:** `400 VALIDATION_ERROR` (bad type/size), `404 NOT_FOUND` (cross-org/missing project), `503 STORAGE_UNAVAILABLE`.
+
+### POST /api/v1/assets/{id}/confirm
+- **Auth:** JWT, **minRole superintendent**.
+- **Body:** `{ checksum_sha256?: string }` (optional).
+- **Response:** `200 { data: Asset }` (`status: "ready"`). Only a `pending` row transitions (replay-safe). Daily-log linking (Chunk B) requires `ready`.
+- **Errors:** `404 NOT_FOUND` (cross-org/missing/already-confirmed).
+
+### GET /api/v1/assets/{id}
+- **Auth:** JWT, **minRole superintendent**.
+- **Response:** `302` redirect to a short-lived (15 min) presigned GET URL for a `ready`, org-owned asset. (The same-origin EXIF-stripping proxy is the path the public page uses in Chunk E.)
+- **Errors:** `404 NOT_FOUND` (cross-org/missing/not-ready), `503 STORAGE_UNAVAILABLE`.
+
+### GET /api/v1/projects/{projectID}/assets
+- **Auth:** JWT, **minRole superintendent**.
+- **Response:** `200 { data: []Asset }` (project gallery; `ready` only; newest-first; empty = `[]`).
+- **Errors:** `404 NOT_FOUND` (cross-org/missing project).
+
+### Asset Object
+```json
+{
+  "id": "uuid",
+  "org_id": "uuid",
+  "project_id": "uuid|null",
+  "content_type": "image/jpeg",
+  "size_bytes": 204800,
+  "status": "pending|ready|failed",
+  "uploaded_by": "jwt-subject",
+  "checksum_sha256": "hex|null",
+  "created_at": "2026-06-11T00:00:00Z",
+  "confirmed_at": "2026-06-11T00:01:00Z|null"
+}
+```
+> `storage_key` (the opaque bucket object key) is **never** present in the wire shape (`json:"-"`).
+
+---
+
 ## 14. Setup Wizard
 
 Embedded onboarding. Every fork must complete the wizard before the SetupGate opens operational traffic. All steps require admin minimum. The first-owner claim happens earlier at `POST /api/v1/auth/claim`.

@@ -36,6 +36,12 @@ const (
 const (
 	ProviderAnthropic = "anthropic"
 	ProviderResend    = "resend"
+	// ProviderObjectStore holds the per-fork S3-compatible (R2) object-store
+	// credentials as a JSON-encoded {access_key_id, secret_access_key} pair,
+	// sealed AES-256-GCM exactly like the anthropic/resend keys. The endpoint +
+	// bucket + region are non-secret and come from config (env), NOT here.
+	// Resolved at storage-adapter construction via ObjectStoreCreds.
+	ProviderObjectStore = "object_store"
 )
 
 // VaultService is the encrypted BYOK credential vault (WS3). It seals
@@ -295,6 +301,36 @@ func (s *VaultService) AnthropicKey(ctx context.Context, orgID string) (string, 
 // the org UUID.
 func (s *VaultService) ResendKey(ctx context.Context, orgID string) (string, error) {
 	return s.resolveActiveKey(ctx, orgID, ProviderResend)
+}
+
+// ObjectStoreCreds resolves the per-org object-store (R2) credentials: the
+// access key id + secret access key sealed under the "object_store" provider.
+// SOFT-FAILS to ("", "", nil) when none is configured or on any decrypt
+// failure, so the storage adapter falls back to its unconfigured path (uploads
+// 503) rather than 500ing — same posture as AnthropicKey/ResendKey. The secret
+// is NEVER logged. The stored cleartext is a JSON object:
+//
+//	{"access_key_id":"...","secret_access_key":"..."}
+func (s *VaultService) ObjectStoreCreds(ctx context.Context, orgID uuid.UUID) (accessKeyID, secretAccessKey string, err error) {
+	raw, err := s.resolveActiveKey(ctx, orgID.String(), ProviderObjectStore)
+	if err != nil {
+		return "", "", err
+	}
+	if raw == "" {
+		return "", "", nil // soft-fail: unconfigured
+	}
+	var creds struct {
+		AccessKeyID     string `json:"access_key_id"`
+		SecretAccessKey string `json:"secret_access_key"`
+	}
+	if err := json.Unmarshal([]byte(raw), &creds); err != nil {
+		// A malformed stored blob is treated as unconfigured (soft-fail) — never
+		// echo the cleartext in the error.
+		s.logger.WarnContext(ctx, "vault: object_store credential is not valid JSON; treating as unconfigured",
+			"org_id", orgID, "provider", ProviderObjectStore)
+		return "", "", nil
+	}
+	return creds.AccessKeyID, creds.SecretAccessKey, nil
 }
 
 // connectorProviderPrefix namespaces a connector instance's credential in the

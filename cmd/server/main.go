@@ -257,6 +257,38 @@ func run(logger *slog.Logger) error {
 		auditService, logger,
 	)
 
+	// ----------------------------------------------------------------
+	// Object-storage substrate (Chunk A — DAILY_REPORTS_CLIENT_UPDATES).
+	// The per-fork S3-compatible (R2) blob store for jobsite photos.
+	// Endpoint + bucket come from config (env/SecretSource); the access
+	// key + secret are sealed in the vault (provider "object_store") and
+	// resolved per-org at call time via NewVaultObjectStoreResolver. The
+	// AssetService is typed-nil-safe: when the resolver is nil (no vault)
+	// OR yields no store (endpoint/bucket/creds unconfigured) every
+	// upload/serve path soft-fails with ErrStorageUnavailable (503),
+	// mirroring the AI/mailer-unconfigured posture. The server still
+	// boots and serves the core domain. Server-only — cmd/worker never
+	// constructs this.
+	var assetService api.AssetServicer
+	{
+		var credsResolver service.ObjectStoreCredsResolver
+		if vaultService != nil {
+			credsResolver = vaultService
+		}
+		resolver := service.NewVaultObjectStoreResolver(service.ObjectStoreConfig{
+			Endpoint: cfg.R2Endpoint,
+			Bucket:   cfg.R2Bucket,
+			Region:   cfg.StorageRegion,
+		}, credsResolver)
+		as := service.NewAssetService(pool, store.NewAssetStore(), resolver, auditService, logger, nil)
+		assetService = as
+		if cfg.R2Endpoint != "" && cfg.R2Bucket != "" && vaultService != nil {
+			logger.Info("object storage enabled (R2)", "bucket", cfg.R2Bucket)
+		} else {
+			logger.Warn("object storage disabled — set OBJECT_STORE_ENDPOINT/_BUCKET + seal the object_store vault credential to enable photo uploads")
+		}
+	}
+
 	// Invoice ingestion (Phase 2a). NewIngestionService is typed-nil-safe:
 	// a nil aiClient (vault/AI unconfigured) leaves the internal extractor
 	// seam nil so the pipeline soft-fails with ai.ErrUnconfigured (503)
@@ -401,6 +433,7 @@ func run(logger *slog.Logger) error {
 		FeedbackService:     feedbackService,
 		Assistant:           assistantService,
 		IngestionService:    ingestionService,
+		AssetService:        assetService,
 		SetupService:        setupService,
 		SentryEnabled:       sentryOK,
 		RateLimiter:         middleware.NewIPRateLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst),

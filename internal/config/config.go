@@ -71,6 +71,19 @@ type Config struct {
 	MailFrom     string // From: address (e.g. "noreply@acme.example")
 	MailFromName string // From display name; defaults to "BuildOS"
 
+	// Object storage (Chunk A — DAILY_REPORTS_CLIENT_UPDATES). The
+	// per-fork S3-compatible (Cloudflare R2) blob store for jobsite
+	// photos. Endpoint + bucket are non-secret (routed through the
+	// SecretSource like DATABASE_URL so a file/vault backend can supply
+	// them); the access key + secret are sealed in the encrypted vault
+	// (provider "object_store"), NOT here. Reuses the R2_* env shape the
+	// deploy workflows already use for DB backups. All empty == storage
+	// disabled (soft-fail: server boots, upload endpoints 503). Region
+	// defaults to "auto" (R2 convention) in the adapter.
+	R2Endpoint    string // e.g. https://<acct>.r2.cloudflarestorage.com
+	R2Bucket      string
+	StorageRegion string
+
 	// DevAuthMode: "" = production (validate JWTs only), "header" = inject claims from X-Dev-Auth.
 	// Never set to a non-empty value in production. Future hardening: build-tag gate the header path.
 	DevAuthMode string
@@ -208,6 +221,15 @@ func LoadWithSource(ctx context.Context, src SecretSource) (*Config, error) {
 		MailFrom:     getEnvStr("MAIL_FROM", ""),
 		MailFromName: getEnvStr("MAIL_FROM_NAME", "BuildOS"),
 
+		// Object-store endpoint + bucket through the SecretSource (some
+		// operators mount these via a file/vault backend, not bare env).
+		// Accept the OBJECT_STORE_* names first, falling back to the R2_*
+		// names the deploy workflows already use for DB backups, so a fork
+		// can reuse the same env shape. Region is a non-secret scalar.
+		R2Endpoint:    firstNonEmpty(secret("OBJECT_STORE_ENDPOINT"), secret("R2_ENDPOINT")),
+		R2Bucket:      firstNonEmpty(secret("OBJECT_STORE_BUCKET"), secret("R2_BUCKET")),
+		StorageRegion: getEnvStr("OBJECT_STORE_REGION", getEnvStr("STORAGE_REGION", "auto")),
+
 		DevAuthMode: devAuthMode,
 
 		BootstrapToken: secret("BUILDOS_BOOTSTRAP_TOKEN"),
@@ -230,6 +252,16 @@ func LoadWithSource(ctx context.Context, src SecretSource) (*Config, error) {
 			SizeAdjustmentExponent: getEnvFloat("PHYSICS_SIZE_EXPONENT", 0.35),
 		},
 	}, nil
+}
+
+// firstNonEmpty returns the first non-empty string in vs (or "").
+func firstNonEmpty(vs ...string) string {
+	for _, v := range vs {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func getEnvStr(key, fallback string) string {

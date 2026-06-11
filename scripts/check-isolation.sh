@@ -105,6 +105,44 @@ fi
 echo "  PASS: core has no dependency on internal/connectors."
 echo ""
 
+# --- Check 4: storage is a leaf (no internal/* imports) ------------------
+# internal/storage is the object-storage substrate (DAILY_REPORTS_CLIENT_UPDATES
+# Chunk A): an ObjectStore port + a hand-rolled SigV4 R2 adapter. Like the
+# agentic harness it is a LEAF — it imports ONLY stdlib (incl. crypto/*) and
+# declares the port the rest of BuildOS consumes; the per-fork credential
+# adapter lives in internal/service. It MUST NOT import internal/service,
+# internal/store, internal/ai, internal/worker, internal/physics, or
+# internal/currency (the dependency arrow points inward: callers -> storage).
+echo "Check 4: internal/storage must import no other internal/* package (leaf)"
+STORAGE_INTERNAL_IMPORTS="$(go list -f '{{range .Imports}}{{.}}
+{{end}}{{range .TestImports}}{{.}}
+{{end}}' ./internal/storage/... \
+    | sort -u \
+    | grep "^${MODULE}/internal/" \
+    | grep -v "^${MODULE}/internal/storage" || true)"
+if [[ -n "$STORAGE_INTERNAL_IMPORTS" ]]; then
+    echo "FAIL: internal/storage imports forbidden internal/* packages:"
+    echo "$STORAGE_INTERNAL_IMPORTS" | sed 's/^/  > /'
+    echo ""
+    echo "  > internal/storage is a LEAF: import only stdlib (incl. crypto/*)."
+    echo "  > Reach domain capabilities through the ObjectStore port it declares,"
+    echo "  > implemented by an adapter in internal/service (arrow: caller -> storage)."
+    exit 1
+fi
+echo "  PASS: internal/storage imports no other internal/* package."
+echo ""
+
+# Defensive: the deterministic core must not pull in storage either.
+echo "Check 4b: core packages must not depend on internal/storage"
+# shellcheck disable=SC2086
+if echo "$DEPS" | grep -q "internal/storage"; then
+    echo "FAIL: core packages transitively depend on internal/storage:"
+    echo "$DEPS" | grep "internal/storage" | sed 's/^/  > /'
+    exit 1
+fi
+echo "  PASS: core has no dependency on internal/storage."
+echo ""
+
 echo "=== Isolation Lint Complete ==="
 echo "RESULT: PASSED"
 exit 0

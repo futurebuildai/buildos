@@ -59,6 +59,7 @@ type RouterConfig struct {
 	FeedbackService     FeedbackServicer     // optional — when nil, /feedback + /admin/feedback routes don't mount
 	Assistant           AssistantConverser   // optional — when nil, POST /agents/chat doesn't mount (no AI client)
 	IngestionService    InvoiceIngestor      // optional — when nil, the /invoices/ingest route doesn't mount (AI unconfigured)
+	AssetService        AssetServicer        // optional — when nil, /assets + /projects/{id}/assets routes don't mount (object storage)
 	Metrics             MetricsRecorder      // optional — when nil, /metrics doesn't mount and HTTP middleware is skipped
 	SentryEnabled       bool                 // when true, the Sentry HTTP middleware is mounted to capture panics
 	RateLimiter         *mw.IPRateLimiter    // optional — when nil, no rate limiting is applied
@@ -220,6 +221,10 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	var feedback *FeedbackHandler
 	if cfg.FeedbackService != nil {
 		feedback = NewFeedbackHandler(cfg.FeedbackService)
+	}
+	var assets *AssetHandler
+	if cfg.AssetService != nil {
+		assets = NewAssetHandler(cfg.AssetService)
 	}
 
 	// Auth middleware
@@ -510,6 +515,18 @@ func NewRouter(cfg RouterConfig) http.Handler {
 			r.Post("/checkin", field.Checkin)
 			r.Post("/daily-log", field.DailyLog)
 		})
+
+		// --------------------------------------------------------
+		// 4.5 Object-storage substrate (Chunk A) — presigned-PUT upload,
+		//     confirm, signed-GET, and the project gallery. RBAC (minRole
+		//     superintendent) is enforced inside MountAssetRoutes. Mounts
+		//     only when the AssetService is wired (R2 configured for the
+		//     fork) so a storage-less fork stays green; the field-facing
+		//     variant for field_worker lands in Chunk B.
+		// --------------------------------------------------------
+		if assets != nil {
+			MountAssetRoutes(r, assets)
+		}
 	})
 
 	// ------------------------------------------------------------

@@ -6,6 +6,49 @@ provenance — do not delete.
 
 ---
 
+## DEC-001 — Object-storage substrate (Chunk A): two TECH_STACK decisions (decisions-logged, not blockers)
+
+**Date:** 2026-06-11. **Context:** Building Chunk A of
+`DAILY_REPORTS_CLIENT_UPDATES.md` (the object-storage substrate for jobsite
+photos) on branch `feature/object-storage`. Two choices touch `TECH_STACK.md`
+posture. Both match existing repo precedent (no new module dependency), so they
+are recorded here as **decisions**, not blocking escalations — proceeding per
+the spec's §A.1 escalation note and D-9 default.
+
+1. **Hand-rolled AWS SigV4 presigner instead of `aws-sdk-go-v2`.**
+   `internal/storage` implements the S3/R2 presigning (PUT/GET) + header-signed
+   GET/DELETE with stdlib `crypto/hmac` + `crypto/sha256` only — **zero new
+   `go.mod` dependency**. This mirrors the owner-approved hand-rolled MCP
+   Streamable-HTTP client precedent (`TECH_STACK.md`: *"the MCP client is
+   hand-rolled … NO new dependency … Owner-approved 2026-06-09"*). The signer is
+   validated against the canonical AWS SigV4 presigned-GET test vector
+   (`internal/storage/sigv4_test.go`, expected signature
+   `aeeed9bb…d404`). Rejected: `aws-sdk-go-v2` (a large transitive tree for two
+   signed-URL shapes; would need an owner dep-approval). Spec D-9 / §9-3 default.
+
+2. **`internal/storage` added to the leaf-isolation allowlist.**
+   `internal/storage` is a LEAF (stdlib + `crypto/*` only) declaring the
+   `ObjectStore` port; the per-fork credential adapter
+   (`service.NewVaultObjectStoreResolver`) lives in `internal/service`, so the
+   vault and `internal/storage` never meet inside the leaf. `scripts/
+   check-isolation.sh` gained **Check 4 / 4b** (storage imports no other
+   internal/* package; core has no dependency on storage), mirroring the agentic
+   leaf checks. `make lint-isolation` is green.
+
+**Per-fork credentials (ADR-002):** endpoint + bucket + region resolve from
+config (`OBJECT_STORE_ENDPOINT/_BUCKET/_REGION`, falling back to the deploy
+workflows' `R2_ENDPOINT`/`R2_BUCKET`) through `config.SecretSource`; the access
+key + secret are sealed in the existing encrypted vault under a new
+`object_store` provider (`VaultService.ObjectStoreCreds`), resolved per-org at
+call time exactly like the Anthropic/Resend keys. Unconfigured ⇒ soft-fail
+(uploads 503 `STORAGE_UNAVAILABLE`), same posture as AI/mailer.
+
+**Open §9 items NOT decided here (deferred to later chunks / owner):** §9-4 EXIF
+(this chunk ships strip-on-serve for jpeg/png via stdlib decode→encode; WebP/HEIC
+pass through pending a decoder — flagged), and all Chunk C/D/E §9 items.
+
+---
+
 ## ESC-003 — Field equipment screen (Phase 4a-ii) is unspecified by any binding doc
 
 ### What was found (verified against the code + specs)
