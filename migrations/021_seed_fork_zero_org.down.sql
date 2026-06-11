@@ -1,0 +1,7 @@
+-- 021_seed_fork_zero_org.down.sql
+-- Intentionally a no-op. The up-migration seeds the fork's single org
+-- ONLY when the table is empty; by the time anyone rolls back, that org
+-- may own the entire fork's data (users, projects, financials) via FK
+-- cascades. Deleting it on rollback would be catastrophic and is never
+-- the intent — a fork that no longer wants its org tears the whole
+-- deployment down instead. Reversal is therefore deliberately omitted.
