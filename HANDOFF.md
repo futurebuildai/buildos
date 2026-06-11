@@ -307,24 +307,24 @@ owner's ultraplan approval message.
   pagination+throttle; widget close race), ALL remediated.** Gates: `make audit` ×2 + feedback integration
   suite + web typecheck/239 vitest/lint/build. Spec: [PHASE_0B_FEEDBACK.md](.agents/handoff/PHASE_0B_FEEDBACK.md).
   Deliberate deviations recorded in the spec: `user_sub` TEXT (not a users FK), past-tense audit actions.
-- **Phase 1 — Railway deploy infra: BUILT + REVIEWED, awaiting owner review/merge.** Branch
-  `feature/phase-1-railway-deploy` (NOT merged/pushed — owner's call). `deploy/railway/`
-  (README runbook · idempotent `provision.sh` w/ --dry-run, --project-id team-token path, GHCR pull creds,
-  variables-at-creation · allowlist-gated `teardown-kelbrook-legacy.sh`) + 3 workflows
-  (`deploy-staging`: workflow_run after green CI on main + fork-PR/stale-run guards, digest-pinned,
-  version-asserted smoke via /health; `promote-production`: digest dispatch, backup-before-promote-or-fail,
-  image-label version assert; `backup-nightly`: cron → R2 w/ exact-key head-object verification).
-  **26-agent adversarial review: 19 confirmed findings (2 CRITICAL), ALL remediated.** The criticals forced
-  Go/Dockerfile fixes merged into this branch: (1) the migrate one-shot globbed a relative path in the image
-  → applied ZERO migrations and exited 0 — now `ENV MIGRATIONS_DIR` is baked AND cmd/migrate hard-fails on an
-  empty glob; (2) `serviceInstanceRedeploy` redeploys the PREVIOUS snapshot → rolls now use
-  `serviceInstanceUpdate + serviceInstanceDeployV2`; plus /health now surfaces the real ldflags version
-  (was hardcoded "0.1.0"; cmd/server never declared the var) so smoke can prove the rolled binary, and a
-  positive TRUSTED_PROXY_CIDRS boot log for the runbook's verify step. Statics: shellcheck + actionlint +
-  bash -n + YAML all clean; `make audit` ALL PASSED. **After merge → the credentialed ops run** (legacy
-  Kelbrook teardown → provision staging+prod → Cloudflare DNS): needs `RAILWAY_API_TOKEN` +
-  `CLOUDFLARE_API_TOKEN` + the GH secrets matrix in deploy/railway/README.md §4.
-
+- **Phase 1 — Railway deploy infra: ✅ MERGED + PUSHED (`9347c5c`) + THE CREDENTIALED OPS RUN EXECUTED
+  (2026-06-11).** Owner approved all four gates (teardown / staging repoint / merge / GHCR PAT). DONE:
+  legacy Kelbrook deleted (kelbrook-prod + kelbrook-staging Railway projects, 4 DNS records); Railway
+  project **buildos-fork0** (`bcb7ed97-…`) provisioned — staging+production envs, server+worker from
+  ghcr.io (pull creds set), Postgres per env (prod = `Postgres-lrRT`, reference vars re-upserted after
+  creation — they freeze EMPTY if set first), fresh fork-init secrets per env in `forks/fork0-{staging,
+  production}/secrets` (LOCAL ONLY, gitignored — bootstrap tokens live there for the owner claim);
+  Cloudflare: staging repointed + app.futurebuild.ai created (**DNS-only for now** — Railway cannot verify
+  through the orange cloud; re-proxy + Full-strict is a post-cert decision), zone SSL/HSTS unreadable with
+  the DNS-scoped token (owner checklist); all 10 GH deploy secrets + 2 vars set (R2_* backup creds still
+  MISSING — backup-nightly will fail until provided). **Staging is LIVE on the native domain**
+  (`server-staging-58c3.up.railway.app` — /ready 200, /health version `staging-9347c5c3`); the custom
+  domain (staging.futurebuild.ai) is DNS-PROPAGATED with Railway cert issuance/edge binding lagging —
+  background watcher polling; re-dispatch deploy-staging.yml for the full version-asserted smoke once live.
+  **Branch `fix/e2e-live-ordering-a11y` (c76a788+d853859) awaits owner merge:** greens the LONG-RED CI E2E
+  lane (live-spec ordering via Playwright project deps + REAL WCAG-AA contrast fixes: muted/safety-red text
+  tokens, 5/5 live specs passing) + provision.sh workspace-scoped project fixes validated on the live
+  schema. CI must be green for workflow_run auto-deploys to fire.
 **Phase 4 is COMPLETE** — every chunk (4a-i, 4a-ii, 4b-i, 4b-ii, 4b-iii, 4c) is merged + pushed; 4b-iii (error-path UX + metric follow-ups) was the final chunk and closed the backlog. The only remaining work is non-blocking: the documented security follow-ups (`docs/security-posture.md`) and the ESC-003 spec backfill owed for 4a-ii. Historical context: Chunks 1 (ESC-002) and 4b-i (alerting + runbooks) are merged + pushed
 (`origin/main` `ff22d74`; both in "Last shipped"). Chunk 4b-ii (worker observability) is merged + pushed (`origin/main` `19fc7d3`; top "Last shipped"). A Phase-4 ultraplan (6-agent assessment, 2026-06-09) decomposed the phase against the actual code.
 Remaining chunks (see NEXT_STEPS §P4 for entry points):
