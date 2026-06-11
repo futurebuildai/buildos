@@ -273,6 +273,25 @@ govulncheck clean. PRs #9 onward also have CI green at merge time
 
 ## In flight
 
+### ✅ Agentic-UX batch — MERGED + DEPLOYED + BROWSER-VERIFIED on staging (2026-06-11)
+Owner feedback "AI does nothing / Gantt basic / too static" → made the (already-good) agentic backend
+VISIBLE + ACTIONABLE. Merged `167d4e3` + timeout fix `3b50544`; staging-3b50544a live; re-driven in-browser:
+- **AI Assistant** is a real chat (`/agents/chat`) — grounded answers, markdown tables, GROUNDING CHIPS
+  ("Sources: Projects · Schedule · Procurement · Feed") showing which ERP tools each answer used (with
+  honest "(failed)" on a tool error). Was: two dead link cards.
+- **Gantt** renders task names + date axis + dependency arrows + accessible table. Was: WBS codes only.
+- **Schedule** = preview-first apply/reject (dry-run proposes old→new, human commits); **feed cards**
+  actionable (Review-impact deep-links the project; dismiss/action wired).
+- **Session persistence** (Phase 0c cookie) verified in-browser: navigation no longer bounces to login.
+- **Chat 502 fix** (`3b50544`): a multi-project query did 6 tool calls and hit the 30s server WriteTimeout
+  + 30s loop budget → 502. Raised WriteTimeout 30→120s, loop 30→90s; verified 200 with a full answer.
+- 15-agent adversarial review: 7 findings (1 critical router-deeplink, 2 major) all remediated + regression tests.
+- **Follow-ups noted (next polish loop):** chat latency ~29s on multi-project queries (add a coarser
+  portfolio-risk tool to cut round-trips); the `list_feed_cards` chat tool returned "(failed)" once — investigate.
+- **NEXT loop iteration:** Daily Reports → Client Updates (design done: DAILY_REPORTS_CLIENT_UPDATES.md;
+  8 owner escalations incl. the photo-storage hard blocker). + fold the operational-coordination layer into VISION.md.
+
+
 ### Agentic-UX Chunk 2b — PREVIEW-FIRST schedule apply/reject (branch `feature/agentic-ux`, NOT committed)
 ESC-AUX-01, owner-approved PREVIEW-FIRST (AI proposes, human commits). Replaces the old
 "recommend-adjustments silently auto-applies" behavior on the schedule page.
