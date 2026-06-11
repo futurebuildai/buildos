@@ -273,7 +273,7 @@ govulncheck clean. PRs #9 onward also have CI green at merge time
 
 ## In flight
 
-### ▶ Phase 0c — operational-data ingress + branding + session persistence (BUILT, REVIEWED, awaiting owner merge)
+### ✅ Phase 0c — ingress + branding + session persistence — MERGED + DEPLOYED + STAGING SEEDED (2026-06-11)
 Branch `feature/phase-0c-ingress` (NOT merged). Answers "the app feels like a blank shell": BuildOS had
 no way to author operational data (hydrate_project was a stub; HR/budgets read-only), so the CPM Gantt —
 the flagship — could never be populated. Three bundled efforts + one regression fix:
@@ -303,6 +303,13 @@ the flagship — could never be populated. Three bundled efforts + one regressio
   run `scripts/seed-fork-demo.sh` against staging → every screen fills with Kelbrook data, logo live,
   reloads sticky. (Staging currently runs the old image without these endpoints, so the seed is gated on
   merge+deploy.)
+- **DONE (merged `7d92c85` + pushed; deploy-staging ran green; seed executed):** staging.futurebuild.ai
+  is fully populated — 3 Kelbrook projects with CPM-computed Gantts (real critical paths), 4 crew +
+  certs, fleet/procurement/pipeline/invoices, budget baselines, and the corporate_rollup ran so the
+  **Financials Summary shows $2.445M est. across 3 projects**. Logo live; favicon serving. Session
+  cookie VERIFIED on staging through the Cloudflare Worker (login sets HttpOnly+Secure+SameSite=Strict
+  buildos_refresh; no-body cookie refresh → 200, so reload/deep-link no longer logs out). The
+  corporate_rollup was a one-off `river_job` enqueue (no HTTP trigger; it's a 24h periodic job).
 
 
 ### 🟢 STAGING IS LIVE — https://staging.futurebuild.ai (2026-06-11, demo-ready for Grant)
