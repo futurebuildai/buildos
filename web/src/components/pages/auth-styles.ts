@@ -21,6 +21,12 @@ export const authCardStyles = css`
   .auth-head fb-icon {
     color: var(--fb-gable-green);
   }
+  /* Brand lockup centered above the heading on the auth/onboarding cards. */
+  .auth-logo {
+    display: flex;
+    justify-content: center;
+    margin-bottom: var(--fb-spacing-md);
+  }
   .auth-title {
     margin: var(--fb-spacing-sm) 0 var(--fb-spacing-xs);
     font-size: var(--fb-text-headline-sm);

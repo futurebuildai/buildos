@@ -27,6 +27,15 @@ export interface RequestOptions {
   headers?: Record<string, string>;
   /** Skip the access-token header (auth endpoints that mint credentials). */
   skipAuth?: boolean;
+  /**
+   * Send/receive cookies on this request (`credentials: 'include'`). ONLY the
+   * auth endpoints set this so the HttpOnly `buildos_refresh` cookie is set on
+   * claim/login/refresh and replayed on refresh/logout. Every other API call
+   * leaves it off — they authenticate with the Bearer access-token header and
+   * must not ride cookies (the cookie's Path=/api/v1/auth scoping already keeps
+   * it off them, but this is explicit).
+   */
+  withCredentials?: boolean;
   /** Internal: prevents the refresh→retry loop from recursing. */
   _isRetry?: boolean;
   signal?: AbortSignal;
@@ -107,6 +116,10 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
   const init: RequestInit = { method, headers };
   if (opts.body !== undefined) init.body = JSON.stringify(opts.body);
   if (opts.signal) init.signal = opts.signal;
+  // Cookies ride ONLY the auth endpoints (refresh-cookie transport). Default
+  // 'same-origin' is left implicit for every other call so the Bearer-header
+  // API surface stays cookie-free.
+  if (opts.withCredentials) init.credentials = 'include';
 
   let res: Response;
   try {

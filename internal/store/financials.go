@@ -59,6 +59,54 @@ func (s *FinancialsStore) ListProjectBudgets(ctx context.Context, tx pgx.Tx, pro
 	return out, rows.Err()
 }
 
+// CreateProjectBudgetParams is one budget line. CurrencyCode is a single
+// validated code fanned into all three *_currency_code columns to satisfy
+// chk_budget_currency_match (migration 002). CurrencyCode must already be
+// validated by the caller (use currency.Validate).
+type CreateProjectBudgetParams struct {
+	ProjectID          uuid.UUID
+	WBSCode            string
+	PhaseName          string
+	CurrencyCode       string
+	EstimatedCostCents int64
+	CommittedCostCents int64
+	ActualCostCents    int64
+}
+
+// CreateProjectBudget inserts one project_budgets row, fanning CurrencyCode
+// into all three currency columns, and returns the persisted row. A 23505
+// (UNIQUE(project_id, wbs_code)) bubbles up unwrapped so the service maps it
+// to ErrInvalidInput.
+func (s *FinancialsStore) CreateProjectBudget(ctx context.Context, tx pgx.Tx, p CreateProjectBudgetParams) (models.ProjectBudget, error) {
+	var b models.ProjectBudget
+	err := tx.QueryRow(ctx, `
+		INSERT INTO project_budgets (
+			project_id, wbs_code, phase_name,
+			estimated_cost_cents, estimated_cost_currency_code,
+			committed_cost_cents, committed_cost_currency_code,
+			actual_cost_cents, actual_cost_currency_code
+		) VALUES ($1, $2, $3, $4, $5, $6, $5, $7, $5)
+		RETURNING id, project_id, wbs_code, phase_name,
+		          estimated_cost_cents, estimated_cost_currency_code,
+		          committed_cost_cents, committed_cost_currency_code,
+		          actual_cost_cents, actual_cost_currency_code,
+		          created_at, updated_at`,
+		p.ProjectID, p.WBSCode, p.PhaseName,
+		p.EstimatedCostCents, p.CurrencyCode,
+		p.CommittedCostCents, p.ActualCostCents,
+	).Scan(
+		&b.ID, &b.ProjectID, &b.WBSCode, &b.PhaseName,
+		&b.EstimatedCostCents, &b.EstimatedCostCurrencyCode,
+		&b.CommittedCostCents, &b.CommittedCostCurrencyCode,
+		&b.ActualCostCents, &b.ActualCostCurrencyCode,
+		&b.CreatedAt, &b.UpdatedAt,
+	)
+	if err != nil {
+		return models.ProjectBudget{}, fmt.Errorf("insert project_budget %q: %w", p.WBSCode, err)
+	}
+	return b, nil
+}
+
 // ---------- Corporate budgets ----------
 
 // ListCorporateBudgets returns rollup rows for an org. If currency is

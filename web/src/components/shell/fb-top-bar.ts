@@ -2,6 +2,7 @@ import { html, css, nothing, type TemplateResult } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { FBElement } from '../base/fb-element.js';
 import '../atoms/fb-icon.js';
+import '../atoms/fb-logo.js';
 import { roleAtLeast, type Role } from '../../auth/jwt.js';
 
 export type Workspace = 'portfolio' | 'command';
@@ -34,16 +35,10 @@ export class FbTopBar extends FBElement {
         border-bottom: 1px solid var(--fb-glass-border);
       }
       .brand {
-        display: flex;
+        display: inline-flex;
         align-items: center;
-        gap: var(--fb-spacing-sm);
-        font-weight: 700;
-        font-size: var(--fb-text-title-md);
         color: var(--fb-text-primary);
         white-space: nowrap;
-      }
-      .brand fb-icon {
-        color: var(--fb-gable-green);
       }
       .switcher {
         display: inline-flex;
@@ -154,8 +149,7 @@ export class FbTopBar extends FBElement {
   override render(): TemplateResult {
     return html`<header role="banner">
       <span class="brand">
-        <fb-icon name="hexagon" size="22" label="BuildOS"></fb-icon>
-        BuildOS
+        <fb-logo variant="full" size="22"></fb-logo>
       </span>
 
       ${this.canCommand

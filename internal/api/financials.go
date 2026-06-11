@@ -25,6 +25,7 @@ type BudgetServicer interface {
 	GetProjectFinancials(ctx context.Context, orgID uuid.UUID, currencyCode string) ([]models.ProjectFinancial, error)
 	CreateInvoice(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, in service.CreateInvoiceInput) (models.Invoice, error)
 	UpdateInvoice(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, in service.UpdateInvoiceInput) (models.Invoice, error)
+	CreateProjectBudgets(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, projectID uuid.UUID, lines []service.CreateProjectBudgetLine) ([]models.ProjectBudget, error)
 }
 
 // FinancialsHandler handles /api/v1/org/{orgID}/financials/* and
@@ -110,6 +111,55 @@ func (h *FinancialsHandler) ListBudgets(w http.ResponseWriter, r *http.Request) 
 }
 
 // ---------- Project-scoped writes ----------
+
+type createBudgetLineRequest struct {
+	WBSCode            string `json:"wbs_code"`
+	PhaseName          string `json:"phase_name"`
+	CurrencyCode       string `json:"currency_code"`
+	EstimatedCostCents int64  `json:"estimated_cost_cents"`
+	CommittedCostCents int64  `json:"committed_cost_cents,omitempty"`
+	ActualCostCents    int64  `json:"actual_cost_cents,omitempty"`
+}
+
+type createBudgetsRequest struct {
+	Budgets []createBudgetLineRequest `json:"budgets"`
+}
+
+// CreateBudgets writes a batch budget baseline for a project. Owner/admin only.
+// POST /api/v1/projects/{projectID}/budgets
+func (h *FinancialsHandler) CreateBudgets(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := parseUUIDFromURL(w, r, "projectID")
+	if !ok {
+		return
+	}
+	callerOrg, ok := callerOrgIDFromClaims(w, r)
+	if !ok {
+		return
+	}
+	var body createBudgetsRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid JSON body")
+		return
+	}
+	lines := make([]service.CreateProjectBudgetLine, 0, len(body.Budgets))
+	for _, b := range body.Budgets {
+		lines = append(lines, service.CreateProjectBudgetLine{
+			WBSCode:            b.WBSCode,
+			PhaseName:          b.PhaseName,
+			CurrencyCode:       b.CurrencyCode,
+			EstimatedCostCents: b.EstimatedCostCents,
+			CommittedCostCents: b.CommittedCostCents,
+			ActualCostCents:    b.ActualCostCents,
+		})
+	}
+	claims := mw.MustClaimsFromContext(r.Context())
+	budgets, err := h.svc.CreateProjectBudgets(r.Context(), callerOrg, claims.Sub, projectID, lines)
+	if err != nil {
+		h.writeServiceError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusCreated, map[string]any{"budgets": budgets})
+}
 
 type createInvoiceRequest struct {
 	VendorName    string  `json:"vendor_name"`

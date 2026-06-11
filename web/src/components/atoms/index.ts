@@ -1,6 +1,7 @@
 /** Atom barrel — importing registers every `fb-*` atom custom element. */
 export * from './icons.js';
 export * from './fb-icon.js';
+export * from './fb-logo.js';
 export * from './fb-button.js';
 export * from './fb-icon-button.js';
 export * from './fb-text.js';

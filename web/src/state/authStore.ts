@@ -15,7 +15,6 @@ import {
   clearTokens,
   getRefreshToken,
   getAccessToken,
-  hasRefreshToken,
   msUntilExpiry,
 } from '../api/tokens.js';
 import { setRefreshHandler } from '../api/client.js';
@@ -85,15 +84,18 @@ function scheduleProactiveRefresh(): void {
  * Single attempt to rotate the refresh token. Returns true on success. On
  * failure clears the session and broadcasts logout. The API client calls this
  * single-flight (it dedupes concurrent callers).
+ *
+ * Transport: if an in-memory refresh token is present (same-session: the
+ * proactive T-60s timer or the 401 interceptor), it rides the body. Otherwise
+ * we POST with no body and let the browser replay the HttpOnly `buildos_refresh`
+ * cookie — this is the path that rehydrates a session after a hard reload, where
+ * memory is empty but the cookie persists.
  */
 export async function refreshSession(): Promise<boolean> {
   const token = getRefreshToken();
-  if (!token) {
-    handleSessionDeath();
-    return false;
-  }
   try {
-    const pair = await authApi.refresh(token);
+    // `undefined` → cookie-based refresh (no body); a token → body-based.
+    const pair = await authApi.refresh(token ?? undefined);
     applyTokenPair(pair);
     return true;
   } catch {
@@ -124,31 +126,34 @@ export async function claimFirstOwner(input: {
 }
 
 export async function logout(): Promise<void> {
+  // Always hit the server so it revokes the token AND expires the HttpOnly
+  // cookie (Max-Age=0) — otherwise the cookie would silently re-auth on the
+  // next reload. Pass the in-memory token when we have it; otherwise the
+  // backend revokes whatever the cookie carries. Best-effort: clear locally
+  // regardless of the network result.
   const token = getRefreshToken();
-  if (token) {
-    try {
-      await authApi.logout(token);
-    } catch {
-      // Best-effort server-side revocation; clear locally regardless.
-    }
+  try {
+    await authApi.logout(token ?? undefined);
+  } catch {
+    // Best-effort server-side revocation; clear locally regardless.
   }
   clearLocal();
   channel?.postMessage({ type: 'logout' });
 }
 
 /**
- * Cold-start: attempt a silent refresh if we somehow still hold a refresh token
- * in memory (rare on a hard reload given in-memory storage), else mark anonymous.
- * The actual cold-start ROUTING decision (login vs first-run) lives in the
- * router, which may also consult GET /auth/state when the backend adds it.
+ * Cold-start: attempt a silent refresh against the HttpOnly `buildos_refresh`
+ * cookie. On a hard reload / deep-link the in-memory tokens are gone, but the
+ * cookie persists, so we POST /api/v1/auth/refresh with no body — the browser
+ * replays the cookie automatically (credentials:'include'). A token pair hydrates
+ * the in-memory access token + schedules proactive refresh → the user stays
+ * logged in. A 401 (no/expired cookie) clears state to anonymous and the router
+ * falls back to /login. Either way `refreshSession()` sets the auth status, so
+ * this never leaves it stuck at 'unknown'.
  */
 export async function initSession(): Promise<void> {
-  if (hasRefreshToken()) {
-    const ok = await refreshSession();
-    statusSignal.set(ok ? 'authenticated' : 'anonymous');
-  } else {
-    statusSignal.set('anonymous');
-  }
+  const ok = await refreshSession();
+  statusSignal.set(ok ? 'authenticated' : 'anonymous');
 }
 
 // ---- RBAC mirror helpers (UX-only; server is authoritative) ----

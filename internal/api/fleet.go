@@ -166,6 +166,8 @@ func parseRequiredDate(s string) (time.Time, error) {
 type HRServicer interface {
 	ListEmployees(ctx context.Context, callerOrgID uuid.UUID) ([]models.Employee, error)
 	ListCertifications(ctx context.Context, callerOrgID, employeeID uuid.UUID) ([]models.Certification, error)
+	CreateEmployee(ctx context.Context, in service.CreateEmployeeInput) (models.Employee, error)
+	CreateCertification(ctx context.Context, in service.CreateCertificationInput) (models.Certification, error)
 }
 
 // HRHandler handles /api/v1/org/{orgID}/employees/* endpoints.
@@ -193,6 +195,104 @@ func (h *HRHandler) ListEmployees(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, r, http.StatusOK, map[string]any{"employees": employees})
+}
+
+type createEmployeeRequest struct {
+	FirstName string     `json:"first_name"`
+	LastName  string     `json:"last_name"`
+	Role      string     `json:"role"`
+	Phone     *string    `json:"phone,omitempty"`
+	HireDate  *string    `json:"hire_date,omitempty"`
+	UserID    *uuid.UUID `json:"user_id,omitempty"`
+}
+
+// CreateEmployee adds an employee for the org. Owner/admin only (RBAC at route).
+//
+// POST /api/v1/org/{orgID}/employees
+func (h *HRHandler) CreateEmployee(w http.ResponseWriter, r *http.Request) {
+	orgID, ok := requireOrgIDFromURL(w, r)
+	if !ok {
+		return
+	}
+	var body createEmployeeRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid JSON body")
+		return
+	}
+	hireDate, err := parseOptionalDate(body.HireDate)
+	if err != nil {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "hire_date must be RFC3339 or YYYY-MM-DD")
+		return
+	}
+	claims := mw.MustClaimsFromContext(r.Context())
+	emp, err := h.svc.CreateEmployee(r.Context(), service.CreateEmployeeInput{
+		OrgID:         orgID,
+		CallerUserSub: claims.Sub,
+		FirstName:     body.FirstName,
+		LastName:      body.LastName,
+		Role:          body.Role,
+		Phone:         body.Phone,
+		HireDate:      hireDate,
+		UserID:        body.UserID,
+	})
+	if err != nil {
+		h.writeServiceError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusCreated, map[string]any{"employee": emp})
+}
+
+type createCertificationRequest struct {
+	CertType   string  `json:"cert_type"`
+	CertNumber *string `json:"cert_number,omitempty"`
+	IssuedDate *string `json:"issued_date,omitempty"`
+	ExpiryDate string  `json:"expiry_date"`
+	Status     string  `json:"status,omitempty"`
+}
+
+// CreateCertification adds a certification for an employee. Owner/admin only.
+//
+// POST /api/v1/org/{orgID}/employees/{employeeID}/certifications
+func (h *HRHandler) CreateCertification(w http.ResponseWriter, r *http.Request) {
+	orgID, ok := requireOrgIDFromURL(w, r)
+	if !ok {
+		return
+	}
+	employeeID, ok := parseUUIDFromURL(w, r, "employeeID")
+	if !ok {
+		return
+	}
+	var body createCertificationRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid JSON body")
+		return
+	}
+	expiry, err := parseRequiredDate(body.ExpiryDate)
+	if err != nil {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "expiry_date must be RFC3339 or YYYY-MM-DD")
+		return
+	}
+	issued, err := parseOptionalDate(body.IssuedDate)
+	if err != nil {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "issued_date must be RFC3339 or YYYY-MM-DD")
+		return
+	}
+	claims := mw.MustClaimsFromContext(r.Context())
+	cert, err := h.svc.CreateCertification(r.Context(), service.CreateCertificationInput{
+		OrgID:         orgID,
+		CallerUserSub: claims.Sub,
+		EmployeeID:    employeeID,
+		CertType:      body.CertType,
+		CertNumber:    body.CertNumber,
+		IssuedDate:    issued,
+		ExpiryDate:    expiry,
+		Status:        body.Status,
+	})
+	if err != nil {
+		h.writeServiceError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusCreated, map[string]any{"certification": cert})
 }
 
 // ListCertifications returns certifications for an employee.

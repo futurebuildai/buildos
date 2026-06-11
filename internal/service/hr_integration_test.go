@@ -48,7 +48,7 @@ func seedHRCert(t *testing.T, pool *pgxpool.Pool, employeeID uuid.UUID, certType
 // in store/hr_integration_test.go; here we cover the service tx wiring.
 func TestHRService_ListEmployees(t *testing.T) {
 	pool := testdb.NewPool(t)
-	svc := NewHRService(pool, store.NewHRStore())
+	svc := NewHRService(pool, store.NewHRStore(), nil)
 	ctx := context.Background()
 
 	orgA := uuid.New()
@@ -87,7 +87,7 @@ func TestHRService_ListEmployees(t *testing.T) {
 // ErrEmployeeNotFound sentinel (never leaking existence across tenants).
 func TestHRService_ListCertifications(t *testing.T) {
 	pool := testdb.NewPool(t)
-	svc := NewHRService(pool, store.NewHRStore())
+	svc := NewHRService(pool, store.NewHRStore(), nil)
 	ctx := context.Background()
 
 	orgA := uuid.New()

@@ -38,10 +38,15 @@ type mockBudgetService struct {
 	updateInvoiceResult models.Invoice
 	updateInvoiceErr    error
 
+	createBudgetsResult []models.ProjectBudget
+	createBudgetsErr    error
+
 	// Captured call args for assertions.
-	lastCallerOrgID  uuid.UUID
-	lastCurrencyCode string
-	lastProjectID    uuid.UUID
+	lastCallerOrgID   uuid.UUID
+	lastCurrencyCode  string
+	lastProjectID     uuid.UUID
+	lastBudgetLines   []service.CreateProjectBudgetLine
+	lastBudgetUserSub string
 }
 
 func (m *mockBudgetService) GetProjectBudgets(_ context.Context, projectID, callerOrgID uuid.UUID) ([]models.ProjectBudget, error) {
@@ -76,6 +81,14 @@ func (m *mockBudgetService) CreateInvoice(_ context.Context, callerOrgID uuid.UU
 func (m *mockBudgetService) UpdateInvoice(_ context.Context, callerOrgID uuid.UUID, _ string, _ service.UpdateInvoiceInput) (models.Invoice, error) {
 	m.lastCallerOrgID = callerOrgID
 	return m.updateInvoiceResult, m.updateInvoiceErr
+}
+
+func (m *mockBudgetService) CreateProjectBudgets(_ context.Context, callerOrgID uuid.UUID, callerUserSub string, projectID uuid.UUID, lines []service.CreateProjectBudgetLine) ([]models.ProjectBudget, error) {
+	m.lastCallerOrgID = callerOrgID
+	m.lastBudgetUserSub = callerUserSub
+	m.lastProjectID = projectID
+	m.lastBudgetLines = lines
+	return m.createBudgetsResult, m.createBudgetsErr
 }
 
 const (

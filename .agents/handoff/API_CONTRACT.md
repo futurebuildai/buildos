@@ -177,6 +177,35 @@ ALL monetary fields follow the Composite Currency Pattern:
 
 ## 5. Schedule Endpoints
 
+### POST /api/v1/projects/{projectID}/schedule/import
+- **Auth:** JWT (owner, admin, superintendent — `RequireMinRole(superintendent)`; CPM-affecting structural data, same gate as `/recalculate`)
+- **Purpose:** Author a whole task graph (tasks + dependencies) atomically, then run CPM so the Gantt is populated in the same request. The operator ingress path for a fresh project.
+- **Body:**
+  ```json
+  {
+    "tasks": [
+      { "wbs_code": "01-00", "name": "Site Prep", "duration_days": 3,
+        "status": "pending", "percent_complete": 0, "assigned_crew": [] }
+    ],
+    "dependencies": [
+      { "predecessor_code": "01-00", "successor_code": "03-30", "dependency_type": "FS", "lag_days": 0 }
+    ],
+    "recalculate": true
+  }
+  ```
+  - `tasks` required, non-empty. Per task: `wbs_code`, `name`, `duration_days` mandatory. `status` defaults `"pending"`, `percent_complete` defaults `0`. CPM-output columns are ignored if present.
+  - `dependencies` optional, **wbs_code-keyed** (the client doesn't know server task UUIDs; codes are resolved server-side). `dependency_type` defaults `"FS"`; `lag_days` defaults `0`.
+  - `recalculate` optional, **defaults `true`** (the keystone goal is a populated Gantt).
+- **Response:** `201 { data: { tasks: []ProjectTask, dependency_count: int, cpm_result: CPMResult|null, recalculation_ms: int } }`
+- **Validation (all pre-write; `400 VALIDATION_ERROR`):** non-empty tasks; `duration_days` ∈ **[1, 36500]** (lower bound 1 — `physics.getTaskDuration` rejects 0); `status` ∈ {pending,in_progress,completed}; `percent_complete` ∈ [0,100]; `wbs_code` unique in batch (and vs existing rows → 23505→400); `dependency_type` ∈ {FS,SS,FF,SF}; dep endpoints must exist in the batch; **self-loops rejected** (`predecessor_code == successor_code`); no duplicate dep pair; `lag_days` ∈ [-3650, 3650]; **dependency cycles rejected** (named WBS codes). A cross-tenant project → `404 NOT_FOUND`.
+
+### POST /api/v1/projects/{projectID}/tasks
+- **Auth:** JWT (owner, admin, superintendent — `RequireMinRole(superintendent)`)
+- **Purpose:** Create a single task. Reuses the import store insert; **does NOT auto-recalc** (operator POSTs `/schedule/recalculate` afterward, mirroring `PUT /tasks/{taskID}`).
+- **Body:** `{ wbs_code, name, duration_days, status?, percent_complete?, assigned_crew? }`
+- **Response:** `201 { data: { task: ProjectTask } }`
+- **Validation:** same task rules as import (`400 VALIDATION_ERROR`); cross-tenant project → `404`.
+
 ### POST /api/v1/projects/{projectID}/schedule/recalculate
 - **Auth:** JWT (owner, admin, superintendent)
 - **Body:** `{}` (empty — recalculates from current task/dependency state)
@@ -239,6 +268,22 @@ ALL monetary fields follow the Composite Currency Pattern:
 ### GET /api/v1/projects/{projectID}/budgets
 - **Auth:** JWT (owner, admin)
 - **Response:** `200 { data: { budgets: []ProjectBudget } }`
+
+### POST /api/v1/projects/{projectID}/budgets
+- **Auth:** JWT (owner, admin — `RequireRole(owner, admin)`; financial data, same gate as `GET /budgets`)
+- **Purpose:** Write a batch budget baseline (one line per WBS phase). Composite Currency Pattern.
+- **Body:**
+  ```json
+  { "budgets": [
+      { "wbs_code": "01-00", "phase_name": "Site Prep", "estimated_cost_cents": 4500000, "currency_code": "USD" },
+      { "wbs_code": "03-30", "phase_name": "Foundation", "estimated_cost_cents": 12000000, "currency_code": "USD" }
+  ] }
+  ```
+  - Per line required: `wbs_code`, `phase_name`, `estimated_cost_cents` (`>= 0`), `currency_code` (USD|CAD; **empty rejected**). `committed_cost_cents` / `actual_cost_cents` optional, **default 0**.
+  - **One `currency_code` per line, fanned by the server into all three columns** (estimated/committed/actual) to satisfy `chk_budget_currency_match`. Mixed currencies *across* lines are allowed (rollup groups by `currency_code`).
+  - `wbs_code` is free TEXT — **no FK to `cost_codes`** (see escalation note below); aligns with `project_tasks.wbs_code` by convention.
+- **Response:** `201 { data: { budgets: []ProjectBudget } }`
+- **Validation:** all lines validated before any insert (a bad line rejects the whole batch — no partial state). `400 VALIDATION_ERROR` (incl. unsupported/empty currency, negative cents, duplicate wbs in batch, `UNIQUE(project_id, wbs_code)` 23505→400 reject-on-conflict). `422 CROSS_CURRENCY_ERROR` on forbidden cross-currency math. Cross-tenant project → `404`.
 
 ### POST /api/v1/projects/{projectID}/invoices
 - **Auth:** JWT (owner, admin)
@@ -570,9 +615,29 @@ ALL monetary fields follow the Composite Currency Pattern:
 - **Auth:** JWT (owner, admin)
 - **Response:** `200 { data: { employees: []Employee } }`
 
+### POST /api/v1/org/{orgID}/employees
+- **Auth:** JWT (owner, admin — group `RequireRole(owner, admin)`)
+- **Purpose:** Create an employee record (the trade/worker directory; distinct from a login `users` row).
+- **Body:** `{ first_name, last_name, role, phone?, hire_date?, user_id? }`
+  - Required: `first_name`, `last_name`, `role` (free-text trade role — NOT the RBAC enum).
+  - `hire_date` accepts `YYYY-MM-DD` or RFC3339. `user_id` optional; when supplied it is **org-verified** before insert (a cross-org `user_id` → `400`). `org_id` is taken from the caller's claim, never the body.
+- **Response:** `201 { data: { employee: Employee } }`
+- **Errors:** `400 VALIDATION_ERROR`, `403 FORBIDDEN` (URL `{orgID}` vs claim mismatch).
+
 ### GET /api/v1/org/{orgID}/employees/{employeeID}/certifications
 - **Auth:** JWT (owner, admin)
 - **Response:** `200 { data: { certifications: []Certification } }`
+
+### POST /api/v1/org/{orgID}/employees/{employeeID}/certifications
+- **Auth:** JWT (owner, admin — group gate)
+- **Purpose:** Add a certification for an employee. Tenant isolation is **indirect** (certifications has no `org_id`): the employee is org-verified before insert; a cross-org `{employeeID}` → `404 NOT_FOUND` (existence never leaked).
+- **Body:** `{ cert_type, expiry_date, cert_number?, issued_date?, status? }`
+  - Required: `cert_type`, `expiry_date` (schema NOT NULL; `YYYY-MM-DD` or RFC3339).
+  - `status` ∈ {active, expired, revoked}, defaults `"active"`.
+- **Response:** `201 { data: { certification: Certification } }`
+- **Errors:** `400 VALIDATION_ERROR`, `404 NOT_FOUND` (cross-org / unknown employee).
+
+> **Escalation resolution (OQ-7, cost_code ↔ budget linkage):** `project_budgets.wbs_code` and the org `cost_codes` catalog are kept **decoupled** in Phase 0C. Budgets key on the per-project WBS namespace (aligned with `project_tasks.wbs_code` by convention), with **no FK or validation against `cost_codes`**. Linking them is a new schema relationship deferred to a later phase pending owner confirmation.
 
 ---
 

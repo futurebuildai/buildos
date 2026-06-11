@@ -29,6 +29,14 @@ func fixedClock(t time.Time) func() time.Time { return func() time.Time { return
 func newSetupService(t *testing.T, clock func() time.Time) (*SetupService, uuid.UUID) {
 	t.Helper()
 	pool := testdb.NewPool(t)
+	// Migration 021 seeds a placeholder "fork-zero" org so a real fresh
+	// fork is claimable out of the box. These setup tests assert
+	// behavior against a CONTROLLED org set, so drop that placeholder —
+	// otherwise the nil-org bootstrap pick (ORDER BY created_at ASC)
+	// resolves to fork-zero instead of the test's seeded org.
+	if _, err := pool.Exec(context.Background(), `DELETE FROM organizations WHERE slug = 'fork-zero'`); err != nil {
+		t.Fatalf("clear fork-zero seed: %v", err)
+	}
 	orgID := uuid.New()
 	testdb.SeedOrg(t, pool, orgID, "Kelbrook Construction")
 	svc := NewSetupService(pool, store.NewSetupStore(), NewNoopAuditRecorder(), clock)
@@ -1014,6 +1022,12 @@ func TestSetupService_SeedBootstrapTokenIfNeeded_NilOrgPicksIncompleteOrg(t *tes
 	// cmd/server doesn't always know the fork's org_id at boot; uuid.Nil
 	// resolves the single onboarding-incomplete org.
 	pool := testdb.NewPool(t)
+	// Drop migration 021's placeholder fork-zero org so the nil-org pick
+	// resolves to the single org THIS test seeds (else ORDER BY created_at
+	// ASC picks the older fork-zero).
+	if _, err := pool.Exec(context.Background(), `DELETE FROM organizations WHERE slug = 'fork-zero'`); err != nil {
+		t.Fatalf("clear fork-zero seed: %v", err)
+	}
 	orgID := uuid.New()
 	testdb.SeedOrg(t, pool, orgID, "Kelbrook Construction")
 	userID := uuid.New()

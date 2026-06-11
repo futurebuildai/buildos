@@ -40,6 +40,8 @@ type RouterConfig struct {
 	DevAuthMode         string
 	Logger              *slog.Logger
 	AuthService         AuthServicer
+	AuthRefreshTTL      time.Duration // refresh-cookie Max-Age; 0 = AuthService default (30d)
+	CookieSecure        bool          // stamps Secure on the HttpOnly refresh cookie (default-on in prod; off for local http rigs)
 	ProjectService      ProjectServicer
 	BudgetService       BudgetServicer
 	PipelineService     PipelineServicer
@@ -186,7 +188,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	field := NewFieldHandler(cfg.FieldService)
 	fleet := NewFleetHandler(cfg.FleetService)
 	hr := NewHRHandler(cfg.HRService)
-	authHandler := NewAuthHandler(cfg.AuthService)
+	authHandler := NewAuthHandler(cfg.AuthService, WithRefreshCookie(cfg.CookieSecure, cfg.AuthRefreshTTL))
 	var agents *AgentsHandler
 	if cfg.AgentsService != nil {
 		agents = NewAgentsHandler(cfg.AgentsService)
@@ -335,6 +337,10 @@ func NewRouter(cfg RouterConfig) http.Handler {
 				r.Route("/schedule", func(r chi.Router) {
 					r.With(mw.RequireMinRole(mw.RoleSuperintendent)).
 						Post("/recalculate", schedule.Recalculate)
+					// Batch task+dependency import → CPM (operator ingress).
+					// Same role gate as /recalculate (CPM-affecting structural data).
+					r.With(mw.RequireMinRole(mw.RoleSuperintendent)).
+						Post("/import", schedule.Import)
 					r.Get("/gantt", schedule.Gantt)
 
 					// Maestro-driven duration adjustments. Same role
@@ -353,11 +359,15 @@ func NewRouter(cfg RouterConfig) http.Handler {
 				// Tasks sub-routes
 				r.Get("/tasks", schedule.ListTasks)
 				r.With(mw.RequireMinRole(mw.RoleSuperintendent)).
+					Post("/tasks", schedule.CreateTask)
+				r.With(mw.RequireMinRole(mw.RoleSuperintendent)).
 					Put("/tasks/{taskID}", schedule.UpdateTask)
 
 				// Budgets (financial — owner, admin only)
 				r.With(mw.RequireRole(mw.RoleOwner, mw.RoleAdmin)).
 					Get("/budgets", financials.ListBudgets)
+				r.With(mw.RequireRole(mw.RoleOwner, mw.RoleAdmin)).
+					Post("/budgets", financials.CreateBudgets)
 
 				// Invoices (financial — owner, admin only)
 				r.Route("/invoices", func(r chi.Router) {
@@ -439,7 +449,9 @@ func NewRouter(cfg RouterConfig) http.Handler {
 			r.Route("/employees", func(r chi.Router) {
 				r.Use(mw.RequireRole(mw.RoleOwner, mw.RoleAdmin))
 				r.Get("/", hr.ListEmployees)
+				r.Post("/", hr.CreateEmployee)
 				r.Get("/{employeeID}/certifications", hr.ListCertifications)
+				r.Post("/{employeeID}/certifications", hr.CreateCertification)
 			})
 		})
 

@@ -1,14 +1,17 @@
 /**
  * Token storage (web).
  *
- * OQ-4 resolution: the backend (internal/api/auth.go) carries the refresh token
- * in the JSON request/response BODY, not an HttpOnly cookie. Per
- * FRONTEND_ARCHITECTURE §4.1, refresh tokens MUST NOT be persisted to
- * localStorage/sessionStorage (XSS exfiltration risk). Therefore BOTH tokens are
- * held in memory only. A hard reload loses the session and the boot flow falls
- * back to /login (the documented fallback). If the backend later adds
- * `HttpOnly; Secure; SameSite=Strict` cookie transport, swap this module's impl
- * — it is the single choke-point the rest of the app depends on.
+ * Persistence model (updated): the backend (internal/api/auth.go) now sets the
+ * refresh token as an `HttpOnly; Secure; SameSite=Strict; Path=/api/v1/auth`
+ * cookie (`buildos_refresh`) on claim/login/refresh, in ADDITION to returning it
+ * in the JSON body. The cookie is the source of truth ACROSS reloads/deep-links:
+ * the SPA holds the access token in memory only (never localStorage —
+ * FRONTEND_ARCHITECTURE §4.1, XSS exfiltration risk), and on boot it POSTs
+ * /api/v1/auth/refresh with NO body so the browser replays the cookie
+ * (initSession() in authStore.ts). The in-memory refresh token below is kept
+ * only as a convenience for the SAME-SESSION 401→refresh→retry interceptor; it
+ * is NOT what survives a reload (it can't — memory is cleared) and is no longer
+ * load-bearing for persistence.
  *
  * The access token is never logged (PII-Restricted; CLAUDE.md PII handling).
  */

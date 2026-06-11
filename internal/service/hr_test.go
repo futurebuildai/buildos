@@ -12,7 +12,7 @@ import (
 // panic, which proves the gates work.
 
 func newHRSvcForValidationTests() *HRService {
-	return NewHRService(nil, nil)
+	return NewHRService(nil, nil, nil)
 }
 
 func TestHRService_ListEmployees_RejectsNilOrg(t *testing.T) {

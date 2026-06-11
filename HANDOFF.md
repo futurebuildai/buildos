@@ -273,6 +273,38 @@ govulncheck clean. PRs #9 onward also have CI green at merge time
 
 ## In flight
 
+### ▶ Phase 0c — operational-data ingress + branding + session persistence (BUILT, REVIEWED, awaiting owner merge)
+Branch `feature/phase-0c-ingress` (NOT merged). Answers "the app feels like a blank shell": BuildOS had
+no way to author operational data (hydrate_project was a stub; HR/budgets read-only), so the CPM Gantt —
+the flagship — could never be populated. Three bundled efforts + one regression fix:
+- **Ingress layer (keystone):** `POST /projects/{id}/schedule/import` (batch tasks+deps, ONE tx, cycle+
+  self-loop rejected pre-write via physics.DetectCycle, then auto-recalc reusing an extracted
+  `recalcOnTx` shared with RecalculateSchedule → a real critical path in one request). Plus `POST
+  /projects/{id}/tasks`, `POST /org/{org}/employees` + `/certifications`, `POST /projects/{id}/budgets`
+  (composite currency). RBAC: schedule=superintendent+, HR/budgets=owner/admin. Spec:
+  [.agents/handoff/PHASE_0C_INGRESS.md]; contract in API_CONTRACT.md. cost_code↔budget kept decoupled
+  (documented decision). No web authoring UI yet (API-only; seed + command center drive it).
+- **Session persistence:** HttpOnly `buildos_refresh` cookie (Secure; SameSite=Strict; Path=/api/v1/auth;
+  host-only). initSession does a silent cookie-refresh on boot → reload/deep-link no longer logs out (the
+  reported "click AI → kicked to login" bug; the AI itself always worked). COOKIE_INSECURE is prod-fail-
+  fast-gated like DEV_AUTH_MODE.
+- **Branding:** `fb-logo` (house mark + "BuildOS" wordmark, "OS" in brand green) across top-bar/login/
+  first-run/setup + favicon. No "OPEN SOURCE" claim (repo is proprietary).
+- **Regression fix:** migration 021's seeded fork-zero org had broken two setup integration tests (red on
+  CI's integration lane since the 021 merge); fixed by dropping the placeholder in those tests' fixtures.
+  **CI integration lane goes GREEN on merge.**
+- **Kelbrook seed:** `scripts/seed-fork-demo.sh` (owner-authed, API-driven, repeatable) — 3 projects with
+  10-phase WBS chains (CPM-populated), crew+certs, budgets, fleet/procurement/pipeline/invoices.
+- **Review:** 12-agent adversarial (5 lenses, per-finding refutation) → 3 confirmed (1 major cookie prod-
+  gate, 1 major fb-logo flex layout bug, 1 minor HR error-mapping), ALL remediated. Gates: `make audit`
+  ALL PASSED ×2 + isolation + FULL integration suite green (incl. keystone CPM round-trip) + web 254
+  vitest + build.
+- **POST-MERGE (the populate step):** deploy-staging builds the image WITH the ingress endpoints, THEN
+  run `scripts/seed-fork-demo.sh` against staging → every screen fills with Kelbrook data, logo live,
+  reloads sticky. (Staging currently runs the old image without these endpoints, so the seed is gated on
+  merge+deploy.)
+
+
 ### 🟢 STAGING IS LIVE — https://staging.futurebuild.ai (2026-06-11, demo-ready for Grant)
 - **Branded URL works end to end:** HTTPS (valid cert), console renders, `/health` returns the
   build version, `/api/*` 404s are JSON, hashed assets carry the immutable cache header.

@@ -61,137 +61,12 @@ func (s *ScheduleService) RecalculateSchedule(ctx context.Context, projectID, ca
 		if err := store.VerifyProjectInOrg(ctx, tx, projectID, callerOrgID); err != nil {
 			return err
 		}
-		// 1. Load tasks and dependencies from DB
-		tasks, err := s.scheduleStore.GetProjectTasks(ctx, tx, projectID)
+		res, took, err := s.recalcOnTx(ctx, tx, projectID, callerOrgID, callerUserSub)
 		if err != nil {
-			return fmt.Errorf("load tasks: %w", err)
+			return err
 		}
-		if len(tasks) == 0 {
-			return fmt.Errorf("no tasks found for project %s", projectID)
-		}
-
-		deps, err := s.scheduleStore.GetProjectDependencies(ctx, tx, projectID)
-		if err != nil {
-			return fmt.Errorf("load dependencies: %w", err)
-		}
-
-		projectStart, err := s.scheduleStore.GetProjectStartDate(ctx, tx, projectID)
-		if err != nil {
-			return fmt.Errorf("load project start: %w", err)
-		}
-
-		// 2. Run CPM ForwardPass + BackwardPass
-		computeStart := time.Now()
-
-		graph := physics.BuildDependencyGraph(tasks, deps)
-		cal := &physics.StandardCalendar{}
-
-		schedule, err := physics.ForwardPass(graph, projectStart, cal, nil)
-		if err != nil {
-			return fmt.Errorf("forward pass: %w", err)
-		}
-
-		criticalPath, err := physics.BackwardPass(graph, schedule, cal, nil)
-		if err != nil {
-			return fmt.Errorf("backward pass: %w", err)
-		}
-
-		computeTime = time.Since(computeStart)
-
-		// Find project end date
-		var projectEnd time.Time
-		first := true
-		for _, sched := range schedule {
-			if first || sched.EarlyFinish.After(projectEnd) {
-				projectEnd = sched.EarlyFinish
-				first = false
-			}
-		}
-
-		// Build result
-		taskSchedules := make([]physics.TaskSchedule, 0, len(schedule))
-		for _, ts := range schedule {
-			taskSchedules = append(taskSchedules, ts)
-		}
-
-		cpmResult = &physics.CPMResult{
-			Tasks:        taskSchedules,
-			CriticalPath: criticalPath,
-			ProjectEnd:   projectEnd,
-		}
-
-		// 3. Persist schedule results
-		scheduleResults := make(map[uuid.UUID]store.ScheduleResult, len(schedule))
-		for taskID, ts := range schedule {
-			scheduleResults[taskID] = store.ScheduleResult{
-				EarlyStart:  ts.EarlyStart,
-				EarlyFinish: ts.EarlyFinish,
-				LateStart:   ts.LateStart,
-				LateFinish:  ts.LateFinish,
-				TotalFloat:  int(math.Round(ts.TotalFloat)),
-				IsCritical:  ts.IsCritical,
-			}
-		}
-
-		if err := s.scheduleStore.UpdateSchedule(ctx, tx, tasks, scheduleResults); err != nil {
-			return fmt.Errorf("persist schedule: %w", err)
-		}
-
-		// 4. Record audit row inside the same tx — if any later step
-		//    fails, the audit row rolls back with the schedule write.
-		s.audit.Record(ctx, tx, AuditEntry{
-			OrgID:        callerOrgID,
-			UserSub:      callerUserSub,
-			Action:       "schedule.recalculated",
-			ResourceType: AuditResourceSchedule,
-			ResourceID:   projectID,
-			Metadata: marshalAudit(map[string]any{
-				"task_count":         len(tasks),
-				"critical_path_size": len(criticalPath),
-				"compute_ms":         computeTime.Milliseconds(),
-				"project_end":        projectEnd,
-			}),
-		})
-
-		// 5. Enqueue a delay cascade ONLY when the critical-path SET actually
-		//    changed (SAME TRANSACTION). A recalc that leaves the same tasks
-		//    critical — e.g. a duration tweak on a task that has float — must
-		//    not fan out an AI-reasoned cascade: that would cost an Opus call
-		//    plus a feed-card stream on every routine recalc. Compare the prior
-		//    critical set (the loaded `tasks`, pre-overwrite) against the
-		//    freshly computed set.
-		priorCritical := make(map[uuid.UUID]bool, len(tasks))
-		priorCount := 0
-		for _, t := range tasks {
-			if t.IsCritical {
-				priorCritical[t.ID] = true
-				priorCount++
-			}
-		}
-		newCount := 0
-		criticalChanged := false
-		for id, sr := range scheduleResults {
-			if sr.IsCritical {
-				newCount++
-				if !priorCritical[id] {
-					criticalChanged = true
-				}
-			}
-		}
-		if newCount != priorCount {
-			criticalChanged = true
-		}
-		cpmResult.CriticalPathChanged = criticalChanged
-
-		if criticalChanged {
-			if _, err := s.riverClient.InsertTx(ctx, tx, &worker.DelayCascadeArgs{
-				OrgID:     callerOrgID,
-				ProjectID: projectID,
-			}, nil); err != nil {
-				return fmt.Errorf("enqueue delay cascade: %w", err)
-			}
-		}
-
+		cpmResult = res
+		computeTime = took
 		return nil
 	})
 
@@ -200,6 +75,149 @@ func (s *ScheduleService) RecalculateSchedule(ctx context.Context, projectID, ca
 			return nil, 0, ErrNotFound
 		}
 		return nil, 0, err
+	}
+
+	return cpmResult, computeTime, nil
+}
+
+// recalcOnTx runs the full CPM pipeline on an already-open tx: load
+// tasks/deps → ForwardPass/BackwardPass → persist results → audit →
+// enqueue a DelayCascade iff the critical set changed. It is the single
+// CPM-on-tx body shared by RecalculateSchedule (which opens its own tx and
+// verifies project ownership first) and ImportSchedule (which calls it after
+// inserting the imported rows in the SAME tx, so GetProjectTasks sees them).
+// The caller owns tx lifecycle and the project-ownership guard; this never
+// commits, rolls back, or re-verifies the org.
+func (s *ScheduleService) recalcOnTx(ctx context.Context, tx pgx.Tx, projectID, callerOrgID uuid.UUID, callerUserSub string) (*physics.CPMResult, time.Duration, error) {
+	// 1. Load tasks and dependencies from DB
+	tasks, err := s.scheduleStore.GetProjectTasks(ctx, tx, projectID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("load tasks: %w", err)
+	}
+	if len(tasks) == 0 {
+		return nil, 0, fmt.Errorf("no tasks found for project %s", projectID)
+	}
+
+	deps, err := s.scheduleStore.GetProjectDependencies(ctx, tx, projectID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("load dependencies: %w", err)
+	}
+
+	projectStart, err := s.scheduleStore.GetProjectStartDate(ctx, tx, projectID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("load project start: %w", err)
+	}
+
+	// 2. Run CPM ForwardPass + BackwardPass
+	computeStart := time.Now()
+
+	graph := physics.BuildDependencyGraph(tasks, deps)
+	cal := &physics.StandardCalendar{}
+
+	schedule, err := physics.ForwardPass(graph, projectStart, cal, nil)
+	if err != nil {
+		return nil, 0, fmt.Errorf("forward pass: %w", err)
+	}
+
+	criticalPath, err := physics.BackwardPass(graph, schedule, cal, nil)
+	if err != nil {
+		return nil, 0, fmt.Errorf("backward pass: %w", err)
+	}
+
+	computeTime := time.Since(computeStart)
+
+	// Find project end date
+	var projectEnd time.Time
+	first := true
+	for _, sched := range schedule {
+		if first || sched.EarlyFinish.After(projectEnd) {
+			projectEnd = sched.EarlyFinish
+			first = false
+		}
+	}
+
+	// Build result
+	taskSchedules := make([]physics.TaskSchedule, 0, len(schedule))
+	for _, ts := range schedule {
+		taskSchedules = append(taskSchedules, ts)
+	}
+
+	cpmResult := &physics.CPMResult{
+		Tasks:        taskSchedules,
+		CriticalPath: criticalPath,
+		ProjectEnd:   projectEnd,
+	}
+
+	// 3. Persist schedule results
+	scheduleResults := make(map[uuid.UUID]store.ScheduleResult, len(schedule))
+	for taskID, ts := range schedule {
+		scheduleResults[taskID] = store.ScheduleResult{
+			EarlyStart:  ts.EarlyStart,
+			EarlyFinish: ts.EarlyFinish,
+			LateStart:   ts.LateStart,
+			LateFinish:  ts.LateFinish,
+			TotalFloat:  int(math.Round(ts.TotalFloat)),
+			IsCritical:  ts.IsCritical,
+		}
+	}
+
+	if err := s.scheduleStore.UpdateSchedule(ctx, tx, tasks, scheduleResults); err != nil {
+		return nil, 0, fmt.Errorf("persist schedule: %w", err)
+	}
+
+	// 4. Record audit row inside the same tx — if any later step
+	//    fails, the audit row rolls back with the schedule write.
+	s.audit.Record(ctx, tx, AuditEntry{
+		OrgID:        callerOrgID,
+		UserSub:      callerUserSub,
+		Action:       "schedule.recalculated",
+		ResourceType: AuditResourceSchedule,
+		ResourceID:   projectID,
+		Metadata: marshalAudit(map[string]any{
+			"task_count":         len(tasks),
+			"critical_path_size": len(criticalPath),
+			"compute_ms":         computeTime.Milliseconds(),
+			"project_end":        projectEnd,
+		}),
+	})
+
+	// 5. Enqueue a delay cascade ONLY when the critical-path SET actually
+	//    changed (SAME TRANSACTION). A recalc that leaves the same tasks
+	//    critical — e.g. a duration tweak on a task that has float — must
+	//    not fan out an AI-reasoned cascade: that would cost an Opus call
+	//    plus a feed-card stream on every routine recalc. Compare the prior
+	//    critical set (the loaded `tasks`, pre-overwrite) against the
+	//    freshly computed set.
+	priorCritical := make(map[uuid.UUID]bool, len(tasks))
+	priorCount := 0
+	for _, t := range tasks {
+		if t.IsCritical {
+			priorCritical[t.ID] = true
+			priorCount++
+		}
+	}
+	newCount := 0
+	criticalChanged := false
+	for id, sr := range scheduleResults {
+		if sr.IsCritical {
+			newCount++
+			if !priorCritical[id] {
+				criticalChanged = true
+			}
+		}
+	}
+	if newCount != priorCount {
+		criticalChanged = true
+	}
+	cpmResult.CriticalPathChanged = criticalChanged
+
+	if criticalChanged {
+		if _, err := s.riverClient.InsertTx(ctx, tx, &worker.DelayCascadeArgs{
+			OrgID:     callerOrgID,
+			ProjectID: projectID,
+		}, nil); err != nil {
+			return nil, 0, fmt.Errorf("enqueue delay cascade: %w", err)
+		}
 	}
 
 	return cpmResult, computeTime, nil

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -400,5 +401,194 @@ func TestWriteAuthError_Mapping(t *testing.T) {
 				t.Errorf("internal error leaked into body: %s", w.Body.String())
 			}
 		})
+	}
+}
+
+// ---------- HttpOnly refresh-cookie transport ----------
+
+// findRefreshCookie pulls the buildos_refresh Set-Cookie off the recorder.
+func findRefreshCookie(t *testing.T, w *httptest.ResponseRecorder) *http.Cookie {
+	t.Helper()
+	for _, c := range w.Result().Cookies() {
+		if c.Name == refreshCookieName {
+			return c
+		}
+	}
+	t.Fatalf("no %q Set-Cookie found; headers=%v", refreshCookieName, w.Header().Values("Set-Cookie"))
+	return nil
+}
+
+// assertSecureRefreshCookie verifies the security-critical attributes of a
+// freshly-set refresh cookie: the secret value, HttpOnly, Secure,
+// SameSite=Strict, the /api/v1/auth Path scope, a positive Max-Age, and the
+// absence of an explicit Domain (host-only — required for the Cloudflare-Worker
+// → Railway origin to bind the cookie to the host the browser sees).
+func assertSecureRefreshCookie(t *testing.T, c *http.Cookie, wantValue string) {
+	t.Helper()
+	if c.Value != wantValue {
+		t.Errorf("cookie value=%q, want %q", c.Value, wantValue)
+	}
+	if !c.HttpOnly {
+		t.Error("cookie missing HttpOnly")
+	}
+	if !c.Secure {
+		t.Error("cookie missing Secure")
+	}
+	if c.SameSite != http.SameSiteStrictMode {
+		t.Errorf("cookie SameSite=%v, want Strict", c.SameSite)
+	}
+	if c.Path != "/api/v1/auth" {
+		t.Errorf("cookie Path=%q, want /api/v1/auth", c.Path)
+	}
+	if c.MaxAge <= 0 {
+		t.Errorf("cookie Max-Age=%d, want positive", c.MaxAge)
+	}
+	if c.Domain != "" {
+		t.Errorf("cookie Domain=%q, want host-only (empty)", c.Domain)
+	}
+}
+
+func TestClaim_SetsSecureRefreshCookie(t *testing.T) {
+	h := NewAuthHandler(&fakeAuthService{pair: sampleTokenPair()})
+	w := httptest.NewRecorder()
+	h.ClaimFirstOwner(w, jsonReq("/api/v1/auth/claim",
+		`{"token":"boot","email":"a@b.c","password":"pw12345678","display_name":"O"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status=%d", w.Code)
+	}
+	assertSecureRefreshCookie(t, findRefreshCookie(t, w), "refresh-abc")
+}
+
+func TestLogin_SetsSecureRefreshCookie(t *testing.T) {
+	h := NewAuthHandler(&fakeAuthService{pair: sampleTokenPair()})
+	w := httptest.NewRecorder()
+	h.Login(w, jsonReq("/api/v1/auth/login", `{"email":"a@b.c","password":"pw12345678"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d", w.Code)
+	}
+	assertSecureRefreshCookie(t, findRefreshCookie(t, w), "refresh-abc")
+	// Body fields stay UNCHANGED (additive transport — API clients/tests unbroken).
+	if got := decodeTokenPair(t, w); got.RefreshToken != "refresh-abc" || got.AccessToken != "access-xyz" {
+		t.Errorf("body token pair = %+v", got)
+	}
+}
+
+func TestRefresh_SetsRotatedRefreshCookie(t *testing.T) {
+	h := NewAuthHandler(&fakeAuthService{pair: sampleTokenPair()})
+	w := httptest.NewRecorder()
+	h.Refresh(w, jsonReq("/api/v1/auth/refresh", `{"refresh_token":"refresh-abc"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d", w.Code)
+	}
+	assertSecureRefreshCookie(t, findRefreshCookie(t, w), "refresh-abc")
+}
+
+// The reload-survival path: the SPA POSTs /refresh with NO body and the browser
+// replays the HttpOnly cookie. The handler must read the token from the cookie.
+func TestRefresh_ReadsTokenFromCookieWhenBodyEmpty(t *testing.T) {
+	svc := &fakeAuthService{pair: sampleTokenPair()}
+	h := NewAuthHandler(svc)
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", nil) // no body
+	r.AddCookie(&http.Cookie{Name: refreshCookieName, Value: "cookie-refresh-token"})
+	w := httptest.NewRecorder()
+	h.Refresh(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, body=%s", w.Code, w.Body.String())
+	}
+	if svc.gotRefresh != "cookie-refresh-token" {
+		t.Errorf("service got refresh=%q, want the cookie value", svc.gotRefresh)
+	}
+}
+
+// An explicit body token must win over the cookie (backward-compat).
+func TestRefresh_BodyTokenWinsOverCookie(t *testing.T) {
+	svc := &fakeAuthService{pair: sampleTokenPair()}
+	h := NewAuthHandler(svc)
+	r := jsonReq("/api/v1/auth/refresh", `{"refresh_token":"body-token"}`)
+	r.AddCookie(&http.Cookie{Name: refreshCookieName, Value: "cookie-token"})
+	w := httptest.NewRecorder()
+	h.Refresh(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d", w.Code)
+	}
+	if svc.gotRefresh != "body-token" {
+		t.Errorf("service got refresh=%q, want body-token", svc.gotRefresh)
+	}
+}
+
+// A genuinely malformed (non-empty, non-JSON) body is still a 400.
+func TestRefresh_MalformedBodyStill400(t *testing.T) {
+	h := NewAuthHandler(&fakeAuthService{pair: sampleTokenPair()})
+	w := httptest.NewRecorder()
+	h.Refresh(w, jsonReq("/api/v1/auth/refresh", "}{not json"))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400", w.Code)
+	}
+}
+
+// On a dead refresh token the handler clears the cookie so the browser stops
+// replaying it, and returns 401.
+func TestRefresh_DeadTokenClearsCookie(t *testing.T) {
+	h := NewAuthHandler(&fakeAuthService{err: service.ErrInvalidRefreshToken})
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", nil)
+	r.AddCookie(&http.Cookie{Name: refreshCookieName, Value: "stale"})
+	w := httptest.NewRecorder()
+	h.Refresh(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d, want 401", w.Code)
+	}
+	c := findRefreshCookie(t, w)
+	if c.MaxAge >= 0 {
+		t.Errorf("expected cleared cookie (Max-Age<0), got MaxAge=%d value=%q", c.MaxAge, c.Value)
+	}
+}
+
+func TestLogout_ClearsRefreshCookie(t *testing.T) {
+	svc := &fakeAuthService{}
+	h := NewAuthHandler(svc)
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", nil)
+	r.AddCookie(&http.Cookie{Name: refreshCookieName, Value: "to-revoke"})
+	w := httptest.NewRecorder()
+	h.Logout(w, r)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status=%d, want 204", w.Code)
+	}
+	// Revokes the cookie's token and expires the cookie.
+	if svc.gotRefresh != "to-revoke" {
+		t.Errorf("service got refresh=%q, want to-revoke (from cookie)", svc.gotRefresh)
+	}
+	c := findRefreshCookie(t, w)
+	if c.MaxAge >= 0 {
+		t.Errorf("expected cleared cookie (Max-Age<0), got MaxAge=%d", c.MaxAge)
+	}
+	if c.Path != "/api/v1/auth" {
+		t.Errorf("clear cookie Path=%q, want /api/v1/auth (must match set Path)", c.Path)
+	}
+}
+
+// WithRefreshCookie(false, ...) drops Secure for local http rigs; the default
+// (no option) keeps it on, and a custom TTL is honored as the Max-Age.
+func TestRefreshCookie_SecureGateAndTTL(t *testing.T) {
+	// Insecure rig: Secure off, TTL honored.
+	h := NewAuthHandler(&fakeAuthService{pair: sampleTokenPair()}, WithRefreshCookie(false, 2*time.Hour))
+	w := httptest.NewRecorder()
+	h.Login(w, jsonReq("/api/v1/auth/login", `{"email":"a@b.c","password":"pw12345678"}`))
+	c := findRefreshCookie(t, w)
+	if c.Secure {
+		t.Error("expected Secure off for insecure rig")
+	}
+	if c.MaxAge != int((2 * time.Hour).Seconds()) {
+		t.Errorf("Max-Age=%d, want %d", c.MaxAge, int((2 * time.Hour).Seconds()))
+	}
+	// Default handler: Secure on, default refresh TTL.
+	hd := NewAuthHandler(&fakeAuthService{pair: sampleTokenPair()})
+	wd := httptest.NewRecorder()
+	hd.Login(wd, jsonReq("/api/v1/auth/login", `{"email":"a@b.c","password":"pw12345678"}`))
+	cd := findRefreshCookie(t, wd)
+	if !cd.Secure {
+		t.Error("expected Secure on by default")
+	}
+	if cd.MaxAge != int(service.DefaultRefreshTTL.Seconds()) {
+		t.Errorf("default Max-Age=%d, want %d", cd.MaxAge, int(service.DefaultRefreshTTL.Seconds()))
 	}
 }

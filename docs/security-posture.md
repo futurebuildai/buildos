@@ -75,9 +75,17 @@ and the per-IP limiter are mounted; no secrets in code or git history.
   `validateMCPEndpoint` shape) for a clean 400 — the dial-time egress guard is
   already the authoritative SSRF defense, so this is UX/consistency only.
 - `CORS`: there is no CORS middleware — fine because the deployment must serve the
-  SPA + API **same-origin** (reverse proxy) and auth is bearer-token-in-header (no
-  cookies → no CSRF). If a fork ever serves the SPA cross-origin, add a strict
-  allowlisted CORS config.
+  SPA + API **same-origin** (reverse proxy). The API surface is bearer-token-in-header
+  (no cookies). There is exactly **one** cookie-authed route — `POST /api/v1/auth/refresh`,
+  which reads the `buildos_refresh` HttpOnly refresh cookie for session persistence
+  across reloads/deep-links. That cookie is `HttpOnly; Secure; SameSite=Strict;
+  Path=/api/v1/auth` (host-only, no Domain). **CSRF mitigation:** `SameSite=Strict`
+  means the browser never attaches the cookie to a cross-site-initiated request, and
+  refresh only rotates a token (it performs no state-changing domain mutation) — so a
+  forged cross-site refresh is both blocked by SameSite and harmless. The cookie's
+  `Path=/api/v1/auth` scoping keeps it off every other (Bearer-authed) API call. If a
+  fork ever serves the SPA cross-origin, add a strict allowlisted CORS config **and**
+  re-evaluate the cookie's SameSite posture.
 - Migration 019 uses a plain `ADD CONSTRAINT CHECK` (validates existing rows under
   a brief lock); for a large pre-existing fork, prefer `NOT VALID` + a separate
   `VALIDATE CONSTRAINT`. Fresh forks are unaffected.

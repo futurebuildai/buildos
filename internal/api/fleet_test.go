@@ -350,7 +350,14 @@ type fakeHRService struct {
 	certs     []models.Certification
 	certErr   error
 
+	createEmpResult  models.Employee
+	createEmpErr     error
+	createCertResult models.Certification
+	createCertErr    error
+
 	gotOrgID, gotEmployeeID uuid.UUID
+	gotCreateEmpInput       service.CreateEmployeeInput
+	gotCreateCertInput      service.CreateCertificationInput
 }
 
 func (f *fakeHRService) ListEmployees(_ context.Context, orgID uuid.UUID) ([]models.Employee, error) {
@@ -361,6 +368,16 @@ func (f *fakeHRService) ListEmployees(_ context.Context, orgID uuid.UUID) ([]mod
 func (f *fakeHRService) ListCertifications(_ context.Context, orgID, employeeID uuid.UUID) ([]models.Certification, error) {
 	f.gotOrgID, f.gotEmployeeID = orgID, employeeID
 	return f.certs, f.certErr
+}
+
+func (f *fakeHRService) CreateEmployee(_ context.Context, in service.CreateEmployeeInput) (models.Employee, error) {
+	f.gotCreateEmpInput = in
+	return f.createEmpResult, f.createEmpErr
+}
+
+func (f *fakeHRService) CreateCertification(_ context.Context, in service.CreateCertificationInput) (models.Certification, error) {
+	f.gotCreateCertInput = in
+	return f.createCertResult, f.createCertErr
 }
 
 func TestListEmployees_OK(t *testing.T) {

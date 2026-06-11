@@ -30,12 +30,22 @@ type mockScheduleService struct {
 	updateResult models.ProjectTask
 	updateErr    error
 
+	importResult *service.ImportScheduleResult
+	importErr    error
+
+	createTaskResult models.ProjectTask
+	createTaskErr    error
+
 	// Captured args
 	lastListInput     service.ListProjectTasksInput
 	lastUpdateInput   service.UpdateTaskInput
 	lastRecalcOrg     uuid.UUID
 	lastRecalcUserSub string
 	lastGanttOrg      uuid.UUID
+	lastImportOrg     uuid.UUID
+	lastImportUserSub string
+	lastImportInput   service.ImportScheduleInput
+	lastCreateTaskIn  service.CreateTaskInput
 }
 
 func (m *mockScheduleService) RecalculateSchedule(_ context.Context, _, callerOrgID uuid.UUID, callerUserSub string) (*physics.CPMResult, time.Duration, error) {
@@ -54,6 +64,16 @@ func (m *mockScheduleService) ListProjectTasks(_ context.Context, in service.Lis
 func (m *mockScheduleService) UpdateTask(_ context.Context, in service.UpdateTaskInput) (models.ProjectTask, error) {
 	m.lastUpdateInput = in
 	return m.updateResult, m.updateErr
+}
+func (m *mockScheduleService) ImportSchedule(_ context.Context, _, callerOrgID uuid.UUID, callerUserSub string, in service.ImportScheduleInput) (*service.ImportScheduleResult, error) {
+	m.lastImportOrg = callerOrgID
+	m.lastImportUserSub = callerUserSub
+	m.lastImportInput = in
+	return m.importResult, m.importErr
+}
+func (m *mockScheduleService) CreateTask(_ context.Context, in service.CreateTaskInput) (models.ProjectTask, error) {
+	m.lastCreateTaskIn = in
+	return m.createTaskResult, m.createTaskErr
 }
 
 const testTaskID = "88888888-8888-8888-8888-888888888888"

@@ -100,6 +100,16 @@ func run(logger *slog.Logger) error {
 
 	logger.Info("database connected", "max_conns", cfg.DBPoolMax)
 
+	// Fail-fast: a prod-tagged build that would emit a NON-Secure refresh
+	// cookie is a deployment mistake (the 30-day refresh token could ride
+	// plaintext). CookieSecure is only false when DEV_AUTH_MODE=header or
+	// COOKIE_INSECURE=true; this guards the COOKIE_INSECURE footgun the
+	// same way the block below guards DEV_AUTH_MODE, so the sole remaining
+	// way to strip Secure can't reach a prod binary.
+	if !cfg.CookieSecure && middleware.IsProdBuild() {
+		return fmt.Errorf("refresh cookie would be non-Secure in a prod-tagged build (COOKIE_INSECURE / DEV_AUTH_MODE set); unset it — prod must serve Secure cookies")
+	}
+
 	if cfg.DevAuthMode != "" {
 		if middleware.IsProdBuild() {
 			// Fail-fast: prod build with dev auth set is almost
@@ -201,7 +211,7 @@ func run(logger *slog.Logger) error {
 	fleetStore := store.NewFleetStore()
 	fleetService := service.NewFleetService(pool, fleetStore, auditService)
 	hrStore := store.NewHRStore()
-	hrService := service.NewHRService(pool, hrStore)
+	hrService := service.NewHRService(pool, hrStore, auditService)
 	fieldStore := store.NewFieldStore()
 	fieldService := service.NewFieldService(pool, fieldStore, feedCardsStore, auditService)
 	agentsService := service.NewAgentsService(pool, fieldStore, feedCardsStore, scheduleStore, scheduleService, aiBriefer, aiAdjuster, auditService)
@@ -372,6 +382,8 @@ func run(logger *slog.Logger) error {
 		DevAuthMode:         cfg.DevAuthMode,
 		Logger:              logger,
 		AuthService:         authService,
+		AuthRefreshTTL:      cfg.AuthRefreshTTL,
+		CookieSecure:        cfg.CookieSecure,
 		ProjectService:      projectService,
 		BudgetService:       budgetService,
 		PipelineService:     pipelineService,

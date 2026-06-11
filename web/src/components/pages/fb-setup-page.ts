@@ -2,6 +2,7 @@ import { html, css, nothing, type TemplateResult } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { FBElement } from '../base/fb-element.js';
 import '../atoms/fb-icon.js';
+import '../atoms/fb-logo.js';
 import '../atoms/fb-input.js';
 import '../atoms/fb-select.js';
 import '../atoms/fb-checkbox.js';
@@ -60,6 +61,13 @@ export class FbSetupPage extends FBElement {
     css`
       :host {
         display: block;
+      }
+      .setup-brand {
+        display: flex;
+        justify-content: center;
+        max-width: 920px;
+        margin: 0 auto;
+        padding: var(--fb-spacing-lg) var(--fb-spacing-lg) 0;
       }
       .wrap {
         display: grid;
@@ -467,6 +475,7 @@ export class FbSetupPage extends FBElement {
   override render(): TemplateResult {
     if (this.loading) return html`<p class="loading" role="status">Loading setup…</p>`;
     return html`
+      <div class="setup-brand"><fb-logo variant="full" size="26"></fb-logo></div>
       <div class="wrap">
         <fb-wizard-stepper
           class="panel"

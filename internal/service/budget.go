@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/futurebuildai/buildos/internal/currency"
@@ -239,6 +241,104 @@ func (s *BudgetService) createInvoiceTx(ctx context.Context, tx pgx.Tx, callerOr
 	return created, nil
 }
 
+// CreateProjectBudgetLine is one budget baseline line. CurrencyCode is a
+// single validated code fanned into all three columns by the store. The
+// committed/actual cents default to 0 (a true baseline is estimate-only).
+type CreateProjectBudgetLine struct {
+	WBSCode            string
+	PhaseName          string
+	CurrencyCode       string
+	EstimatedCostCents int64
+	CommittedCostCents int64
+	ActualCostCents    int64
+}
+
+// CreateProjectBudgets writes a batch budget baseline for a project, scoped
+// to the caller's org. ALL lines are validated BEFORE any insert (a bad line
+// rejects the whole batch — no partial state, mirroring createInvoiceTx).
+// One currency per line (USD|CAD); cross-currency is impossible because each
+// line's single code fans into all three columns (satisfies
+// chk_budget_currency_match). Mixed currencies across lines are allowed
+// (rollup groups by currency_code). A 23505 (UNIQUE(project_id, wbs_code))
+// maps to ErrInvalidInput (reject-on-conflict; no upsert). One
+// budget.created audit row per line.
+func (s *BudgetService) CreateProjectBudgets(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, projectID uuid.UUID, lines []CreateProjectBudgetLine) ([]models.ProjectBudget, error) {
+	if callerOrgID == uuid.Nil {
+		return nil, fmt.Errorf("%w: caller org_id is required", ErrInvalidInput)
+	}
+	if len(lines) == 0 {
+		return nil, fmt.Errorf("%w: budgets is required", ErrInvalidInput)
+	}
+
+	// Validate every line up front (before the tx).
+	seenWBS := make(map[string]struct{}, len(lines))
+	params := make([]store.CreateProjectBudgetParams, 0, len(lines))
+	for i := range lines {
+		l := lines[i]
+		wbs := strings.TrimSpace(l.WBSCode)
+		if wbs == "" {
+			return nil, fmt.Errorf("%w: budget wbs_code is required", ErrInvalidInput)
+		}
+		if _, dup := seenWBS[wbs]; dup {
+			return nil, fmt.Errorf("%w: duplicate wbs_code %q in batch", ErrInvalidInput, wbs)
+		}
+		seenWBS[wbs] = struct{}{}
+		phase := strings.TrimSpace(l.PhaseName)
+		if phase == "" {
+			return nil, fmt.Errorf("%w: budget %q phase_name is required", ErrInvalidInput, wbs)
+		}
+		if err := currency.Validate(l.CurrencyCode); err != nil {
+			return nil, fmt.Errorf("%w: budget %q currency_code: %v", ErrInvalidInput, wbs, err)
+		}
+		if l.EstimatedCostCents < 0 || l.CommittedCostCents < 0 || l.ActualCostCents < 0 {
+			return nil, fmt.Errorf("%w: budget %q cost cents must be >= 0", ErrInvalidInput, wbs)
+		}
+		params = append(params, store.CreateProjectBudgetParams{
+			ProjectID:          projectID,
+			WBSCode:            wbs,
+			PhaseName:          phase,
+			CurrencyCode:       l.CurrencyCode,
+			EstimatedCostCents: l.EstimatedCostCents,
+			CommittedCostCents: l.CommittedCostCents,
+			ActualCostCents:    l.ActualCostCents,
+		})
+	}
+
+	out := make([]models.ProjectBudget, 0, len(params))
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if err := store.VerifyProjectInOrg(ctx, tx, projectID, callerOrgID); err != nil {
+			return err
+		}
+		out = out[:0]
+		for _, p := range params {
+			created, err := s.store.CreateProjectBudget(ctx, tx, p)
+			if err != nil {
+				return err
+			}
+			out = append(out, created)
+			s.audit.Record(ctx, tx, AuditEntry{
+				OrgID:        callerOrgID,
+				UserSub:      callerUserSub,
+				Action:       "budget.created",
+				ResourceType: AuditResourceProjectBudget,
+				ResourceID:   created.ID,
+				After:        marshalAudit(created),
+				Metadata: marshalAudit(map[string]any{
+					"project_id":           projectID,
+					"wbs_code":             created.WBSCode,
+					"estimated_cost_cents": created.EstimatedCostCents,
+					"currency":             created.EstimatedCostCurrencyCode,
+				}),
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, mapStoreError(err)
+	}
+	return out, nil
+}
+
 // UpdateInvoiceInput is the service-layer input for updating an invoice.
 // All fields are optional; nil fields preserve existing values.
 type UpdateInvoiceInput struct {
@@ -337,7 +437,10 @@ func validateOptionalCurrency(code string) error {
 }
 
 // mapStoreError translates store-layer errors into service-layer sentinels
-// the API handler can match with errors.Is.
+// the API handler can match with errors.Is. A 23505 unique-violation maps to
+// ErrInvalidInput (a duplicate is bad input, not an internal fault) so the
+// ingress write paths (schedule import, budget batch) return 400 rather than
+// leaking a 500.
 func mapStoreError(err error) error {
 	if err == nil {
 		return nil
@@ -345,5 +448,20 @@ func mapStoreError(err error) error {
 	if errors.Is(err, store.ErrNotFound) {
 		return ErrNotFound
 	}
+	if isUniqueViolation(err) {
+		var pgErr *pgconn.PgError
+		_ = errors.As(err, &pgErr)
+		return fmt.Errorf("%w: duplicate (%s)", ErrInvalidInput, pgErr.ConstraintName)
+	}
 	return err
+}
+
+// isUniqueViolation reports whether err wraps a Postgres 23505
+// (unique_violation). Shared by the ingress write paths so a UNIQUE
+// collision (e.g. UNIQUE(project_id, wbs_code), UNIQUE(predecessor_id,
+// successor_id)) surfaces as ErrInvalidInput (400) rather than a 500.
+// Pattern precedent: mapAuthStoreError (auth.go).
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }

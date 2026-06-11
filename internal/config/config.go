@@ -49,6 +49,15 @@ type Config struct {
 	AuthRefreshTTL time.Duration
 	AuthResetTTL   time.Duration
 
+	// CookieSecure stamps the Secure attribute on the HttpOnly refresh
+	// cookie (buildos_refresh). Defaults TRUE — staging/prod terminate
+	// TLS at the ingress (Cloudflare), so the browser only stores a
+	// Secure cookie over HTTPS. It is gated OFF automatically when
+	// DevAuthMode=="header" (local http rigs would otherwise have the
+	// browser refuse the cookie), or explicitly via COOKIE_INSECURE=true.
+	// Never set COOKIE_INSECURE in production.
+	CookieSecure bool
+
 	// Vault (WS3) — encrypted BYOK credential store. VaultMasterKey is
 	// a standard-base64 32-byte AES-256 key (secret). Empty disables
 	// the vault entirely: no AI, no mailer, no /integrations routes
@@ -156,6 +165,12 @@ func LoadWithSource(ctx context.Context, src SecretSource) (*Config, error) {
 		return nil, fmt.Errorf("DATABASE_URL is required")
 	}
 
+	// Refresh-cookie Secure attribute defaults ON. It is forced OFF for the
+	// dev/CI header-auth rig (local http; the browser would drop a Secure
+	// cookie over plain http), or by an explicit COOKIE_INSECURE opt-out.
+	devAuthMode := getEnvStr("DEV_AUTH_MODE", "")
+	cookieSecure := !(devAuthMode == "header" || getEnvBool("COOKIE_INSECURE", false))
+
 	// secret resolves a key through the source, returning "" on miss.
 	// Used for fields where empty == disabled.
 	secret := func(key string) string {
@@ -185,6 +200,7 @@ func LoadWithSource(ctx context.Context, src SecretSource) (*Config, error) {
 
 		AuthRefreshTTL: getEnvDuration("AUTH_REFRESH_TTL", 0),
 		AuthResetTTL:   getEnvDuration("AUTH_RESET_TTL", 0),
+		CookieSecure:   cookieSecure,
 
 		VaultMasterKey:  secret("VAULT_MASTER_KEY"),
 		VaultKeyVersion: getEnvInt("VAULT_KEY_VERSION", 1),
@@ -192,7 +208,7 @@ func LoadWithSource(ctx context.Context, src SecretSource) (*Config, error) {
 		MailFrom:     getEnvStr("MAIL_FROM", ""),
 		MailFromName: getEnvStr("MAIL_FROM_NAME", "BuildOS"),
 
-		DevAuthMode: getEnvStr("DEV_AUTH_MODE", ""),
+		DevAuthMode: devAuthMode,
 
 		BootstrapToken: secret("BUILDOS_BOOTSTRAP_TOKEN"),
 

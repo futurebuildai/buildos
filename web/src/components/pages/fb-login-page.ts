@@ -2,6 +2,7 @@ import { html, css, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { FBElement } from '../base/fb-element.js';
 import '../atoms/fb-icon.js';
+import '../atoms/fb-logo.js';
 import '../atoms/fb-input.js';
 import '../atoms/fb-password-input.js';
 import '../atoms/fb-button.js';
@@ -59,7 +60,7 @@ export class FbLoginPage extends FBElement {
     return html`
       <section class="auth-card glass-card" aria-labelledby="login-title">
         <header class="auth-head">
-          <fb-icon name="hexagon" size="28"></fb-icon>
+          <div class="auth-logo"><fb-logo variant="full" size="32"></fb-logo></div>
           <h1 id="login-title" class="auth-title">Sign in to BuildOS</h1>
           <p class="auth-sub">Your construction system of execution.</p>
         </header>

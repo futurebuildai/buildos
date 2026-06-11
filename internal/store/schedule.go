@@ -130,6 +130,88 @@ func (s *ScheduleStore) UpdateSchedule(ctx context.Context, tx pgx.Tx, tasks []m
 	return nil
 }
 
+// InsertTaskParams is one row to be inserted by InsertTasks. CPM-output
+// columns (early_*, late_*, total_float, is_critical) are NEVER set on
+// insert — they land NULL/default until a recalc computes them.
+type InsertTaskParams struct {
+	ProjectID       uuid.UUID
+	WBSCode         string
+	Name            string
+	Status          string
+	DurationDays    int
+	PercentComplete int
+	AssignedCrew    []uuid.UUID
+}
+
+// InsertTasks bulk-inserts tasks for a project and returns the persisted
+// rows (id + DB defaults), preserving the input order. Each row is its own
+// INSERT … RETURNING — batches are small (a residential WBS is ~10-15
+// phases) so a loop is clearer than building one multi-row VALUES list, and
+// it keeps the column/scan list identical to GetProjectTasks. CPM-output
+// columns are intentionally omitted; they default to NULL/false.
+//
+// A 23505 (UNIQUE(project_id, wbs_code)) bubbles up unwrapped so the service
+// can map it to ErrInvalidInput via isUniqueViolation.
+func (s *ScheduleStore) InsertTasks(ctx context.Context, tx pgx.Tx, params []InsertTaskParams) ([]models.ProjectTask, error) {
+	out := make([]models.ProjectTask, 0, len(params))
+	for _, p := range params {
+		var crewArg any
+		if p.AssignedCrew != nil {
+			crewArg = p.AssignedCrew
+		}
+		var t models.ProjectTask
+		err := tx.QueryRow(ctx, `
+			INSERT INTO project_tasks (
+				project_id, wbs_code, name, duration_days, status, percent_complete, assigned_crew
+			) VALUES ($1, $2, $3, $4, $5, $6, $7)
+			RETURNING id, project_id, wbs_code, name, duration_days,
+			          early_start, early_finish, late_start, late_finish,
+			          total_float, is_critical, status, percent_complete, assigned_crew,
+			          created_at, updated_at`,
+			p.ProjectID, p.WBSCode, p.Name, p.DurationDays, p.Status, p.PercentComplete, crewArg,
+		).Scan(
+			&t.ID, &t.ProjectID, &t.WBSCode, &t.Name, &t.DurationDays,
+			&t.EarlyStart, &t.EarlyFinish, &t.LateStart, &t.LateFinish,
+			&t.TotalFloat, &t.IsCritical, &t.Status, &t.PercentComplete, &t.AssignedCrew,
+			&t.CreatedAt, &t.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("insert task %q: %w", p.WBSCode, err)
+		}
+		out = append(out, t)
+	}
+	return out, nil
+}
+
+// InsertDependencyParams is one task dependency row. Predecessor/Successor
+// IDs are resolved by the service from the batch's wbs_code→UUID map before
+// this is called.
+type InsertDependencyParams struct {
+	ProjectID      uuid.UUID
+	PredecessorID  uuid.UUID
+	SuccessorID    uuid.UUID
+	DependencyType string
+	LagDays        int
+}
+
+// InsertDependencies bulk-inserts task dependencies. A 23505
+// (UNIQUE(predecessor_id, successor_id)) bubbles up unwrapped so the service
+// can map it to ErrInvalidInput.
+func (s *ScheduleStore) InsertDependencies(ctx context.Context, tx pgx.Tx, params []InsertDependencyParams) error {
+	for _, p := range params {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO task_dependencies (
+				project_id, predecessor_id, successor_id, dependency_type, lag_days
+			) VALUES ($1, $2, $3, $4, $5)`,
+			p.ProjectID, p.PredecessorID, p.SuccessorID, p.DependencyType, p.LagDays,
+		)
+		if err != nil {
+			return fmt.Errorf("insert dependency %s->%s: %w", p.PredecessorID, p.SuccessorID, err)
+		}
+	}
+	return nil
+}
+
 // ScheduleResult maps physics engine output to DB-persistable fields.
 type ScheduleResult struct {
 	EarlyStart  time.Time

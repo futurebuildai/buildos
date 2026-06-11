@@ -4,13 +4,26 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/futurebuildai/buildos/internal/models"
 	"github.com/futurebuildai/buildos/internal/service"
 )
+
+// refreshCookieName is the HttpOnly cookie that carries the opaque refresh
+// token across reloads / deep-links. It is Path-scoped to the auth surface so
+// it rides ONLY the /api/v1/auth calls — every other API request authenticates
+// with the Bearer access-token header and never sees this cookie.
+const refreshCookieName = "buildos_refresh"
+
+// refreshCookiePath scopes the cookie to the auth surface. /api/v1/auth/refresh
+// is the only cookie-authed route; that scoping + SameSite=Strict is the CSRF
+// mitigation (see docs/security-posture.md).
+const refreshCookiePath = "/api/v1/auth"
 
 // AuthServicer is the subset of *service.AuthService consumed by AuthHandler.
 // The handler depends on the interface so unit tests can substitute a fake
@@ -28,12 +41,92 @@ type AuthServicer interface {
 // email/password authentication. BuildOS owns identity now (no external OIDC
 // provider): it mints its own RS256 access tokens and server-revocable opaque
 // refresh tokens.
+//
+// The refresh token rides BOTH the JSON body (backward-compat for API clients
+// and existing tests) AND an HttpOnly cookie. The cookie is what survives a
+// browser reload / deep-link: the SPA holds the access token in memory only, so
+// on boot it POSTs /refresh with no body and the browser replays the cookie.
 type AuthHandler struct {
 	svc AuthServicer
+	// cookieSecure stamps the Secure attribute on the refresh cookie. Defaults
+	// true (staging/prod are HTTPS via Cloudflare); gated off only for local
+	// non-prod http rigs so the browser will actually store/send the cookie.
+	cookieSecure bool
+	// refreshTTL is the cookie Max-Age. Mirrors the AuthService refresh-token
+	// lifetime so the cookie and the server-side token expire together.
+	refreshTTL time.Duration
 }
 
-// NewAuthHandler binds the handler to an AuthServicer.
-func NewAuthHandler(svc AuthServicer) *AuthHandler { return &AuthHandler{svc: svc} }
+// AuthHandlerOption configures an AuthHandler.
+type AuthHandlerOption func(*AuthHandler)
+
+// WithRefreshCookie configures the HttpOnly refresh-cookie transport: whether
+// the Secure attribute is set, and the cookie Max-Age (the refresh-token TTL).
+// A non-positive ttl falls back to service.DefaultRefreshTTL so the cookie
+// never outlives — or under-lives — the server-side token.
+func WithRefreshCookie(secure bool, ttl time.Duration) AuthHandlerOption {
+	return func(h *AuthHandler) {
+		h.cookieSecure = secure
+		if ttl > 0 {
+			h.refreshTTL = ttl
+		}
+	}
+}
+
+// NewAuthHandler binds the handler to an AuthServicer. Without options the
+// refresh cookie is Secure (production default) with the default refresh TTL.
+func NewAuthHandler(svc AuthServicer, opts ...AuthHandlerOption) *AuthHandler {
+	h := &AuthHandler{svc: svc, cookieSecure: true, refreshTTL: service.DefaultRefreshTTL}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
+}
+
+// setRefreshCookie writes the refresh token as an HttpOnly; Secure;
+// SameSite=Strict cookie scoped to /api/v1/auth. No Domain attribute is set:
+// the cookie is host-only, binding to whatever host serves it (so it works
+// unchanged through the Cloudflare Worker → Railway origin, scoped to the host
+// the browser sees, e.g. staging.futurebuild.ai).
+func (h *AuthHandler) setRefreshCookie(w http.ResponseWriter, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     refreshCookieName,
+		Value:    token,
+		Path:     refreshCookiePath,
+		MaxAge:   int(h.refreshTTL.Seconds()),
+		HttpOnly: true,
+		Secure:   h.cookieSecure,
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
+// clearRefreshCookie expires the refresh cookie (Max-Age=0) on the same Path
+// so the browser drops it. The attributes must match the set call for the
+// browser to overwrite the right cookie.
+func (h *AuthHandler) clearRefreshCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     refreshCookieName,
+		Value:    "",
+		Path:     refreshCookiePath,
+		MaxAge:   -1, // negative MaxAge => "Max-Age=0", delete now
+		HttpOnly: true,
+		Secure:   h.cookieSecure,
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
+// refreshTokenFromRequest resolves the refresh token: the JSON body wins (kept
+// for API clients / existing tests), falling back to the HttpOnly cookie that
+// the browser replays on a reload/deep-link silent refresh.
+func refreshTokenFromRequest(r *http.Request, bodyToken string) string {
+	if bodyToken != "" {
+		return bodyToken
+	}
+	if c, err := r.Cookie(refreshCookieName); err == nil {
+		return c.Value
+	}
+	return ""
+}
 
 // ---------- wire DTOs ----------
 
@@ -102,6 +195,7 @@ func (h *AuthHandler) ClaimFirstOwner(w http.ResponseWriter, r *http.Request) {
 		writeAuthError(w, r, err)
 		return
 	}
+	h.setRefreshCookie(w, pair.RefreshToken)
 	writeJSON(w, r, http.StatusCreated, newTokenPairResponse(pair))
 }
 
@@ -120,42 +214,61 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		writeAuthError(w, r, err)
 		return
 	}
+	h.setRefreshCookie(w, pair.RefreshToken)
 	writeJSON(w, r, http.StatusOK, newTokenPairResponse(pair))
 }
 
 // ---------- POST /auth/refresh ----------
 
-// Refresh rotates a refresh token and mints a fresh access token.
+// Refresh rotates a refresh token and mints a fresh access token. The token is
+// read from the JSON body when present, else from the HttpOnly buildos_refresh
+// cookie — which is how the SPA silently rehydrates a session on a hard reload
+// (it holds the access token in memory only, so it POSTs here with no body and
+// the browser replays the cookie). An empty body is therefore valid; only a
+// genuinely malformed (non-empty, non-JSON) body is a 400. The rotated token is
+// written back as a fresh cookie.
 // POST /api/v1/auth/refresh
 func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	var body refreshRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	// Decode leniently: an empty body (cookie-only silent refresh) is valid.
+	// io.EOF means no body was sent; anything else non-nil is malformed JSON.
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
 		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid JSON body")
 		return
 	}
-	pair, err := h.svc.Refresh(r.Context(), body.RefreshToken)
+	token := refreshTokenFromRequest(r, body.RefreshToken)
+	pair, err := h.svc.Refresh(r.Context(), token)
 	if err != nil {
+		// A dead/missing token clears any stale cookie so the browser stops
+		// replaying it on every boot.
+		h.clearRefreshCookie(w)
 		writeAuthError(w, r, err)
 		return
 	}
+	h.setRefreshCookie(w, pair.RefreshToken)
 	writeJSON(w, r, http.StatusOK, newTokenPairResponse(pair))
 }
 
 // ---------- POST /auth/logout ----------
 
 // Logout revokes the presented refresh token. Idempotent — 204 even if the
-// token was already gone.
+// token was already gone. The token is read from the body or the cookie; the
+// cookie is always cleared (Max-Age=0) so the browser stops replaying it.
+// An empty body is valid (cookie-only logout).
 // POST /api/v1/auth/logout
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	var body logoutRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
 		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid JSON body")
 		return
 	}
-	if err := h.svc.Logout(r.Context(), body.RefreshToken); err != nil {
+	token := refreshTokenFromRequest(r, body.RefreshToken)
+	if err := h.svc.Logout(r.Context(), token); err != nil {
 		writeAuthError(w, r, err)
 		return
 	}
+	// Always clear the cookie, even on the idempotent already-gone path.
+	h.clearRefreshCookie(w)
 	w.WriteHeader(http.StatusNoContent)
 }
 
