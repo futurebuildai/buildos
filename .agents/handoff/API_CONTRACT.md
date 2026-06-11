@@ -214,7 +214,8 @@ ALL monetary fields follow the Composite Currency Pattern:
 
 ### GET /api/v1/projects/{projectID}/schedule/gantt
 - **Auth:** JWT (org-scoped)
-- **Response:** `200 { data: { tasks: []TaskSchedule, critical_path: []uuid, project_end: timestamp } }`
+- **Response:** `200 { data: { tasks: []TaskSchedule, critical_path: []uuid, project_end: timestamp, dependencies: []TaskDependency } }`
+- **`dependencies`** is the task-dependency edge set (`{ id, project_id, predecessor_id, successor_id, dependency_type: 'FS'|'SS'|'FF'|'SF', lag_days }`), loaded from `task_dependencies` in the same read-only tx; stable `[]` (never `null`) when the project has no edges. The frontend draws dependency arrows from these (FS chains in v1).
 
 ### GET /api/v1/projects/{projectID}/tasks
 - **Auth:** JWT (org-scoped)
@@ -653,10 +654,37 @@ Native-AI-backed endpoints. BuildOS calls the Anthropic Messages API directly us
 
 ### POST /api/v1/projects/{projectID}/schedule/recommend-adjustments
 - **Auth:** JWT (superintendent+)
-- **Purpose:** Ask the AI client to suggest task duration nudges, apply them, and re-run CPM physics so floats/critical-path stay coherent.
-- **Response:** `200 { adjustments, applied_deltas, skipped_rationale_only }`
-  - If deltas applied but the CPM re-run was deferred, still returns `200` with the applied deltas (the next `/schedule/recalculate` catches up).
+- **Query:** `?dry_run=true` — **PREVIEW-FIRST (ESC-AUX-01: AI proposes, human commits).** Returns enriched per-row proposals and **mutates nothing** (no duration write, no recalc, no audit). The "Suggest adjustments" UI uses this, then commits selected rows via the sibling apply endpoint. Omitting the flag (or `dry_run=false`) keeps the legacy one-shot auto-apply path.
+- **Purpose:** Ask the AI client to **propose** task duration nudges, joined against the loaded task graph so each row carries its identity + old/new duration.
+- **Response:** `200 ScheduleAdjustmentSet`:
+  ```json
+  {
+    "adjustments": [
+      { "task_id": "uuid", "wbs_code": "1.0", "name": "Foundation",
+        "old_duration_days": 5, "new_duration_days": 9, "rationale": "…",
+        "is_critical": true, "proposed_change": true, "applied": false }
+    ],
+    "dry_run": true,
+    "proposed_changes": 1,     // rows with a real duration change to apply
+    "advisory_count": 1,       // monitor-only rows (no proposed change)
+    "applied_deltas": 0,       // rows written (always 0 on dry-run)
+    "critical_recomputed": false,
+    "skipped_rationale_only": 1 // == advisory_count (wire-compat alias)
+  }
+  ```
+  - `new_duration_days` is omitted on advisory rows. `applied` is `true` only on the legacy auto-apply path (never on dry-run).
+  - On the legacy path, if deltas applied but the CPM re-run was deferred, still returns `200` (the next `/schedule/recalculate` catches up).
 - **Errors:** `400 VALIDATION_ERROR` (project has no tasks), `404 NOT_FOUND`, `503 SERVICE_UNAVAILABLE` (no AI key / flow not available on worker binary), `429 RATE_LIMITED`, `502 UPSTREAM_ERROR`.
+
+### POST /api/v1/projects/{projectID}/schedule/adjustments/apply
+- **Auth:** JWT (superintendent+ — same CPM-affecting gate as `/recommend-adjustments` and `/recalculate`)
+- **Purpose:** **PREVIEW-FIRST commit (ESC-AUX-01).** Apply the user-selected duration proposals from a dry-run preview in one tx, then re-run CPM so floats/critical-path recompute.
+- **Body:** `{ adjustments: [{ wbs_code: string, new_duration_days: int }] }` (≥1 row)
+- **Validation:** each row's `wbs_code` must exist in the project and `new_duration_days` must be in `[1, 36500]`; duplicate/unknown wbs or out-of-range duration → `400 VALIDATION_ERROR` (all-or-nothing — a bad row fails the whole batch).
+- **Response:** `200 { applied_deltas: int, critical_recomputed: bool }`
+  - Audits one `schedule.adjustments.applied` row with per-task deltas `{ wbs, old, new }` (no free-text rationale in audit metadata).
+  - Recalc-deferred case still returns `200` with the applied deltas.
+- **Errors:** `400 VALIDATION_ERROR`, `404 NOT_FOUND` (cross-org), `503 SERVICE_UNAVAILABLE` (schedule trio not wired on the worker binary).
 
 **AI error mapping (both endpoints):**
 

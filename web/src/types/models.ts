@@ -410,6 +410,19 @@ export interface PipelineAnalyticsRow {
 // Mirrors internal/service/{schedule,agents}.go + internal/models/{procurement,feed}.go.
 // Money stays `*_cents` STRING + currency_code (normalizeCents coerces at the boundary).
 
+/** CPM dependency relationship (internal/models/types.DependencyType). v1 arrows render FS. */
+export type DependencyType = 'FS' | 'SS' | 'FF' | 'SF';
+
+/** internal/models.TaskDependency — one edge in a project's task graph. */
+export interface TaskDependency {
+  id: string;
+  project_id: string;
+  predecessor_id: string;
+  successor_id: string;
+  dependency_type: DependencyType;
+  lag_days: number;
+}
+
 /** GET /api/v1/projects/{projectID}/schedule/gantt (service/schedule.go GanttView). */
 export interface GanttView {
   tasks: ProjectTask[];
@@ -417,6 +430,8 @@ export interface GanttView {
   critical_path: string[];
   /** RFC3339; zero-value ("0001-01-01T…" / empty) when the schedule was never computed. */
   project_end: string;
+  /** Task dependency edges for drawing arrows; stable `[]` when no edges. */
+  dependencies?: TaskDependency[];
 }
 
 /** One task row in a recalculated CPM result (service/schedule.go TaskSchedule). */
@@ -449,30 +464,55 @@ export interface RecalcResult {
   recalculation_ms: number;
 }
 
-/** One AI duration nudge (service/agents.go). */
+/** One enriched AI duration proposal (service/agents.go ScheduleProposal). */
 export interface ScheduleAdjustment {
   task_id: string;
   wbs_code: string;
   name: string;
-  old_duration_days?: number;
+  old_duration_days: number;
+  /** Proposed duration; omitted on advisory / monitor-only rows. */
   new_duration_days?: number;
   rationale: string;
-  /** True when the model returned a number that was applied via UpdateTask. */
+  /** Whether the task is currently on the critical path. */
+  is_critical: boolean;
+  /** True iff this row carries a real duration change to apply (vs advisory). */
+  proposed_change: boolean;
+  /** True only on the legacy auto-apply path; always false on a dry-run preview. */
   applied: boolean;
 }
 
 /** POST .../schedule/recommend-adjustments (service/agents.go ScheduleAdjustmentSet). */
 export interface ScheduleAdjustmentSet {
   adjustments: ScheduleAdjustment[];
-  /** Count of durations actually changed (CPM re-run server-side). */
+  /** True when this was a PREVIEW (no writes). PREVIEW-FIRST: AI proposes, human commits. */
+  dry_run: boolean;
+  /** Count of rows with a real duration change the user could apply. */
+  proposed_changes: number;
+  /** Count of monitor-only / advisory rows (no proposed change). */
+  advisory_count: number;
+  /** Count of durations actually changed (0 on a dry-run preview). */
   applied_deltas: number;
-  /** Count of narrative-only suggestions (no change made). */
+  /** True when CPM re-ran after a real apply. */
+  critical_recomputed: boolean;
+  /** Wire-compat alias of advisory_count (narrative-only suggestions). */
   skipped_rationale_only: number;
   run_id?: string;
   tokens_used?: number;
   // Cost block retained only if billing survives standalone (OQ-3); rendered when present.
   cost_cents?: string;
   currency_code?: CurrencyCode;
+}
+
+/** One row in the apply request body (POST .../schedule/adjustments/apply). */
+export interface ScheduleAdjustmentApply {
+  wbs_code: string;
+  new_duration_days: number;
+}
+
+/** Response of POST .../schedule/adjustments/apply (service/agents.go ScheduleApplyResult). */
+export interface ScheduleApplyResult {
+  applied_deltas: number;
+  critical_recomputed: boolean;
 }
 
 /** Triage status (models/procurement.go) — OK → WARNING → CRITICAL → ORDERED. */
@@ -533,6 +573,35 @@ export interface DailyBriefing {
   session_id: string;
   task_count: number;
   alert_count: number;
+}
+
+// ----------------------------- Conversational assistant (Phase 2c) -----------------------------
+// POST /api/v1/agents/chat (internal/api/assistant.go). The endpoint is MULTI-TURN
+// but STATELESS server-side: the client owns the running thread and resends it
+// (capped) on every call — there is NO session_id in the response (unlike
+// DailyBriefing). Identity (org/role/sub) comes from JWT claims server-side and is
+// NEVER in the body. `tools_used` is the wire-safe transparency surface: tool name +
+// error flag ONLY (args/results are Confidential and withheld by design).
+
+/** One prior turn of the conversation, resent as `history`. */
+export interface ChatTurn {
+  role: 'user' | 'assistant';
+  text: string;
+}
+
+/** A tool the model consulted on this turn — name + error flag only, never args/results. */
+export interface ToolTrace {
+  name: string;
+  is_error: boolean;
+}
+
+/** POST /api/v1/agents/chat 200 body (unwrapped from the envelope `.data`). */
+export interface ChatResponse {
+  reply: string;
+  tools_used: ToolTrace[];
+  iterations: number;
+  /** true (still a 200) when the loop hit a bound before end_turn — answer may be incomplete. */
+  truncated: boolean;
 }
 
 // ----------------------------- Admin config (Phase 3c) -----------------------------

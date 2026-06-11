@@ -4,6 +4,7 @@ import { FBElement } from '../base/fb-element.js';
 import { portfolioStyles } from './portfolio-styles.js';
 import '../atoms/fb-chip.js';
 import '../atoms/fb-icon.js';
+import '../atoms/fb-markdown.js';
 import '../molecules/fb-feed-list.js';
 import '../organisms/fb-state.js';
 import { getDailyBriefing } from '../../api/endpoints/briefing.js';
@@ -42,15 +43,6 @@ export class FbBriefingPage extends FBElement {
         flex-wrap: wrap;
         gap: var(--fb-spacing-sm);
         margin-bottom: var(--fb-spacing-md);
-      }
-      .reply p {
-        margin: 0 0 var(--fb-spacing-sm);
-        color: var(--fb-text-primary);
-        line-height: 1.6;
-        white-space: pre-wrap;
-      }
-      .reply p:last-child {
-        margin-bottom: 0;
       }
       .section-label {
         font-size: var(--fb-text-title-sm);
@@ -100,15 +92,6 @@ export class FbBriefingPage extends FBElement {
     }
   }
 
-  /** Minimal markdown: split blank-line-separated paragraphs (no new deps). */
-  private renderReply(reply: string): TemplateResult {
-    const paragraphs = reply
-      .split(/\n{2,}/)
-      .map((p) => p.trim())
-      .filter(Boolean);
-    return html`<div class="reply">${paragraphs.map((p) => html`<p>${p}</p>`)}</div>`;
-  }
-
   private renderHero(): TemplateResult {
     if (this.loading)
       return html`<div class="hero">
@@ -142,7 +125,7 @@ export class FbBriefingPage extends FBElement {
         <fb-chip>${b.alert_count} ${b.alert_count === 1 ? 'alert' : 'alerts'}</fb-chip>
       </div>
       ${calm ? html`<p class="section-label">Nothing urgent this morning</p>` : nothing}
-      ${this.renderReply(b.reply)}
+      <fb-markdown .source=${b.reply}></fb-markdown>
     </div>`;
   }
 

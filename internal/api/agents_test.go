@@ -27,6 +27,9 @@ type mockAgentsService struct {
 	recResult service.ScheduleAdjustmentSet
 	recErr    error
 
+	applyResult service.ScheduleApplyResult
+	applyErr    error
+
 	// Captured args
 	lastBriefOrg     uuid.UUID
 	lastBriefSub     string
@@ -34,6 +37,10 @@ type mockAgentsService struct {
 	lastRecOrg       uuid.UUID
 	lastRecUserSub   string
 	lastRecProjectID uuid.UUID
+	lastRecDryRun    bool
+	lastApplyOrg     uuid.UUID
+	lastApplyProject uuid.UUID
+	lastApplyRows    []service.ScheduleAdjustmentApply
 }
 
 func (m *mockAgentsService) GenerateDailyBriefing(_ context.Context, callerOrgID uuid.UUID, callerOIDCSubject, callerRole string) (service.DailyBriefing, error) {
@@ -43,11 +50,20 @@ func (m *mockAgentsService) GenerateDailyBriefing(_ context.Context, callerOrgID
 	return m.briefingResult, m.briefingErr
 }
 
-func (m *mockAgentsService) RecommendScheduleAdjustments(_ context.Context, callerOrgID uuid.UUID, callerUserSub string, projectID uuid.UUID) (service.ScheduleAdjustmentSet, error) {
+func (m *mockAgentsService) RecommendScheduleAdjustments(_ context.Context, callerOrgID uuid.UUID, callerUserSub string, projectID uuid.UUID, dryRun bool) (service.ScheduleAdjustmentSet, error) {
 	m.lastRecOrg = callerOrgID
 	m.lastRecUserSub = callerUserSub
 	m.lastRecProjectID = projectID
+	m.lastRecDryRun = dryRun
 	return m.recResult, m.recErr
+}
+
+func (m *mockAgentsService) ApplyScheduleAdjustments(_ context.Context, callerOrgID uuid.UUID, callerUserSub string, projectID uuid.UUID, applies []service.ScheduleAdjustmentApply) (service.ScheduleApplyResult, error) {
+	m.lastApplyOrg = callerOrgID
+	m.lastRecUserSub = callerUserSub
+	m.lastApplyProject = projectID
+	m.lastApplyRows = applies
+	return m.applyResult, m.applyErr
 }
 
 // ---- DailyBriefing ----------------------------------------------------
@@ -223,8 +239,8 @@ func TestRecommendScheduleAdjustments_HappyPath(t *testing.T) {
 	five := 5
 	svc := &mockAgentsService{
 		recResult: service.ScheduleAdjustmentSet{
-			Adjustments: []ai.ScheduleAdjustment{
-				{TaskID: uuid.MustParse(testTaskID), NewDurationDays: &five, Rationale: "weather slip"},
+			Adjustments: []service.ScheduleProposal{
+				{TaskID: uuid.MustParse(testTaskID), WBSCode: "1.0", Name: "Foundation", OldDurationDays: 3, NewDurationDays: &five, Rationale: "weather slip", ProposedChange: true, Applied: true},
 			},
 			AppliedDeltas:        1,
 			SkippedRationaleOnly: 0,
@@ -248,11 +264,42 @@ func TestRecommendScheduleAdjustments_HappyPath(t *testing.T) {
 	if svc.lastRecUserSub != "test-sub" {
 		t.Errorf("service got user_sub=%q, want test-sub", svc.lastRecUserSub)
 	}
+	if svc.lastRecDryRun {
+		t.Error("dry_run defaulted to true, want false when the query param is absent")
+	}
 	body := w.Body.String()
-	for _, want := range []string{`"applied_deltas":1`, `"skipped_rationale_only":0`} {
+	for _, want := range []string{`"applied_deltas":1`, `"skipped_rationale_only":0`, `"wbs_code":"1.0"`, `"old_duration_days":3`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("response missing %q: %s", want, body)
 		}
+	}
+}
+
+func TestRecommendScheduleAdjustments_DryRunFlagParsed(t *testing.T) {
+	nine := 9
+	svc := &mockAgentsService{
+		recResult: service.ScheduleAdjustmentSet{
+			Adjustments: []service.ScheduleProposal{
+				{TaskID: uuid.MustParse(testTaskID), WBSCode: "1.0", Name: "Foundation", OldDurationDays: 5, NewDurationDays: &nine, Rationale: "cure", ProposedChange: true},
+			},
+			DryRun:          true,
+			ProposedChanges: 1,
+		},
+	}
+	h := NewAgentsHandler(svc)
+	r := buildRequest(t, "POST", "/api/v1/projects/"+testProjID+"/schedule/recommend-adjustments?dry_run=true",
+		testOrgID, map[string]string{"projectID": testProjID}, nil)
+	w := httptest.NewRecorder()
+	h.RecommendScheduleAdjustments(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, body=%s", w.Code, w.Body.String())
+	}
+	if !svc.lastRecDryRun {
+		t.Error("dry_run=true not threaded to the service")
+	}
+	if !strings.Contains(w.Body.String(), `"dry_run":true`) {
+		t.Errorf("response missing dry_run flag: %s", w.Body.String())
 	}
 }
 
@@ -353,7 +400,7 @@ func TestRecommendScheduleAdjustments_RecalcDeferredReturns200(t *testing.T) {
 	three := 3
 	svc := &mockAgentsService{
 		recResult: service.ScheduleAdjustmentSet{
-			Adjustments:   []ai.ScheduleAdjustment{{TaskID: uuid.MustParse(testTaskID), NewDurationDays: &three}},
+			Adjustments:   []service.ScheduleProposal{{TaskID: uuid.MustParse(testTaskID), WBSCode: "1.0", Name: "Foundation", OldDurationDays: 5, NewDurationDays: &three, ProposedChange: true, Applied: true}},
 			AppliedDeltas: 1,
 		},
 		recErr: errors.New("apply succeeded; recalc deferred: deadline exceeded"),
@@ -364,6 +411,108 @@ func TestRecommendScheduleAdjustments_RecalcDeferredReturns200(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.RecommendScheduleAdjustments(w, r)
 
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d (recalc-deferred should still 200), body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"applied_deltas":1`) {
+		t.Errorf("body missing applied_deltas: %s", w.Body.String())
+	}
+}
+
+// ---- ApplyScheduleAdjustments ----------------------------------------
+
+func TestApplyScheduleAdjustments_HappyPath(t *testing.T) {
+	svc := &mockAgentsService{
+		applyResult: service.ScheduleApplyResult{AppliedDeltas: 2, CriticalRecomputed: true},
+	}
+	h := NewAgentsHandler(svc)
+	body := strings.NewReader(`{"adjustments":[{"wbs_code":"1.0","new_duration_days":12},{"wbs_code":"2.0","new_duration_days":4}]}`)
+	r := buildRequest(t, "POST", "/api/v1/projects/"+testProjID+"/schedule/adjustments/apply",
+		testOrgID, map[string]string{"projectID": testProjID}, body)
+	w := httptest.NewRecorder()
+	h.ApplyScheduleAdjustments(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, body=%s", w.Code, w.Body.String())
+	}
+	if svc.lastApplyOrg.String() != testOrgID || svc.lastApplyProject.String() != testProjID {
+		t.Errorf("service got org/project = %s/%s, want %s/%s", svc.lastApplyOrg, svc.lastApplyProject, testOrgID, testProjID)
+	}
+	if len(svc.lastApplyRows) != 2 {
+		t.Fatalf("service got %d rows, want 2", len(svc.lastApplyRows))
+	}
+	if svc.lastApplyRows[0].WBSCode != "1.0" || svc.lastApplyRows[0].NewDurationDays != 12 {
+		t.Errorf("row[0] = %+v, want {1.0 12}", svc.lastApplyRows[0])
+	}
+	if !strings.Contains(w.Body.String(), `"applied_deltas":2`) {
+		t.Errorf("body missing applied_deltas: %s", w.Body.String())
+	}
+}
+
+func TestApplyScheduleAdjustments_EmptyBodyReturns400(t *testing.T) {
+	svc := &mockAgentsService{}
+	h := NewAgentsHandler(svc)
+	body := strings.NewReader(`{"adjustments":[]}`)
+	r := buildRequest(t, "POST", "/api/v1/projects/"+testProjID+"/schedule/adjustments/apply",
+		testOrgID, map[string]string{"projectID": testProjID}, body)
+	w := httptest.NewRecorder()
+	h.ApplyScheduleAdjustments(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400", w.Code)
+	}
+	if len(svc.lastApplyRows) != 0 {
+		t.Error("service invoked on empty adjustments")
+	}
+}
+
+func TestApplyScheduleAdjustments_InvalidInputReturns400(t *testing.T) {
+	h := NewAgentsHandler(&mockAgentsService{applyErr: service.ErrInvalidInput})
+	body := strings.NewReader(`{"adjustments":[{"wbs_code":"99.0","new_duration_days":0}]}`)
+	r := buildRequest(t, "POST", "/api/v1/projects/"+testProjID+"/schedule/adjustments/apply",
+		testOrgID, map[string]string{"projectID": testProjID}, body)
+	w := httptest.NewRecorder()
+	h.ApplyScheduleAdjustments(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400", w.Code)
+	}
+}
+
+func TestApplyScheduleAdjustments_NotFoundReturns404(t *testing.T) {
+	h := NewAgentsHandler(&mockAgentsService{applyErr: service.ErrNotFound})
+	body := strings.NewReader(`{"adjustments":[{"wbs_code":"1.0","new_duration_days":6}]}`)
+	r := buildRequest(t, "POST", "/api/v1/projects/"+testProjID+"/schedule/adjustments/apply",
+		testOrgID, map[string]string{"projectID": testProjID}, body)
+	w := httptest.NewRecorder()
+	h.ApplyScheduleAdjustments(w, r)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status=%d, want 404", w.Code)
+	}
+}
+
+func TestApplyScheduleAdjustments_BadProjectIDReturns400(t *testing.T) {
+	h := NewAgentsHandler(&mockAgentsService{})
+	body := strings.NewReader(`{"adjustments":[{"wbs_code":"1.0","new_duration_days":6}]}`)
+	r := buildRequest(t, "POST", "/api/v1/projects/not-a-uuid/schedule/adjustments/apply",
+		testOrgID, map[string]string{"projectID": "not-a-uuid"}, body)
+	w := httptest.NewRecorder()
+	h.ApplyScheduleAdjustments(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400", w.Code)
+	}
+}
+
+func TestApplyScheduleAdjustments_RecalcDeferredReturns200(t *testing.T) {
+	// Deltas applied but the CPM re-run deferred → 200 with the result.
+	svc := &mockAgentsService{
+		applyResult: service.ScheduleApplyResult{AppliedDeltas: 1},
+		applyErr:    errors.New("apply succeeded; recalc deferred: deadline exceeded"),
+	}
+	h := NewAgentsHandler(svc)
+	body := strings.NewReader(`{"adjustments":[{"wbs_code":"1.0","new_duration_days":6}]}`)
+	r := buildRequest(t, "POST", "/api/v1/projects/"+testProjID+"/schedule/adjustments/apply",
+		testOrgID, map[string]string{"projectID": testProjID}, body)
+	w := httptest.NewRecorder()
+	h.ApplyScheduleAdjustments(w, r)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d (recalc-deferred should still 200), body=%s", w.Code, w.Body.String())
 	}

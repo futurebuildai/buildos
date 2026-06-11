@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/futurebuildai/buildos/internal/ai"
+	"github.com/futurebuildai/buildos/internal/store"
 )
 
 // fakeBriefer is the test double for DailyBriefer. Captures the
@@ -89,11 +90,36 @@ func TestAgentsService_RecommendScheduleAdjustments_RejectsBadInput(t *testing.T
 	// requires a non-nil briefer for daily-briefing tests; pass one
 	// here for symmetry — the field is unused on this path.
 	svc := NewAgentsService(nil, nil, nil, nil, nil, &fakeBriefer{}, &fakeAdjuster{}, nil)
-	if _, err := svc.RecommendScheduleAdjustments(context.Background(), uuid.Nil, "sub-1", uuid.New()); !errors.Is(err, ErrInvalidInput) {
+	if _, err := svc.RecommendScheduleAdjustments(context.Background(), uuid.Nil, "sub-1", uuid.New(), false); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("nil org: err = %v, want ErrInvalidInput", err)
 	}
-	if _, err := svc.RecommendScheduleAdjustments(context.Background(), uuid.New(), "sub-1", uuid.Nil); !errors.Is(err, ErrInvalidInput) {
+	if _, err := svc.RecommendScheduleAdjustments(context.Background(), uuid.New(), "sub-1", uuid.Nil, false); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("nil project: err = %v, want ErrInvalidInput", err)
+	}
+}
+
+func TestAgentsService_ApplyScheduleAdjustments_RejectsBadInput(t *testing.T) {
+	svc := NewAgentsService(nil, nil, nil, store.NewScheduleStore(), &ScheduleService{}, &fakeBriefer{}, &fakeAdjuster{}, nil)
+	row := []ScheduleAdjustmentApply{{WBSCode: "1.0", NewDurationDays: 5}}
+	if _, err := svc.ApplyScheduleAdjustments(context.Background(), uuid.Nil, "sub-1", uuid.New(), row); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("nil org: err = %v, want ErrInvalidInput", err)
+	}
+	if _, err := svc.ApplyScheduleAdjustments(context.Background(), uuid.New(), "sub-1", uuid.Nil, row); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("nil project: err = %v, want ErrInvalidInput", err)
+	}
+	if _, err := svc.ApplyScheduleAdjustments(context.Background(), uuid.New(), "sub-1", uuid.New(), nil); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("empty adjustments: err = %v, want ErrInvalidInput", err)
+	}
+}
+
+func TestAgentsService_ApplyScheduleAdjustments_NilScheduleServiceReturnsSentinel(t *testing.T) {
+	// Worker-binary construction (no schedule trio) must surface the
+	// sentinel rather than panicking on a nil call.
+	svc := NewAgentsService(nil, nil, nil, nil, nil, &fakeBriefer{}, &fakeAdjuster{}, nil)
+	row := []ScheduleAdjustmentApply{{WBSCode: "1.0", NewDurationDays: 5}}
+	_, err := svc.ApplyScheduleAdjustments(context.Background(), uuid.New(), "sub-1", uuid.New(), row)
+	if !errors.Is(err, ErrAgentsScheduleServiceUnavailable) {
+		t.Errorf("err = %v, want ErrAgentsScheduleServiceUnavailable", err)
 	}
 }
 
@@ -103,7 +129,7 @@ func TestAgentsService_RecommendScheduleAdjustments_NilAdjusterReturnsSentinel(t
 	// In that case the flow must return ErrAgentsAIUnavailable
 	// rather than panicking on a nil method call.
 	svc := NewAgentsService(nil, nil, nil, nil, nil, &fakeBriefer{}, nil, nil)
-	_, err := svc.RecommendScheduleAdjustments(context.Background(), uuid.New(), "sub-1", uuid.New())
+	_, err := svc.RecommendScheduleAdjustments(context.Background(), uuid.New(), "sub-1", uuid.New(), false)
 	if !errors.Is(err, ErrAgentsAIUnavailable) {
 		t.Errorf("err = %v, want ErrAgentsAIUnavailable", err)
 	}
@@ -114,7 +140,7 @@ func TestAgentsService_RecommendScheduleAdjustments_NilScheduleServiceReturnsSen
 	// guarded path. RecommendScheduleAdjustments needs both to load
 	// the task graph and to re-run CPM after applying deltas.
 	svc := NewAgentsService(nil, nil, nil, nil, nil, &fakeBriefer{}, &fakeAdjuster{}, nil)
-	_, err := svc.RecommendScheduleAdjustments(context.Background(), uuid.New(), "sub-1", uuid.New())
+	_, err := svc.RecommendScheduleAdjustments(context.Background(), uuid.New(), "sub-1", uuid.New(), false)
 	if !errors.Is(err, ErrAgentsScheduleServiceUnavailable) {
 		t.Errorf("err = %v, want ErrAgentsScheduleServiceUnavailable", err)
 	}

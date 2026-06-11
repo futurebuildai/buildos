@@ -121,11 +121,21 @@ func TestRecalculate_NotFoundReturns404(t *testing.T) {
 }
 
 func TestGantt_OK(t *testing.T) {
+	pred := uuid.MustParse(testTaskID)
+	succ := uuid.New()
 	svc := &mockScheduleService{
 		ganttResult: service.GanttView{
 			Tasks:        []models.ProjectTask{{Name: "Foundation", IsCritical: true}},
-			CriticalPath: []uuid.UUID{uuid.MustParse(testTaskID)},
+			CriticalPath: []uuid.UUID{pred},
 			ProjectEnd:   time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
+			Dependencies: []models.TaskDependency{{
+				ID:             uuid.New(),
+				ProjectID:      uuid.MustParse(testProjID),
+				PredecessorID:  pred,
+				SuccessorID:    succ,
+				DependencyType: "FS",
+				LagDays:        0,
+			}},
 		},
 	}
 	h := NewScheduleHandler(svc)
@@ -135,6 +145,18 @@ func TestGantt_OK(t *testing.T) {
 	h.Gantt(w, r)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d, body=%s", w.Code, w.Body.String())
+	}
+	// The enriched Gantt now serializes a `dependencies` array on the wire so
+	// the frontend can draw dependency arrows (Chunk 3).
+	body := w.Body.String()
+	if !strings.Contains(body, `"dependencies"`) {
+		t.Errorf("response missing dependencies array: %s", body)
+	}
+	if !strings.Contains(body, `"predecessor_id":"`+pred.String()+`"`) {
+		t.Errorf("dependency predecessor_id not serialized: %s", body)
+	}
+	if !strings.Contains(body, `"dependency_type":"FS"`) {
+		t.Errorf("dependency_type not serialized: %s", body)
 	}
 }
 

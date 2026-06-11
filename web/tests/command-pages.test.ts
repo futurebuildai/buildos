@@ -8,6 +8,7 @@ vi.mock('../src/api/endpoints/schedule.js', () => ({
   getGantt: vi.fn(),
   recalculateSchedule: vi.fn(),
   recommendAdjustments: vi.fn(),
+  applyAdjustments: vi.fn(),
 }));
 vi.mock('../src/api/endpoints/procurement.js', () => ({
   listProcurement: vi.fn(),
@@ -344,17 +345,6 @@ describe('fb-activity-page', () => {
   });
 });
 
-describe('fb-assistant-page', () => {
-  it('lists the live AI capabilities when AI is on', async () => {
-    const el = await mount('fb-assistant-page');
-    await flush(el);
-    expect(el.shadowRoot!.querySelectorAll('.cap').length).toBe(2);
-  });
-
-  it('renders the gated panel when AI is off', async () => {
-    markAiUnconfigured();
-    const el = await mount('fb-assistant-page');
-    await flush(el);
-    expect(el.shadowRoot!.querySelector('fb-state')?.getAttribute('mode')).toBe('gated');
-  });
-});
+// fb-assistant-page now hits POST /api/v1/agents/chat, which command-pages.test
+// does not mock. Its behavior (chat thread, grounding chips, history trim, 503 vs
+// 403 states) is covered in dedicated assistant-page.test.ts.

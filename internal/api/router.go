@@ -353,6 +353,11 @@ func NewRouter(cfg RouterConfig) http.Handler {
 					if agents != nil {
 						r.With(mw.RequireMinRole(mw.RoleSuperintendent)).
 							Post("/recommend-adjustments", agents.RecommendScheduleAdjustments)
+						// PREVIEW-FIRST (ESC-AUX-01): apply the
+						// user-selected duration proposals from a
+						// dry-run preview. Same superintendent+ gate.
+						r.With(mw.RequireMinRole(mw.RoleSuperintendent)).
+							Post("/adjustments/apply", agents.ApplyScheduleAdjustments)
 					}
 				})
 

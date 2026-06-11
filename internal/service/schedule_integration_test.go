@@ -305,6 +305,67 @@ func TestScheduleService_GetGantt_NeverComputedAndCrossTenant(t *testing.T) {
 	}
 }
 
+// TestScheduleService_GetGantt_ReturnsDependencies covers the Gantt-deps enrich
+// (Chunk 3, frontend dependency arrows): GetGantt now loads and returns the
+// project's task_dependencies edges from the same read-only tx, and a foreign
+// org's read is still hidden as ErrNotFound (the deps loader is behind the org
+// guard, not bypassing it).
+func TestScheduleService_GetGantt_ReturnsDependencies(t *testing.T) {
+	svc, fx := newScheduleService(t)
+	ctx := context.Background()
+
+	t1 := seedSchedTask(t, svc.pool, fx.projectID, "1.0", "Foundation", 5)
+	t2 := seedSchedTask(t, svc.pool, fx.projectID, "2.0", "Framing", 3)
+	seedSchedDep(t, svc.pool, fx.projectID, t1, t2) // FS, lag 0
+
+	gantt, err := svc.GetGantt(ctx, fx.projectID, fx.orgID)
+	if err != nil {
+		t.Fatalf("GetGantt: %v", err)
+	}
+	if gantt.Dependencies == nil {
+		t.Fatal("Dependencies must be non-nil (stable [] for JSON)")
+	}
+	if len(gantt.Dependencies) != 1 {
+		t.Fatalf("gantt dependencies = %d, want 1", len(gantt.Dependencies))
+	}
+	dep := gantt.Dependencies[0]
+	if dep.PredecessorID != t1 || dep.SuccessorID != t2 {
+		t.Errorf("edge = %s→%s, want %s→%s", dep.PredecessorID, dep.SuccessorID, t1, t2)
+	}
+	if dep.DependencyType != "FS" {
+		t.Errorf("dependency_type = %q, want FS", dep.DependencyType)
+	}
+	if dep.ProjectID != fx.projectID {
+		t.Errorf("dep project_id = %s, want %s", dep.ProjectID, fx.projectID)
+	}
+
+	// Cross-tenant Gantt read (with deps) is still hidden behind the org guard.
+	if _, err := svc.GetGantt(ctx, fx.projectID, uuid.New()); !errors.Is(err, ErrNotFound) {
+		t.Errorf("cross-tenant GetGantt = %v, want ErrNotFound", err)
+	}
+}
+
+// TestScheduleService_GetGantt_NoDependencies covers the empty-edge case: a
+// project with tasks but no dependencies returns a non-nil, empty Dependencies
+// slice (so the JSON is `[]`, never `null`).
+func TestScheduleService_GetGantt_NoDependencies(t *testing.T) {
+	svc, fx := newScheduleService(t)
+	ctx := context.Background()
+
+	seedSchedTask(t, svc.pool, fx.projectID, "1.0", "Foundation", 5)
+
+	gantt, err := svc.GetGantt(ctx, fx.projectID, fx.orgID)
+	if err != nil {
+		t.Fatalf("GetGantt: %v", err)
+	}
+	if gantt.Dependencies == nil {
+		t.Fatal("Dependencies must be non-nil even with no edges")
+	}
+	if len(gantt.Dependencies) != 0 {
+		t.Errorf("dependencies = %d, want 0", len(gantt.Dependencies))
+	}
+}
+
 // TestScheduleService_ListAndUpdateTask covers the DB-backed task list + partial
 // update entrypoints (the unit tests only reach their pre-tx validation gates):
 // the status/critical filters narrow the set, an update round-trips

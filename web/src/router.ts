@@ -210,8 +210,12 @@ export const routes: RouteDef[] = [
 
 // ------------------------------- Matching --------------------------------
 function matchPath(pattern: string, actual: string): Record<string, string> | null {
+  // Strip the query string + hash before segment matching — deep-links like
+  // /portfolio/financials?project=<id> must match the /portfolio/financials
+  // route, not fall through to /not-found.
+  const cleanActual = actual.split('?')[0]?.split('#')[0] ?? actual;
   const pSegs = pattern.split('/').filter(Boolean);
-  const aSegs = actual.split('/').filter(Boolean);
+  const aSegs = cleanActual.split('/').filter(Boolean);
   if (pSegs.length !== aSegs.length) return null;
   const params: Record<string, string> = {};
   for (let i = 0; i < pSegs.length; i++) {
@@ -226,7 +230,7 @@ function matchPath(pattern: string, actual: string): Record<string, string> | nu
   return params;
 }
 
-function findRoute(path: string): ResolvedRoute | null {
+export function findRoute(path: string): ResolvedRoute | null {
   // Static routes win over param routes; iterate static-first.
   const ordered = [...routes].sort(
     (a, b) => Number(a.path.includes(':')) - Number(b.path.includes(':')),

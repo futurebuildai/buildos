@@ -12,7 +12,9 @@ import type {
   GanttView,
   ProjectTask,
   RecalcResult,
+  ScheduleAdjustmentApply,
   ScheduleAdjustmentSet,
+  ScheduleApplyResult,
 } from '../../types/models.js';
 
 export function getGantt(projectId: string): Promise<GanttView> {
@@ -62,11 +64,35 @@ export function updateTask(
     .then((r) => r.task);
 }
 
-/** AI duration nudges — applied server-side, returned for post-hoc transparency (§3). */
-export function recommendAdjustments(projectId: string): Promise<ScheduleAdjustmentSet> {
+/**
+ * AI duration proposals. PREVIEW-FIRST (ESC-AUX-01): the "Suggest adjustments" UI
+ * calls this with `dryRun=true` to get per-row proposals that mutate NOTHING; the
+ * user then commits the selected rows via `applyAdjustments`. (dryRun=false keeps
+ * the legacy one-shot auto-apply path.)
+ */
+export function recommendAdjustments(
+  projectId: string,
+  dryRun = true,
+): Promise<ScheduleAdjustmentSet> {
+  const q = dryRun ? '?dry_run=true' : '';
   return api
     .post<ScheduleAdjustmentSet>(
-      `/api/v1/projects/${encodeURIComponent(projectId)}/schedule/recommend-adjustments`,
+      `/api/v1/projects/${encodeURIComponent(projectId)}/schedule/recommend-adjustments${q}`,
     )
     .then((r) => normalizeCents(r));
+}
+
+/**
+ * Commit the user-selected duration proposals from a dry-run preview (PREVIEW-FIRST,
+ * ESC-AUX-01). The server validates each row, updates durations in one tx, then
+ * re-runs CPM so the critical path / floats recompute.
+ */
+export function applyAdjustments(
+  projectId: string,
+  adjustments: ScheduleAdjustmentApply[],
+): Promise<ScheduleApplyResult> {
+  return api.post<ScheduleApplyResult>(
+    `/api/v1/projects/${encodeURIComponent(projectId)}/schedule/adjustments/apply`,
+    { adjustments },
+  );
 }

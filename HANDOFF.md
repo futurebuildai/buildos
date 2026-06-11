@@ -273,6 +273,36 @@ govulncheck clean. PRs #9 onward also have CI green at merge time
 
 ## In flight
 
+### Agentic-UX Chunk 2b — PREVIEW-FIRST schedule apply/reject (branch `feature/agentic-ux`, NOT committed)
+ESC-AUX-01, owner-approved PREVIEW-FIRST (AI proposes, human commits). Replaces the old
+"recommend-adjustments silently auto-applies" behavior on the schedule page.
+- **Backend (`internal/service/agents.go`, `internal/api/agents.go`, `router.go`):**
+  `RecommendScheduleAdjustments` gained a `dryRun` param + `?dry_run=true` on the existing
+  `POST .../schedule/recommend-adjustments`. Dry-run loads the graph + calls the AI, builds
+  **enriched per-row proposals** (`ScheduleProposal{task_id,wbs_code,name,old_duration_days,
+  new_duration_days?,rationale,is_critical,proposed_change,applied}`) and **mutates nothing**
+  (read-only tx, no UpdateTask/recalc/audit). New sibling `POST .../schedule/adjustments/apply`
+  (`ApplyScheduleAdjustments`, superintendent+) takes `{adjustments:[{wbs_code,new_duration_days}]}`,
+  validates each (wbs in project, duration [1,36500], no dupes — all-or-nothing → 400), updates
+  durations in one tx, recalcs CPM, and audits **`schedule.adjustments.applied`** with per-row
+  `{wbs,old,new}` deltas (NO rationale in audit metadata). Legacy non-dry-run auto-apply path kept.
+- **Web (`fb-schedule-page.ts`, `api/endpoints/schedule.ts`, `types/models.ts`):** the "Suggest
+  adjustments" modal now calls `recommendAdjustments(id, dryRun=true)` and renders a **Proposed
+  changes** section (per-row `fb-checkbox` + `wbs · name`, `Xd → Yd` in mono, critical tag,
+  rationale via `fb-markdown`) and a separate **Advisory (monitor only)** section with no apply
+  control. Header reads "N proposed changes · M advisory" (no "applied"). "Apply selected" /
+  "Apply all" footer buttons call `applyAdjustments`, refresh the Gantt, show an applied banner;
+  loading/disabled-while-applying + error toast. Chunk 3's task-detail drawer preserved.
+- **Tests:** Go unit (handler dry_run-flag parse, apply RBAC/validation/404/recalc-deferred 200) +
+  integration (dry-run mutates nothing/no audit; apply updates durations + recalcs + audits per-row
+  deltas; bad/unknown wbs + out-of-range rejected; cross-org 404). Web vitest
+  (`tests/schedule-adjustments.test.ts`): dry_run call shape, proposed-vs-advisory render, apply
+  payload, reject-a-row, advisory has no checkbox, error state, AI-gated panel.
+- **Docs:** API_CONTRACT.md updated (dry_run flag + enriched ScheduleAdjustmentSet + apply endpoint).
+- **Gates green:** `make audit` ALL PASSED; `go vet ./...`; `go build -tags=prod ./...`;
+  `go test -tags=integration -run "Adjust|Schedule|Gantt" ./internal/...` ok; web typecheck / 305
+  vitest / lint / build all green. **NOT committed/pushed (per task instruction).**
+
 ### ✅ Phase 0c — ingress + branding + session persistence — MERGED + DEPLOYED + STAGING SEEDED (2026-06-11)
 Branch `feature/phase-0c-ingress` (NOT merged). Answers "the app feels like a blank shell": BuildOS had
 no way to author operational data (hydrate_project was a stub; HR/budgets read-only), so the CPM Gantt —

@@ -224,14 +224,16 @@ func (s *ScheduleService) recalcOnTx(ctx context.Context, tx pgx.Tx, projectID, 
 }
 
 // GanttView is the response shape for GET /schedule/gantt: the full task
-// list, the IDs of critical-path tasks (in WBS order), and the project
-// end date computed from stored CPM results. Critical path is read from
-// is_critical column rather than re-running the physics engine — the
-// engine results are persisted by RecalculateSchedule.
+// list, the IDs of critical-path tasks (in WBS order), the project end date
+// computed from stored CPM results, and the task dependency edges (so the
+// frontend can draw dependency arrows). Critical path is read from the
+// is_critical column rather than re-running the physics engine — the engine
+// results are persisted by RecalculateSchedule.
 type GanttView struct {
-	Tasks        []models.ProjectTask `json:"tasks"`
-	CriticalPath []uuid.UUID          `json:"critical_path"`
-	ProjectEnd   time.Time            `json:"project_end"`
+	Tasks        []models.ProjectTask    `json:"tasks"`
+	CriticalPath []uuid.UUID             `json:"critical_path"`
+	ProjectEnd   time.Time               `json:"project_end"`
+	Dependencies []models.TaskDependency `json:"dependencies"`
 }
 
 // GetGantt returns the Gantt-shaped view of a project's stored schedule.
@@ -246,7 +248,17 @@ func (s *ScheduleService) GetGantt(ctx context.Context, projectID, callerOrgID u
 		if err != nil {
 			return err
 		}
+		// Dependencies are loaded from the same read-only tx; the store
+		// already has this loader (used by the recalc path) — the Gantt
+		// read path just never called it. No new query, no migration.
+		deps, err := s.scheduleStore.GetProjectDependencies(ctx, tx, projectID)
+		if err != nil {
+			return err
+		}
 		view = ganttFromTasks(tasks)
+		if deps != nil {
+			view.Dependencies = deps
+		}
 		return nil
 	})
 	if err != nil {
@@ -265,7 +277,11 @@ func (s *ScheduleService) GetGantt(ctx context.Context, projectID, callerOrgID u
 // and an empty critical path; the frontend can detect this and prompt
 // the user to run /recalculate.
 func ganttFromTasks(tasks []models.ProjectTask) GanttView {
-	view := GanttView{Tasks: tasks, CriticalPath: make([]uuid.UUID, 0)}
+	view := GanttView{
+		Tasks:        tasks,
+		CriticalPath: make([]uuid.UUID, 0),
+		Dependencies: make([]models.TaskDependency, 0),
+	}
 	for _, t := range tasks {
 		if t.IsCritical {
 			view.CriticalPath = append(view.CriticalPath, t.ID)

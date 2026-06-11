@@ -13,6 +13,7 @@ export * from './fb-checkbox.js';
 export * from './fb-switch.js';
 export * from './fb-radio.js';
 export * from './fb-chip.js';
+export * from './fb-markdown.js';
 export * from './fb-spinner.js';
 export * from './fb-money.js';
 export * from './fb-money-input.js';

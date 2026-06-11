@@ -205,12 +205,28 @@ func TestAgentsService_RecommendScheduleAdjustments(t *testing.T) {
 	agents := NewAgentsService(sched.pool, nil, nil, store.NewScheduleStore(), sched, nil, adjuster, rec)
 
 	t.Run("applies deltas, audits, and re-runs CPM", func(t *testing.T) {
-		got, err := agents.RecommendScheduleAdjustments(ctx, fx.orgID, "owner-sub", fx.projectID)
+		got, err := agents.RecommendScheduleAdjustments(ctx, fx.orgID, "owner-sub", fx.projectID, false)
 		if err != nil {
 			t.Fatalf("RecommendScheduleAdjustments: %v", err)
 		}
 		if got.AppliedDeltas != 1 || got.SkippedRationaleOnly != 1 || len(got.Adjustments) != 2 {
 			t.Errorf("result = %+v, want applied 1 / skipped 1 / 2 adjustments", got)
+		}
+		// Enriched per-row proposals carry the identity from the loaded task.
+		var applied *ScheduleProposal
+		for i := range got.Adjustments {
+			if got.Adjustments[i].TaskID == a {
+				applied = &got.Adjustments[i]
+			}
+		}
+		if applied == nil {
+			t.Fatalf("no proposal for applied task %s in %+v", a, got.Adjustments)
+		}
+		if applied.WBSCode != "1.0" || applied.Name != "Foundation" || applied.OldDurationDays != 5 {
+			t.Errorf("applied proposal identity = %+v, want wbs 1.0 / Foundation / old 5", applied)
+		}
+		if !applied.Applied || applied.NewDurationDays == nil || *applied.NewDurationDays != newDur {
+			t.Errorf("applied proposal = %+v, want Applied + new %d", applied, newDur)
 		}
 		// The adjuster saw the loaded snapshot (both tasks + the dep).
 		if len(adjuster.lastReq.Tasks) != 2 || len(adjuster.lastReq.Dependencies) != 1 {
@@ -237,7 +253,156 @@ func TestAgentsService_RecommendScheduleAdjustments(t *testing.T) {
 	})
 
 	t.Run("cross-org project surfaces ErrNotFound", func(t *testing.T) {
-		if _, err := agents.RecommendScheduleAdjustments(ctx, uuid.New(), "intruder", fx.projectID); !errors.Is(err, ErrNotFound) {
+		if _, err := agents.RecommendScheduleAdjustments(ctx, uuid.New(), "intruder", fx.projectID, false); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("err = %v, want ErrNotFound", err)
+		}
+	})
+}
+
+// TestAgentsService_RecommendScheduleAdjustments_DryRun proves the
+// PREVIEW-FIRST contract (ESC-AUX-01): a dry-run preview returns enriched
+// proposals (wbs/name/old/new/critical) but MUTATES NOTHING — no duration
+// change in the DB, no recalc, no audit row.
+func TestAgentsService_RecommendScheduleAdjustments_DryRun(t *testing.T) {
+	sched, fx := newScheduleService(t)
+	ctx := context.Background()
+
+	a := seedSchedTask(t, sched.pool, fx.projectID, "1.0", "Foundation", 5)
+	b := seedSchedTask(t, sched.pool, fx.projectID, "2.0", "Framing", 3)
+	seedSchedDep(t, sched.pool, fx.projectID, a, b)
+
+	newDur := 9
+	adjuster := &fakeAdjuster{resp: &ai.UpdateScheduleResponse{Adjustments: []ai.ScheduleAdjustment{
+		{TaskID: a, NewDurationDays: &newDur, Rationale: "extend foundation cure"},
+		{TaskID: b, NewDurationDays: nil, Rationale: "monitor only"},
+	}}}
+	rec := &capturingAuditRecorder{}
+	agents := NewAgentsService(sched.pool, nil, nil, store.NewScheduleStore(), sched, nil, adjuster, rec)
+
+	got, err := agents.RecommendScheduleAdjustments(ctx, fx.orgID, "owner-sub", fx.projectID, true)
+	if err != nil {
+		t.Fatalf("RecommendScheduleAdjustments(dry_run): %v", err)
+	}
+	if !got.DryRun {
+		t.Error("DryRun = false, want true")
+	}
+	if got.ProposedChanges != 1 || got.AdvisoryCount != 1 || got.AppliedDeltas != 0 {
+		t.Errorf("result = %+v, want proposed 1 / advisory 1 / applied 0", got)
+	}
+	if len(got.Adjustments) != 2 {
+		t.Fatalf("adjustments = %d, want 2", len(got.Adjustments))
+	}
+	for _, p := range got.Adjustments {
+		if p.Applied {
+			t.Errorf("proposal %s Applied = true, want false on dry-run", p.WBSCode)
+		}
+	}
+	// NOTHING mutated: durations unchanged in the DB.
+	if d := taskDuration(t, sched.pool, a); d != 5 {
+		t.Errorf("task a duration = %d, want 5 (dry-run mutates nothing)", d)
+	}
+	if d := taskDuration(t, sched.pool, b); d != 3 {
+		t.Errorf("task b duration = %d, want 3 (dry-run mutates nothing)", d)
+	}
+	// No audit, no recalc, no enqueued cascade.
+	if len(rec.entries) != 0 {
+		t.Errorf("dry-run wrote %d audit entries, want 0", len(rec.entries))
+	}
+	if got := scheduleAuditCount(t, sched, fx.orgID, "schedule.recalculated"); got != 0 {
+		t.Errorf("dry-run recalc audit rows = %d, want 0", got)
+	}
+	if got := delayCascadeJobCount(t, sched); got != 0 {
+		t.Errorf("dry-run delay_cascade jobs = %d, want 0", got)
+	}
+}
+
+// TestAgentsService_ApplyScheduleAdjustments drives the human-commit path:
+// applying user-selected {wbs, new_duration} rows updates the durations,
+// writes a schedule.adjustments.applied audit row with per-row deltas, and
+// re-runs CPM (recompute + enqueue cascade).
+func TestAgentsService_ApplyScheduleAdjustments(t *testing.T) {
+	sched, fx := newScheduleService(t)
+	ctx := context.Background()
+
+	a := seedSchedTask(t, sched.pool, fx.projectID, "1.0", "Foundation", 5)
+	b := seedSchedTask(t, sched.pool, fx.projectID, "2.0", "Framing", 3)
+	seedSchedDep(t, sched.pool, fx.projectID, a, b)
+
+	rec := &capturingAuditRecorder{}
+	agents := NewAgentsService(sched.pool, nil, nil, store.NewScheduleStore(), sched, nil, &fakeAdjuster{}, rec)
+
+	t.Run("applies selected rows, audits deltas, re-runs CPM", func(t *testing.T) {
+		got, err := agents.ApplyScheduleAdjustments(ctx, fx.orgID, "owner-sub", fx.projectID, []ScheduleAdjustmentApply{
+			{WBSCode: "1.0", NewDurationDays: 12},
+		})
+		if err != nil {
+			t.Fatalf("ApplyScheduleAdjustments: %v", err)
+		}
+		if got.AppliedDeltas != 1 || !got.CriticalRecomputed {
+			t.Errorf("result = %+v, want applied 1 / recomputed true", got)
+		}
+		if d := taskDuration(t, sched.pool, a); d != 12 {
+			t.Errorf("task a duration = %d, want 12 (applied)", d)
+		}
+		if d := taskDuration(t, sched.pool, b); d != 3 {
+			t.Errorf("task b duration = %d, want 3 (not selected)", d)
+		}
+		// Audit row with per-row deltas (wbs/old/new, no rationale).
+		var found *AuditEntry
+		for i := range rec.entries {
+			if rec.entries[i].Action == "schedule.adjustments.applied" {
+				found = &rec.entries[i]
+			}
+		}
+		if found == nil {
+			t.Fatalf("schedule.adjustments.applied audit not recorded: %+v", rec.entries)
+		}
+		var meta struct {
+			AppliedDeltas int `json:"applied_deltas"`
+			Deltas        []struct {
+				WBS string `json:"wbs"`
+				Old int    `json:"old"`
+				New int    `json:"new"`
+			} `json:"deltas"`
+		}
+		if err := json.Unmarshal(found.Metadata, &meta); err != nil {
+			t.Fatalf("unmarshal audit metadata: %v", err)
+		}
+		if meta.AppliedDeltas != 1 || len(meta.Deltas) != 1 {
+			t.Fatalf("audit meta = %+v, want 1 delta", meta)
+		}
+		if meta.Deltas[0].WBS != "1.0" || meta.Deltas[0].Old != 5 || meta.Deltas[0].New != 12 {
+			t.Errorf("audit delta = %+v, want wbs 1.0 / old 5 / new 12", meta.Deltas[0])
+		}
+		// CPM re-ran: schedule.recalculated row written.
+		if got := scheduleAuditCount(t, sched, fx.orgID, "schedule.recalculated"); got != 1 {
+			t.Errorf("schedule.recalculated rows = %d, want 1", got)
+		}
+	})
+
+	t.Run("unknown wbs rejected as ErrInvalidInput", func(t *testing.T) {
+		_, err := agents.ApplyScheduleAdjustments(ctx, fx.orgID, "owner-sub", fx.projectID, []ScheduleAdjustmentApply{
+			{WBSCode: "99.0", NewDurationDays: 4},
+		})
+		if !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("err = %v, want ErrInvalidInput", err)
+		}
+	})
+
+	t.Run("out-of-range duration rejected as ErrInvalidInput", func(t *testing.T) {
+		_, err := agents.ApplyScheduleAdjustments(ctx, fx.orgID, "owner-sub", fx.projectID, []ScheduleAdjustmentApply{
+			{WBSCode: "2.0", NewDurationDays: 0},
+		})
+		if !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("err = %v, want ErrInvalidInput", err)
+		}
+	})
+
+	t.Run("cross-org surfaces ErrNotFound", func(t *testing.T) {
+		_, err := agents.ApplyScheduleAdjustments(ctx, uuid.New(), "intruder", fx.projectID, []ScheduleAdjustmentApply{
+			{WBSCode: "1.0", NewDurationDays: 6},
+		})
+		if !errors.Is(err, ErrNotFound) {
 			t.Fatalf("err = %v, want ErrNotFound", err)
 		}
 	})
@@ -261,7 +426,7 @@ func TestAgentsService_RecommendScheduleAdjustments_SkipsOutOfRangeDuration(t *t
 	}}}
 	agents := NewAgentsService(sched.pool, nil, nil, store.NewScheduleStore(), sched, nil, adjuster, &capturingAuditRecorder{})
 
-	got, err := agents.RecommendScheduleAdjustments(ctx, fx.orgID, "owner-sub", fx.projectID)
+	got, err := agents.RecommendScheduleAdjustments(ctx, fx.orgID, "owner-sub", fx.projectID, false)
 	if err != nil {
 		t.Fatalf("over-cap duration must be skipped, not roll back the batch: %v", err)
 	}
@@ -284,7 +449,7 @@ func TestAgentsService_RecommendScheduleAdjustments_NoTasks(t *testing.T) {
 	adjuster := &fakeAdjuster{resp: &ai.UpdateScheduleResponse{}}
 	agents := NewAgentsService(sched.pool, nil, nil, store.NewScheduleStore(), sched, nil, adjuster, &capturingAuditRecorder{})
 
-	_, err := agents.RecommendScheduleAdjustments(context.Background(), fx.orgID, "owner-sub", fx.projectID)
+	_, err := agents.RecommendScheduleAdjustments(context.Background(), fx.orgID, "owner-sub", fx.projectID, false)
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("err = %v, want ErrInvalidInput", err)
 	}

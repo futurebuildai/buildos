@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/futurebuildai/buildos/internal/ai"
+	"github.com/futurebuildai/buildos/internal/models"
 	"github.com/futurebuildai/buildos/internal/store"
 )
 
@@ -263,52 +264,77 @@ func (s *AgentsService) recordDailyBriefingAudit(ctx context.Context, orgID uuid
 	})
 }
 
-// ScheduleAdjustmentSet is the response shape from
-// RecommendScheduleAdjustments. AppliedDeltas counts only adjustments
-// whose NewDurationDays was non-nil and successfully applied via
-// UpdateTask. SkippedRationaleOnly counts adjustments whose
-// NewDurationDays was nil (the model returned a "review only"
-// rationale without a numeric delta — the row is preserved in the
-// audit metadata for transparency but no UPDATE fires).
-type ScheduleAdjustmentSet struct {
-	Adjustments          []ai.ScheduleAdjustment `json:"adjustments"`
-	AppliedDeltas        int                     `json:"applied_deltas"`
-	SkippedRationaleOnly int                     `json:"skipped_rationale_only"`
+// ScheduleProposal is one enriched, per-row adjustment in a
+// ScheduleAdjustmentSet. Unlike the raw ai.ScheduleAdjustment (which
+// carries only {task_id, new_duration_days, rationale}), the proposal
+// is joined against the loaded task so the UI can show what each change
+// is and let the user accept/reject it per row:
+//
+//   - WBSCode / Name      — the row's identity (from the loaded task)
+//   - OldDurationDays      — the current duration (from the loaded task)
+//   - NewDurationDays      — the model's proposed duration (nil = monitor-only)
+//   - Rationale            — the model's free-text justification
+//   - IsCritical           — whether the task is currently on the critical path
+//   - ProposedChange       — true iff NewDurationDays is set AND differs from old
+//     (a real duration change to propose); false = advisory / monitor-only
+//   - Applied              — true iff this row was written via UpdateTask on the
+//     real (non-dry-run) apply path. Always false on the dry-run preview.
+type ScheduleProposal struct {
+	TaskID          uuid.UUID `json:"task_id"`
+	WBSCode         string    `json:"wbs_code"`
+	Name            string    `json:"name"`
+	OldDurationDays int       `json:"old_duration_days"`
+	NewDurationDays *int      `json:"new_duration_days,omitempty"`
+	Rationale       string    `json:"rationale,omitempty"`
+	IsCritical      bool      `json:"is_critical"`
+	ProposedChange  bool      `json:"proposed_change"`
+	Applied         bool      `json:"applied"`
 }
 
-// RecommendScheduleAdjustments runs the DailyFocusAgent's schedule-tuning
-// flow (S4 Session 9.1, ADR-001 D5):
+// ScheduleAdjustmentSet is the response shape from
+// RecommendScheduleAdjustments. Adjustments carries the enriched
+// per-row proposals (wbs/name/old/new/rationale/critical). DryRun is
+// true when the set was a preview (no writes, no recalc). On the
+// dry-run preview, ProposedChanges counts rows the user could apply and
+// AppliedDeltas is 0; on the real apply path, AppliedDeltas counts rows
+// actually written. AdvisoryCount counts monitor-only rows (no proposed
+// duration change).
+type ScheduleAdjustmentSet struct {
+	Adjustments        []ScheduleProposal `json:"adjustments"`
+	DryRun             bool               `json:"dry_run"`
+	ProposedChanges    int                `json:"proposed_changes"`
+	AdvisoryCount      int                `json:"advisory_count"`
+	AppliedDeltas      int                `json:"applied_deltas"`
+	CriticalRecomputed bool               `json:"critical_recomputed"`
+	// SkippedRationaleOnly is retained for wire-compat with the prior
+	// response shape; it equals AdvisoryCount (monitor-only rows).
+	SkippedRationaleOnly int `json:"skipped_rationale_only"`
+}
+
+// RecommendScheduleAdjustments runs the schedule-tuning AI flow and
+// returns enriched per-row proposals. PREVIEW-FIRST (ESC-AUX-01):
 //
-//  1. Loads the project's task graph + dependencies (ownership-checked
-//     via VerifyProjectInOrg → ErrNotFound on cross-org access).
-//  2. Calls the native AI update_schedule task with the snapshot.
-//  3. Applies recommended duration deltas via ScheduleStore.UpdateTask
-//     inside the same tx. Adjustments with nil NewDurationDays are
-//     preserved in the audit metadata but not written.
-//  4. Writes one batch audit row keyed by project_id with
-//     Action="schedule.maestro_edit", ResourceType=AuditResourceSchedule,
-//     metadata {recommended_delta_count, applied_deltas,
-//     skipped_rationale_only, adjustments[]}. Per-adjustment audit would
-//     create N nearly-identical rows per AI call with no extra signal.
-//  5. Commits the deltas-and-audit tx.
-//  6. Synchronously re-runs ScheduleService.RecalculateSchedule (its
-//     own tx) so CPM physics re-validates with the new durations and
-//     critical path / floats are recomputed. Recalc writes its own
-//     "schedule.recalculated" audit row — both rows tell the truth:
-//     "Maestro nudged durations" + "CPM re-evaluated".
+//   - dryRun=true (the "Suggest adjustments" UI path): loads the task
+//     graph, calls the AI update_schedule task, and returns the proposals
+//     joined against the loaded tasks (wbs/name/old/new/rationale/critical).
+//     It MUTATES NOTHING — no UpdateTask, no recalc, no audit. The human
+//     then commits the rows they want via ApplyScheduleAdjustments.
+//   - dryRun=false (legacy auto-apply path, retained for callers that
+//     still want a one-shot apply): also applies every in-range numeric
+//     delta via UpdateTask in the load tx, writes a schedule.maestro_edit
+//     audit row, then re-runs CPM in its own tx.
 //
-// Failure modes:
+// Both paths are ownership-checked via VerifyProjectInOrg (ErrNotFound on
+// cross-org access). callerUserSub is recorded on the audit row (real path).
 //
-//   - Maestro call inside tx1 returns an error → tx rolls back; durations
-//     untouched; agent caller sees the wrapped error.
-//   - tx1 commits but recalc tx2 fails → durations are persisted with
-//     audit trail; CPM is stale. Caller receives the recalc error wrapped
-//     so the next session knows to manually re-run /schedule/recalculate.
-//     This is the same eventual-consistency pattern as DelayCascade
-//     enqueues: applied state is preserved; physics catches up.
+// Failure modes (real path only):
 //
-// callerUserSub is recorded on the audit row(s).
-func (s *AgentsService) RecommendScheduleAdjustments(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, projectID uuid.UUID) (ScheduleAdjustmentSet, error) {
+//   - AI call inside the load tx errors → tx rolls back; durations untouched.
+//   - tx1 commits but recalc tx2 fails → durations are persisted with the
+//     audit trail; CPM is stale. Caller receives the recalc error wrapped so
+//     the next /schedule/recalculate catches up (same eventual-consistency
+//     pattern as DelayCascade enqueues).
+func (s *AgentsService) RecommendScheduleAdjustments(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, projectID uuid.UUID, dryRun bool) (ScheduleAdjustmentSet, error) {
 	if callerOrgID == uuid.Nil {
 		return ScheduleAdjustmentSet{}, fmt.Errorf("%w: caller org_id is required", ErrInvalidInput)
 	}
@@ -322,8 +348,15 @@ func (s *AgentsService) RecommendScheduleAdjustments(ctx context.Context, caller
 		return ScheduleAdjustmentSet{}, ErrAgentsScheduleServiceUnavailable
 	}
 
+	// A dry-run preview must not hold a writable tx; use read-only so an
+	// accidental write would fail loudly rather than silently mutating.
+	txOpts := pgx.TxOptions{}
+	if dryRun {
+		txOpts.AccessMode = pgx.ReadOnly
+	}
+
 	var result ScheduleAdjustmentSet
-	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+	err := pgx.BeginTxFunc(ctx, s.pool, txOpts, func(tx pgx.Tx) error {
 		if err := store.VerifyProjectInOrg(ctx, tx, projectID, callerOrgID); err != nil {
 			return err
 		}
@@ -342,6 +375,13 @@ func (s *AgentsService) RecommendScheduleAdjustments(ctx context.Context, caller
 		projectStart, err := s.scheduleStore.GetProjectStartDate(ctx, tx, projectID)
 		if err != nil {
 			return fmt.Errorf("load project start: %w", err)
+		}
+
+		// Index the loaded tasks by id so we can join each AI proposal
+		// against its current duration / wbs / name / critical flag.
+		byID := make(map[uuid.UUID]int, len(tasks))
+		for i := range tasks {
+			byID[tasks[i].ID] = i
 		}
 
 		taskSnaps := make([]ai.ScheduleTaskSnapshot, 0, len(tasks))
@@ -366,11 +406,8 @@ func (s *AgentsService) RecommendScheduleAdjustments(ctx context.Context, caller
 			})
 		}
 
-		// AI call inside the tx — a slow model response holds the tx
-		// open briefly. Same trade-off as ProcurementService.RecommendVendors:
-		// keeps the recommendation + audit + duration writes atomic so we
-		// can't end up with a SQL update applied but no audit trail. The
-		// per-org Anthropic key is resolved from the context.
+		// AI call inside the tx — a slow model response holds the tx open
+		// briefly. The per-org Anthropic key is resolved from the context.
 		aiCtx := ai.ContextWithOrgID(ctx, callerOrgID.String())
 		resp, err := s.scheduleAdjuster.UpdateSchedule(aiCtx, ai.UpdateScheduleRequest{
 			ProjectID:        projectID,
@@ -385,50 +422,78 @@ func (s *AgentsService) RecommendScheduleAdjustments(ctx context.Context, caller
 			return fmt.Errorf("ai update_schedule: nil response")
 		}
 
+		proposals := make([]ScheduleProposal, 0, len(resp.Adjustments))
 		applied := 0
-		skipped := 0
+		advisory := 0
+		proposed := 0
 		for _, adj := range resp.Adjustments {
-			if adj.NewDurationDays == nil {
-				skipped++
+			ti, known := byID[adj.TaskID]
+			if !known {
+				// The model returned a task id that isn't in this project's
+				// graph — drop it rather than fabricating identity.
 				continue
 			}
-			if *adj.NewDurationDays < 0 || *adj.NewDurationDays > maxTaskDurationDays {
-				// Defensive — the model shouldn't return out-of-range
-				// durations, but if it does we drop the row rather than
-				// violating the duration CHECK (migration 019: 0..36500)
-				// downstream and rolling back the whole batch. Skipped rows
-				// still appear in audit metadata.
-				skipped++
-				continue
+			t := tasks[ti]
+			p := ScheduleProposal{
+				TaskID:          t.ID,
+				WBSCode:         t.WBSCode,
+				Name:            t.Name,
+				OldDurationDays: t.DurationDays,
+				Rationale:       adj.Rationale,
+				IsCritical:      t.IsCritical,
 			}
-			if _, err := s.scheduleStore.UpdateTask(ctx, tx, store.UpdateTaskParams{
-				TaskID:       adj.TaskID,
-				ProjectID:    projectID,
-				DurationDays: adj.NewDurationDays,
-			}); err != nil {
-				return fmt.Errorf("apply duration delta for task %s: %w", adj.TaskID, err)
+
+			// Monitor-only: nil delta, or an out-of-range value, or a delta
+			// equal to the current duration → advisory (no change to propose).
+			inRange := adj.NewDurationDays != nil && *adj.NewDurationDays >= 1 && *adj.NewDurationDays <= maxTaskDurationDays
+			isChange := inRange && *adj.NewDurationDays != t.DurationDays
+			if isChange {
+				p.NewDurationDays = adj.NewDurationDays
+				p.ProposedChange = true
+				proposed++
+			} else {
+				advisory++
 			}
-			applied++
+			proposals = append(proposals, p)
+
+			// On the real (non-dry-run) path, apply the in-range change now.
+			if !dryRun && isChange {
+				if _, err := s.scheduleStore.UpdateTask(ctx, tx, store.UpdateTaskParams{
+					TaskID:       t.ID,
+					ProjectID:    projectID,
+					DurationDays: adj.NewDurationDays,
+				}); err != nil {
+					return fmt.Errorf("apply duration delta for task %s: %w", t.ID, err)
+				}
+				proposals[len(proposals)-1].Applied = true
+				applied++
+			}
 		}
 
-		s.audit.Record(ctx, tx, AuditEntry{
-			OrgID:        callerOrgID,
-			UserSub:      callerUserSub,
-			Action:       "schedule.maestro_edit",
-			ResourceType: AuditResourceSchedule,
-			ResourceID:   projectID,
-			Metadata: marshalAudit(map[string]any{
-				"recommended_delta_count": len(resp.Adjustments),
-				"applied_deltas":          applied,
-				"skipped_rationale_only":  skipped,
-				"adjustments":             resp.Adjustments,
-			}),
-		})
+		if !dryRun {
+			// Per-row deltas only (no free-text rationale in audit metadata).
+			s.audit.Record(ctx, tx, AuditEntry{
+				OrgID:        callerOrgID,
+				UserSub:      callerUserSub,
+				Action:       "schedule.maestro_edit",
+				ResourceType: AuditResourceSchedule,
+				ResourceID:   projectID,
+				Metadata: marshalAudit(map[string]any{
+					"recommended_delta_count": len(resp.Adjustments),
+					"applied_deltas":          applied,
+					"skipped_rationale_only":  advisory,
+					"deltas":                  scheduleDeltaAudit(proposals),
+				}),
+			})
+		}
 
 		result = ScheduleAdjustmentSet{
-			Adjustments:          resp.Adjustments,
+			Adjustments:          proposals,
+			DryRun:               dryRun,
+			ProposedChanges:      proposed,
+			AdvisoryCount:        advisory,
 			AppliedDeltas:        applied,
-			SkippedRationaleOnly: skipped,
+			SkippedRationaleOnly: advisory,
 		}
 		return nil
 	})
@@ -439,16 +504,170 @@ func (s *AgentsService) RecommendScheduleAdjustments(ctx context.Context, caller
 		return ScheduleAdjustmentSet{}, err
 	}
 
-	// CPM re-validation rides its own tx (a separate operation than the
-	// agent's apply-deltas tx). Failure here means deltas are persisted
-	// with audit trail but CPM is stale until the next manual recalc;
-	// the wrapped error surfaces this state to the caller. Skip when
-	// no deltas were actually applied — recomputing on a no-op edit
-	// would double the audit row count for nothing.
+	// CPM re-validation rides its own tx (real path only). Failure here
+	// means deltas are persisted with audit trail but CPM is stale until
+	// the next manual recalc; the wrapped error surfaces this state.
+	if !dryRun && result.AppliedDeltas > 0 {
+		if _, _, recalcErr := s.scheduleService.RecalculateSchedule(ctx, projectID, callerOrgID, callerUserSub); recalcErr != nil {
+			return result, fmt.Errorf("apply succeeded; recalc deferred: %w", recalcErr)
+		}
+		result.CriticalRecomputed = true
+	}
+	return result, nil
+}
+
+// ScheduleAdjustmentApply is one user-selected duration change to commit
+// via ApplyScheduleAdjustments. The user picks rows from a dry-run
+// preview; WBSCode identifies the task within the project and
+// NewDurationDays is the duration to write.
+type ScheduleAdjustmentApply struct {
+	WBSCode         string
+	NewDurationDays int
+}
+
+// ScheduleApplyResult is the response from ApplyScheduleAdjustments.
+type ScheduleApplyResult struct {
+	AppliedDeltas      int  `json:"applied_deltas"`
+	CriticalRecomputed bool `json:"critical_recomputed"`
+}
+
+// ApplyScheduleAdjustments commits a set of user-selected duration
+// changes (PREVIEW-FIRST, ESC-AUX-01 — AI proposes, human commits). The
+// caller supplies the rows it accepted from a RecommendScheduleAdjustments
+// dry-run preview as {wbs_code, new_duration_days} pairs. The flow:
+//
+//  1. Loads the project's tasks (ownership-checked via VerifyProjectInOrg
+//     → ErrNotFound cross-org). Indexes them by wbs_code.
+//  2. Validates each row: the wbs must exist in the project, and the new
+//     duration must be in [1, maxTaskDurationDays]. A bad row fails the
+//     WHOLE batch with ErrInvalidInput (all-or-nothing; the user committed
+//     a coherent set).
+//  3. Updates each duration via ScheduleStore.UpdateTask in one tx.
+//  4. Writes one schedule.adjustments.applied audit row with the per-task
+//     deltas {wbs, old, new} — NO free-text rationale in the metadata.
+//  5. Commits, then re-runs CPM in its own tx so floats / critical path
+//     recompute (same deferred-recalc semantics as the auto-apply path).
+//
+// callerUserSub is recorded on the audit row.
+func (s *AgentsService) ApplyScheduleAdjustments(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, projectID uuid.UUID, applies []ScheduleAdjustmentApply) (ScheduleApplyResult, error) {
+	if callerOrgID == uuid.Nil {
+		return ScheduleApplyResult{}, fmt.Errorf("%w: caller org_id is required", ErrInvalidInput)
+	}
+	if projectID == uuid.Nil {
+		return ScheduleApplyResult{}, fmt.Errorf("%w: project_id is required", ErrInvalidInput)
+	}
+	if len(applies) == 0 {
+		return ScheduleApplyResult{}, fmt.Errorf("%w: at least one adjustment is required", ErrInvalidInput)
+	}
+	if s.scheduleStore == nil || s.scheduleService == nil {
+		return ScheduleApplyResult{}, ErrAgentsScheduleServiceUnavailable
+	}
+
+	var result ScheduleApplyResult
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if err := store.VerifyProjectInOrg(ctx, tx, projectID, callerOrgID); err != nil {
+			return err
+		}
+		tasks, err := s.scheduleStore.GetProjectTasks(ctx, tx, projectID)
+		if err != nil {
+			return fmt.Errorf("load tasks: %w", err)
+		}
+		byWBS := make(map[string]models.ProjectTask, len(tasks))
+		for _, t := range tasks {
+			byWBS[t.WBSCode] = t
+		}
+
+		// Validate the whole batch up-front so a single bad row doesn't
+		// leave a partial apply (the tx would roll back anyway, but a clean
+		// 400 beats a confusing constraint error).
+		seen := make(map[string]bool, len(applies))
+		type delta struct {
+			task models.ProjectTask
+			next int
+		}
+		deltas := make([]delta, 0, len(applies))
+		for _, a := range applies {
+			if a.WBSCode == "" {
+				return fmt.Errorf("%w: wbs_code is required", ErrInvalidInput)
+			}
+			if seen[a.WBSCode] {
+				return fmt.Errorf("%w: duplicate wbs_code %q", ErrInvalidInput, a.WBSCode)
+			}
+			seen[a.WBSCode] = true
+			if a.NewDurationDays < 1 || a.NewDurationDays > maxTaskDurationDays {
+				return fmt.Errorf("%w: new_duration_days for %q must be in [1, %d]", ErrInvalidInput, a.WBSCode, maxTaskDurationDays)
+			}
+			t, ok := byWBS[a.WBSCode]
+			if !ok {
+				return fmt.Errorf("%w: task %q not found in project", ErrInvalidInput, a.WBSCode)
+			}
+			deltas = append(deltas, delta{task: t, next: a.NewDurationDays})
+		}
+
+		applied := 0
+		auditDeltas := make([]map[string]any, 0, len(deltas))
+		for _, d := range deltas {
+			next := d.next
+			if _, err := s.scheduleStore.UpdateTask(ctx, tx, store.UpdateTaskParams{
+				TaskID:       d.task.ID,
+				ProjectID:    projectID,
+				DurationDays: &next,
+			}); err != nil {
+				return fmt.Errorf("apply duration for %q: %w", d.task.WBSCode, mapStoreError(err))
+			}
+			auditDeltas = append(auditDeltas, map[string]any{
+				"wbs": d.task.WBSCode,
+				"old": d.task.DurationDays,
+				"new": next,
+			})
+			applied++
+		}
+
+		s.audit.Record(ctx, tx, AuditEntry{
+			OrgID:        callerOrgID,
+			UserSub:      callerUserSub,
+			Action:       "schedule.adjustments.applied",
+			ResourceType: AuditResourceSchedule,
+			ResourceID:   projectID,
+			Metadata: marshalAudit(map[string]any{
+				"applied_deltas": applied,
+				"deltas":         auditDeltas,
+			}),
+		})
+
+		result.AppliedDeltas = applied
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return ScheduleApplyResult{}, ErrNotFound
+		}
+		return ScheduleApplyResult{}, err
+	}
+
 	if result.AppliedDeltas > 0 {
 		if _, _, recalcErr := s.scheduleService.RecalculateSchedule(ctx, projectID, callerOrgID, callerUserSub); recalcErr != nil {
 			return result, fmt.Errorf("apply succeeded; recalc deferred: %w", recalcErr)
 		}
+		result.CriticalRecomputed = true
 	}
 	return result, nil
+}
+
+// scheduleDeltaAudit projects the proposals that were actually applied
+// into the per-row {wbs, old, new} shape the audit metadata records — no
+// free-text rationale leaks into the audit row.
+func scheduleDeltaAudit(proposals []ScheduleProposal) []map[string]any {
+	out := make([]map[string]any, 0, len(proposals))
+	for _, p := range proposals {
+		if !p.Applied || p.NewDurationDays == nil {
+			continue
+		}
+		out = append(out, map[string]any{
+			"wbs": p.WBSCode,
+			"old": p.OldDurationDays,
+			"new": *p.NewDurationDays,
+		})
+	}
+	return out
 }

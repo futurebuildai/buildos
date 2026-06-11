@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 
@@ -16,7 +17,8 @@ import (
 // AgentsServicer is the consumer-side interface AgentsHandler needs.
 type AgentsServicer interface {
 	GenerateDailyBriefing(ctx context.Context, callerOrgID uuid.UUID, callerOIDCSubject, callerRole string) (service.DailyBriefing, error)
-	RecommendScheduleAdjustments(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, projectID uuid.UUID) (service.ScheduleAdjustmentSet, error)
+	RecommendScheduleAdjustments(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, projectID uuid.UUID, dryRun bool) (service.ScheduleAdjustmentSet, error)
+	ApplyScheduleAdjustments(ctx context.Context, callerOrgID uuid.UUID, callerUserSub string, projectID uuid.UUID, applies []service.ScheduleAdjustmentApply) (service.ScheduleApplyResult, error)
 }
 
 // AgentsHandler exposes BuildOS's AI-agent endpoints. Access is role-gated
@@ -54,39 +56,35 @@ func (h *AgentsHandler) DailyBriefing(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, map[string]any{"briefing": briefing})
 }
 
-// RecommendScheduleAdjustments asks the native AI client to suggest
-// duration nudges for the project's task graph, applies them through
-// ScheduleStore.UpdateTask, and re-runs CPM physics so the critical
-// path / floats stay coherent. The audit trail (one batch
-// "schedule.maestro_edit" row + the recalc's own row) is written by
-// the service.
+// RecommendScheduleAdjustments asks the native AI client to PROPOSE
+// duration nudges for the project's task graph. PREVIEW-FIRST
+// (ESC-AUX-01 — AI proposes, human commits):
 //
-// POST /api/v1/projects/{projectID}/schedule/recommend-adjustments
+// POST /api/v1/projects/{projectID}/schedule/recommend-adjustments?dry_run=true
 //
-// Role gate: superintendent or higher (CPM-affecting; matches the
-// gate on /schedule/recalculate), applied at the route in router.go.
-// (The pro plan-tier gate was removed in ESC-002.)
+//   - dry_run=true (the "Suggest adjustments" UI path): returns enriched
+//     per-row proposals (wbs_code, name, old/new duration, rationale,
+//     critical-path) and MUTATES NOTHING. The user then commits selected
+//     rows via the sibling apply endpoint.
+//   - dry_run omitted / false (legacy auto-apply): applies every in-range
+//     numeric delta + re-runs CPM, writing a schedule.maestro_edit audit row.
+//
+// Role gate: superintendent or higher (CPM-affecting; matches the gate on
+// /schedule/recalculate), applied at the route in router.go.
 //
 // Errors:
 //
 //   - 400 VALIDATION_ERROR: invalid project_id / project has no tasks /
 //     missing required claim → ErrInvalidInput
 //   - 404 NOT_FOUND: project not in caller's org → ErrNotFound
-//   - 503 SERVICE_UNAVAILABLE: AgentsService constructed without the
-//     AI adjuster or schedule trio (worker binary path) →
-//     ErrAgentsAIUnavailable / ErrAgentsScheduleServiceUnavailable; or
-//     no Anthropic key configured for the org → ai.ErrUnconfigured
-//   - 429 RATE_LIMITED: AI provider rate limited
-//   - 502 UPSTREAM_ERROR: AI provider transient / 5xx
+//   - 503 SERVICE_UNAVAILABLE: AgentsService constructed without the AI
+//     adjuster or schedule trio (worker binary path); or no Anthropic key
+//     configured → ai.ErrUnconfigured
+//   - 429 RATE_LIMITED / 502 UPSTREAM_ERROR: AI provider transient
 //
-// On success: 200 with the full ScheduleAdjustmentSet (adjustments,
-// applied_deltas, skipped_rationale_only). The "apply succeeded; recalc deferred"
-// case from the service is mapped to 200 OK with the result body —
-// returning 5xx would mislead the caller into thinking the deltas
-// weren't applied (they were; only the CPM re-run was deferred).
-// Future: surface a "recalc_deferred" boolean on the response so the
-// frontend can hint at it; for now the next /schedule/recalculate
-// catches up.
+// On success: 200 with the full ScheduleAdjustmentSet. The legacy
+// "apply succeeded; recalc deferred" case is mapped to 200 OK with the
+// result body (the deltas were applied; only the CPM re-run was deferred).
 func (h *AgentsHandler) RecommendScheduleAdjustments(w http.ResponseWriter, r *http.Request) {
 	projectID, ok := parseUUIDFromURL(w, r, "projectID")
 	if !ok {
@@ -98,14 +96,87 @@ func (h *AgentsHandler) RecommendScheduleAdjustments(w http.ResponseWriter, r *h
 	}
 	claims := mw.MustClaimsFromContext(r.Context())
 
-	result, err := h.svc.RecommendScheduleAdjustments(r.Context(), callerOrg, claims.Sub, projectID)
+	dryRun := r.URL.Query().Get("dry_run") == "true"
+
+	result, err := h.svc.RecommendScheduleAdjustments(r.Context(), callerOrg, claims.Sub, projectID, dryRun)
 	if err != nil {
 		// "apply succeeded; recalc deferred: ..." carries a non-nil
-		// result + wrapped error from the service. Surface the
-		// applied deltas to the caller (200) — the recalc lag will
-		// resolve at next /schedule/recalculate. We detect this by
-		// the presence of applied deltas on the result (the only path
-		// that defers a recalc).
+		// result + wrapped error from the service (real path only).
+		// Surface the applied deltas to the caller (200) — the recalc
+		// lag resolves at next /schedule/recalculate.
+		if !result.DryRun && result.AppliedDeltas > 0 {
+			writeJSON(w, r, http.StatusOK, result)
+			return
+		}
+		h.writeServiceError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, result)
+}
+
+// applyAdjustmentRow is one user-selected duration change in the apply
+// request body. WBSCode identifies the task; NewDurationDays is the
+// duration to write.
+type applyAdjustmentRow struct {
+	WBSCode         string `json:"wbs_code"`
+	NewDurationDays int    `json:"new_duration_days"`
+}
+
+// applyAdjustmentsRequest is the POST body for ApplyScheduleAdjustments.
+type applyAdjustmentsRequest struct {
+	Adjustments []applyAdjustmentRow `json:"adjustments"`
+}
+
+// ApplyScheduleAdjustments commits the user-selected duration changes from
+// a dry-run preview in one tx and re-runs CPM (PREVIEW-FIRST, ESC-AUX-01).
+//
+// POST /api/v1/projects/{projectID}/schedule/adjustments/apply
+// Body: { adjustments: [{ wbs_code, new_duration_days }] }
+//
+// Role gate: superintendent or higher (CPM-affecting; same gate as
+// /recommend-adjustments and /recalculate), applied at the route.
+//
+// Errors:
+//
+//   - 400 VALIDATION_ERROR: empty body, unknown/duplicate wbs_code, or a
+//     duration outside [1, 36500] → ErrInvalidInput
+//   - 404 NOT_FOUND: project not in caller's org → ErrNotFound
+//   - 503 SERVICE_UNAVAILABLE: schedule trio not wired (worker binary)
+//
+// On success: 200 with { applied_deltas, critical_recomputed }. The
+// recalc-deferred case still returns 200 (deltas were applied).
+func (h *AgentsHandler) ApplyScheduleAdjustments(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := parseUUIDFromURL(w, r, "projectID")
+	if !ok {
+		return
+	}
+	callerOrg, ok := callerOrgIDFromClaims(w, r)
+	if !ok {
+		return
+	}
+	claims := mw.MustClaimsFromContext(r.Context())
+
+	var body applyAdjustmentsRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid request body")
+		return
+	}
+	if len(body.Adjustments) == 0 {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "at least one adjustment is required")
+		return
+	}
+
+	applies := make([]service.ScheduleAdjustmentApply, 0, len(body.Adjustments))
+	for _, a := range body.Adjustments {
+		applies = append(applies, service.ScheduleAdjustmentApply{
+			WBSCode:         a.WBSCode,
+			NewDurationDays: a.NewDurationDays,
+		})
+	}
+
+	result, err := h.svc.ApplyScheduleAdjustments(r.Context(), callerOrg, claims.Sub, projectID, applies)
+	if err != nil {
+		// recalc-deferred: deltas applied, CPM re-run deferred → 200.
 		if result.AppliedDeltas > 0 {
 			writeJSON(w, r, http.StatusOK, result)
 			return
