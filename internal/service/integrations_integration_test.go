@@ -175,17 +175,28 @@ func TestVaultService_Capabilities_FlipsWithCredentials(t *testing.T) {
 	svc, orgID := newVaultService(t)
 	ctx := context.Background()
 
-	// Fresh org: nothing configured → both flags off, both known providers
-	// present and unconfigured.
+	// Fresh org: nothing configured → all flags off, all known providers
+	// (anthropic, resend, object_store — Chunk A added the last) present and
+	// unconfigured.
 	caps, err := svc.Capabilities(ctx, orgID)
 	if err != nil {
 		t.Fatalf("Capabilities (empty): %v", err)
 	}
-	if caps.AIConfigured || caps.EmailConfigured {
-		t.Errorf("empty org should have both off, got %+v", caps)
+	if caps.AIConfigured || caps.EmailConfigured || caps.StorageConfigured {
+		t.Errorf("empty org should have all off, got %+v", caps)
 	}
-	if len(caps.Providers) != 2 {
-		t.Fatalf("expected 2 providers, got %d", len(caps.Providers))
+	if len(caps.Providers) != 3 {
+		t.Fatalf("expected 3 providers (anthropic, resend, object_store), got %d", len(caps.Providers))
+	}
+	// object_store is enumerated and unconfigured on a fresh org.
+	var objectStore *ProviderCapability
+	for i := range caps.Providers {
+		if caps.Providers[i].Provider == ProviderObjectStore {
+			objectStore = &caps.Providers[i]
+		}
+	}
+	if objectStore == nil || objectStore.Configured {
+		t.Fatalf("object_store should be present + unconfigured on a fresh org: %+v", caps.Providers)
 	}
 
 	// Set an Anthropic key → ai flips on, email stays off.
