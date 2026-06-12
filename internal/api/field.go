@@ -24,14 +24,20 @@ type FieldServicer interface {
 	DailyLog(ctx context.Context, callerOrgID uuid.UUID, callerOIDCSubject string, in service.DailyLogInput) (models.DailyLog, error)
 }
 
-// FieldHandler handles /api/v1/field/* endpoints for Flutter mobile sync.
+// FieldHandler handles /api/v1/field/* endpoints for Flutter mobile sync. The
+// optional assets servicer powers the field-facing photo presign/confirm
+// (Chunk B) — the ONE asset path open to field_worker (the operator path under
+// /api/v1/projects/{id}/assets is superintendent+). When nil (storage
+// unconfigured) the field asset routes don't mount.
 type FieldHandler struct {
-	svc FieldServicer
+	svc    FieldServicer
+	assets AssetServicer
 }
 
-// NewFieldHandler creates a handler bound to the given service.
-func NewFieldHandler(svc FieldServicer) *FieldHandler {
-	return &FieldHandler{svc: svc}
+// NewFieldHandler creates a handler bound to the given service. assets may be
+// nil (no object storage wired) — the field photo routes then don't mount.
+func NewFieldHandler(svc FieldServicer, assets AssetServicer) *FieldHandler {
+	return &FieldHandler{svc: svc, assets: assets}
 }
 
 // Sync returns the data the mobile client needs for offline-first
@@ -197,11 +203,92 @@ func (h *FieldHandler) DailyLog(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusCreated, map[string]any{"daily_log": row})
 }
 
+// fieldPresignRequest is the POST /api/v1/field/assets/presign body. Unlike the
+// operator presign (project comes from the URL), the field client is
+// caller-scoped: it carries the project_id in the body (mirroring checkin /
+// daily-log). The project is verified in the caller's org by RequestUpload.
+type fieldPresignRequest struct {
+	ProjectID   uuid.UUID `json:"project_id"`
+	ContentType string    `json:"content_type"`
+	ByteSize    int64     `json:"byte_size"`
+}
+
+// PresignPhoto creates a pending asset row for a field-captured photo and
+// returns a presigned PUT URL. The field worker owns photo capture — this is
+// the one asset path open to field_worker (the generic operator presign is
+// superintendent+). Org-scoping is strict: RequestUpload verifies the project is
+// in the CALLER's org, so a field worker cannot presign against another org's
+// project (resolves to 404 NOT_FOUND).
+//
+// POST /api/v1/field/assets/presign — any authenticated role.
+func (h *FieldHandler) PresignPhoto(w http.ResponseWriter, r *http.Request) {
+	claims, orgID, ok := claimsAndOrg(w, r)
+	if !ok {
+		return
+	}
+	var body fieldPresignRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid JSON body")
+		return
+	}
+	if body.ProjectID == uuid.Nil {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "project_id is required")
+		return
+	}
+	pid := body.ProjectID
+	res, err := h.assets.RequestUpload(r.Context(), orgID, claims.Sub, service.RequestUploadInput{
+		ProjectID:   &pid,
+		ContentType: body.ContentType,
+		SizeBytes:   body.ByteSize,
+	})
+	if err != nil {
+		writeAssetError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusCreated, presignPutResponse{
+		AssetID:       res.Asset.ID,
+		UploadURL:     res.UploadURL,
+		SignedHeaders: res.SignedHeaders,
+		ExpiresAt:     res.ExpiresAt,
+	})
+}
+
+// ConfirmPhoto transitions a field-captured pending asset to ready after the
+// client's direct-to-R2 PUT. Org-scoped: a cross-org asset id resolves to 404.
+//
+// POST /api/v1/field/assets/{id}/confirm — any authenticated role.
+func (h *FieldHandler) ConfirmPhoto(w http.ResponseWriter, r *http.Request) {
+	assetID, ok := parseUUIDFromURL(w, r, "id")
+	if !ok {
+		return
+	}
+	claims, orgID, ok := claimsAndOrg(w, r)
+	if !ok {
+		return
+	}
+	var body confirmRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+	var checksum *string
+	if body.ChecksumSHA256 != "" {
+		checksum = &body.ChecksumSHA256
+	}
+	asset, err := h.assets.ConfirmUpload(r.Context(), orgID, claims.Sub, assetID, checksum)
+	if err != nil {
+		writeAssetError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, asset)
+}
+
 // writeServiceError maps FieldService sentinels to HTTP responses.
 func (h *FieldHandler) writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, service.ErrIdempotencyConflict):
 		writeErrorResponse(w, r, http.StatusConflict, "CONFLICT", "idempotency key already used")
+	case errors.Is(err, service.ErrInvalidPhotoAsset):
+		writeErrorResponse(w, r, http.StatusBadRequest, "INVALID_PHOTO_ASSET", "a photo_asset_id is not a confirmed, org-owned photo for this project")
 	case errors.Is(err, service.ErrNotFound):
 		writeErrorResponse(w, r, http.StatusNotFound, "NOT_FOUND", "resource not found")
 	case errors.Is(err, service.ErrInvalidInput):

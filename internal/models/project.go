@@ -8,6 +8,21 @@ import (
 )
 
 // Project represents a construction project.
+//
+// ClientName / ClientEmail / ClientPhone are the homeowner contact (Chunk D —
+// DAILY_REPORTS_CLIENT_UPDATES). All Restricted PII (see internal/pii). They are
+// inherited from the originating prospect on PERMIT_ISSUED conversion.
+//
+// SECURITY (review finding M2): these three are `json:"-"` — they NEVER
+// serialize on any project response (GET /projects, /{id}) or into the AI
+// assistant's tool-result context. The generic project read endpoints carry no
+// role gate (field_worker+ can read a project), and the assistant project tools
+// are superintendent+, so serializing homeowner email/phone there would leak
+// Restricted PII below the owner/admin client-update boundary. They are read
+// SERVER-SIDE only (Go field access, unaffected by the json tag) — the send path
+// resolves ClientEmail in-tx and snapshots it onto the client_update row. If an
+// owner/admin surface ever needs to display the contact, add a dedicated
+// owner/admin-gated endpoint rather than re-exposing it on the shared struct.
 type Project struct {
 	ID               uuid.UUID  `json:"id"`
 	OrgID            uuid.UUID  `json:"org_id"`
@@ -17,6 +32,9 @@ type Project struct {
 	ProjectStartDate *time.Time `json:"project_start_date,omitempty"`
 	Status           string     `json:"status"`
 	GSF              *int       `json:"gsf,omitempty"`
+	ClientName       *string    `json:"-"`
+	ClientEmail      *string    `json:"-"`
+	ClientPhone      *string    `json:"-"`
 	CreatedAt        time.Time  `json:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at"`
 }

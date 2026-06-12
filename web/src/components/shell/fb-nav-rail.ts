@@ -58,6 +58,12 @@ const NAV_MODEL: NavGroupDef[] = [
         icon: 'users',
         gate: { roles: ['owner', 'admin'] },
       },
+      {
+        label: 'Client Updates',
+        href: '/portfolio/client-updates',
+        icon: 'message-circle',
+        gate: { roles: ['owner', 'admin'] },
+      },
     ],
   },
   {

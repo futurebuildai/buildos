@@ -36,6 +36,17 @@ import (
 // silently kept the old deployment running must not pass smoke.
 var version = "dev"
 
+// publicShareRateLimit* configure the dedicated stricter per-IP limiter for the
+// unauthenticated public progress page (/p/*) — Chunk E §9-11. The public route
+// is the brute-force surface (token-guessing) and legit homeowner traffic is
+// low, so it gets a much tighter bucket than the global dashboard limiter
+// (50 rps / 100 burst). 10 rps / 20 burst still comfortably serves a homeowner
+// loading a page with a photo strip while throttling an enumeration script.
+const (
+	publicShareRateLimitRPS   = 10
+	publicShareRateLimitBurst = 20
+)
+
 func main() {
 	// Wrap the JSON handler with obs.CorrelatingHandler so every
 	// context-scoped log line auto-stamps request_id (matching the
@@ -285,8 +296,13 @@ func run(logger *slog.Logger) error {
 			Bucket:   cfg.R2Bucket,
 			Region:   cfg.StorageRegion,
 		}, credsResolver)
-		assetSvc = service.NewAssetService(pool, store.NewAssetStore(), resolver, auditService, logger, nil)
+		assetSvc = service.NewAssetService(pool, store.NewAssetStore(), fieldStore, resolver, auditService, logger, nil)
 		assetService = assetSvc
+		// Close the dangling-photo-id gap (Chunk B): the field daily-log write
+		// validates photo_asset_ids against confirmed, org-owned asset rows. The
+		// validator is the AssetService itself; it soft-degrades (skips the
+		// check) only if the service were nil, which it never is here.
+		fieldService.WithPhotoValidator(assetSvc)
 		if cfg.R2Endpoint != "" && cfg.R2Bucket != "" && vaultService != nil {
 			logger.Info("object storage enabled (R2)", "bucket", cfg.R2Bucket)
 		} else {
@@ -306,6 +322,47 @@ func run(logger *slog.Logger) error {
 	reportsService := service.NewReportsService(
 		pool, fieldStore, projectStore, assetSvc, aiDigester, aiDrafter, auditService,
 	)
+
+	// ----------------------------------------------------------------
+	// Client Updates (Chunk D — DAILY_REPORTS_CLIENT_UPDATES). The
+	// human-in-the-loop composer: reportsService produces the redacted AI
+	// draft (Chunk C, reused verbatim), assetSvc validates/resolves the
+	// operator-curated photos, projectStore yields the homeowner client_email,
+	// fieldStore resolves the JWT sub → users.id (created_by/sent_by), and the
+	// existing Resend mailer delivers post-commit. A nil resendMailer (vault
+	// off) falls back to the no-op mailer inside the constructor — but a send
+	// then surfaces MAILER_UNCONFIGURED (422) so the operator KNOWS it did not
+	// go out (NOT the auth-reset best-effort posture). The AI draft soft-fails
+	// to 503 when no Anthropic key is configured. Server-only.
+	clientUpdateService := service.NewClientUpdateService(
+		pool, store.NewClientUpdateStore(), projectStore, fieldStore,
+		reportsService, assetSvc, resendMailer, auditService,
+	)
+
+	// ----------------------------------------------------------------
+	// Public share links (Chunk E — DAILY_REPORTS_CLIENT_UPDATES). The
+	// FIRST surface outside everything-behind-auth: an operator can mint a
+	// per-update, token-gated, read-only homeowner progress page at
+	// GET /p/{token}. The token mirrors the bootstrap token (32-byte CSPRNG
+	// cleartext, sha256-at-rest, uniform not-found) + adds expiry (30d
+	// default) and revoke. The same *ShareLinkService satisfies BOTH the
+	// authenticated owner/admin lifecycle surface AND the unauthenticated
+	// public resolver (it builds the redaction-safe PublicUpdate projection —
+	// raw ERP physically cannot escape). The public photo proxy reuses the
+	// Chunk A AssetService.ServeAsset (EXIF-stripped, same-origin) so the R2
+	// host never reaches the homeowner. assetSvc may soft-fail to text-only
+	// when storage is unconfigured. Server-only — cmd/worker never builds it.
+	shareLinkService := service.NewShareLinkService(
+		pool, store.NewShareLinkStore(), store.NewClientUpdateStore(),
+		projectStore, fieldStore, auditService, nil,
+	)
+	// The public photo proxy needs ServeAsset (EXIF strip). Pass the concrete
+	// AssetService only when storage is wired; otherwise the page degrades to
+	// text-only (no photo strip).
+	var publicAssetServer api.PublicAssetServer
+	if assetSvc != nil {
+		publicAssetServer = assetSvc
+	}
 
 	// Invoice ingestion (Phase 2a). NewIngestionService is typed-nil-safe:
 	// a nil aiClient (vault/AI unconfigured) leaves the internal extractor
@@ -453,9 +510,18 @@ func run(logger *slog.Logger) error {
 		IngestionService:    ingestionService,
 		AssetService:        assetService,
 		ReportsService:      reportsService,
+		ClientUpdateService: clientUpdateService,
+		ShareLinkService:    shareLinkService,
+		PublicShareResolver: shareLinkService,
+		PublicAssetServer:   publicAssetServer,
+		PublicBaseURL:       cfg.AppBaseURL,
 		SetupService:        setupService,
 		SentryEnabled:       sentryOK,
 		RateLimiter:         middleware.NewIPRateLimiter(cfg.RateLimitRPS, cfg.RateLimitBurst),
+		// Dedicated stricter limiter for the public /p/* brute-force surface
+		// (§9-11 default): 10 rps / burst 20 per IP. Legit homeowner traffic is
+		// low; this layers on top of the global limiter.
+		PublicShareLimiter: middleware.NewIPRateLimiter(publicShareRateLimitRPS, publicShareRateLimitBurst),
 		TrustedProxyCIDRs:   cfg.TrustedProxyCIDRs,
 		WebDistDir:          cfg.WebDistDir,
 		Version:             version,

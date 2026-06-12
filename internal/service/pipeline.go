@@ -341,12 +341,24 @@ func (s *PipelineService) transitionToPermitIssued(ctx context.Context, callerUs
 			return fmt.Errorf("%w: prospect.gsf is required before PERMIT_ISSUED transition (CPM needs square footage)", ErrInvalidInput)
 		}
 
+		// Carry the homeowner contact forward (Chunk D — closes the leak that
+		// dropped client_name/email/phone on conversion). ClientName is a plain
+		// string on the prospect; project.client_name is nullable, so an empty
+		// name converts to NULL rather than "".
+		var clientName *string
+		if current.ClientName != "" {
+			cn := current.ClientName
+			clientName = &cn
+		}
 		projectID, err := s.store.CreateProjectFromProspect(ctx, tx, store.CreateProjectFromProspectParams{
 			OrgID:            current.OrgID,
 			Name:             current.Name,
 			Address:          current.Address,
 			GSF:              *current.GSF,
 			PermitIssuedDate: *in.PermitIssuedDate,
+			ClientName:       clientName,
+			ClientEmail:      current.ClientEmail,
+			ClientPhone:      current.ClientPhone,
 		})
 		if err != nil {
 			return fmt.Errorf("create project: %w", err)

@@ -23,6 +23,13 @@ export const capabilities = computed(() => capsSignal.get());
 /** Assume-on: AI is available unless we positively know it is not. */
 export const aiConfigured = computed(() => capsSignal.get()?.ai_configured ?? true);
 export const emailConfigured = computed(() => capsSignal.get()?.email_configured ?? true);
+/**
+ * Object storage (R2). Unlike AI/email this is assume-OFF until positively
+ * confirmed: photo upload is a hard-disabled affordance when storage is
+ * unconfigured (no graceful reactive degrade — a presign 503 is a dead end for
+ * the user), so we only enable the "Add photos" path when capabilities say so.
+ */
+export const storageConfigured = computed(() => capsSignal.get()?.storage_configured ?? false);
 
 export async function refreshCapabilities(): Promise<void> {
   try {
@@ -39,6 +46,18 @@ export function markAiUnconfigured(): void {
   capsSignal.set({
     ai_configured: false,
     email_configured: current?.email_configured ?? true,
+    storage_configured: current?.storage_configured ?? false,
+    providers: current?.providers ?? [],
+  });
+}
+
+/** Force storage to "unconfigured" after a reactive 503 (presign/link). */
+export function markStorageUnconfigured(): void {
+  const current = capsSignal.get();
+  capsSignal.set({
+    ai_configured: current?.ai_configured ?? true,
+    email_configured: current?.email_configured ?? true,
+    storage_configured: false,
     providers: current?.providers ?? [],
   });
 }

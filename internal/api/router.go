@@ -61,9 +61,15 @@ type RouterConfig struct {
 	IngestionService    InvoiceIngestor      // optional — when nil, the /invoices/ingest route doesn't mount (AI unconfigured)
 	AssetService        AssetServicer        // optional — when nil, /assets + /projects/{id}/assets routes don't mount (object storage)
 	ReportsService      ReportsServicer      // optional — when nil, /projects/{id}/daily-reports routes don't mount (daily reports + AI compose)
+	ClientUpdateService ClientUpdateServicer // optional — when nil, /client-updates routes don't mount (client-update composer + email)
+	ShareLinkService    ShareLinkServicer    // optional — when nil, the share-link operator routes AND the public /p/* routes don't mount (Chunk E)
+	PublicShareResolver PublicShareResolver  // the public-token resolver; same concrete *service.ShareLinkService as ShareLinkService (consumer-side slice)
+	PublicAssetServer   PublicAssetServer    // optional — when nil, the public photo proxy renders text-only (storage off)
+	PublicBaseURL       string               // deployment public origin; used to build the one-time /p/<token> URL at create (empty = relative path)
 	Metrics             MetricsRecorder      // optional — when nil, /metrics doesn't mount and HTTP middleware is skipped
 	SentryEnabled       bool                 // when true, the Sentry HTTP middleware is mounted to capture panics
 	RateLimiter         *mw.IPRateLimiter    // optional — when nil, no rate limiting is applied
+	PublicShareLimiter  *mw.IPRateLimiter    // optional dedicated stricter limiter for /p/* (§9-11); applied IN ADDITION to the global RateLimiter
 	TrustedProxyCIDRs   []*net.IPNet         // forwarding headers (XFF) are honored ONLY from these peers; empty = ignore XFF, use the TCP peer (fail-safe)
 	WebDistDir          string               // optional — built web console dir (web/dist); empty = no SPA serving (dev rigs proxy via Vite)
 	Version             string               // build version surfaced by GET /health (ldflags-stamped; empty = "dev") — deploy smoke asserts the rolled binary
@@ -187,7 +193,10 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	pipeline := NewPipelineHandler(cfg.PipelineService)
 	procurement := NewProcurementHandler(cfg.ProcurementService)
 	feed := NewFeedHandler(cfg.FeedService)
-	field := NewFieldHandler(cfg.FieldService)
+	// The field handler gets the AssetService too (Chunk B field photo
+	// presign/confirm). cfg.AssetService is nil when storage is unconfigured —
+	// the field photo routes then don't mount.
+	field := NewFieldHandler(cfg.FieldService, cfg.AssetService)
 	fleet := NewFleetHandler(cfg.FleetService)
 	hr := NewHRHandler(cfg.HRService)
 	authHandler := NewAuthHandler(cfg.AuthService, WithRefreshCookie(cfg.CookieSecure, cfg.AuthRefreshTTL))
@@ -231,6 +240,21 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	if cfg.ReportsService != nil {
 		reports = NewReportsHandler(cfg.ReportsService)
 	}
+	var clientUpdates *ClientUpdateHandler
+	if cfg.ClientUpdateService != nil {
+		clientUpdates = NewClientUpdateHandler(cfg.ClientUpdateService)
+	}
+	var shareLinks *ShareLinkHandler
+	if cfg.ShareLinkService != nil {
+		shareLinks = NewShareLinkHandler(cfg.ShareLinkService, cfg.PublicBaseURL)
+	}
+	// The public progress page (Chunk E — the FIRST unauth surface). It mounts
+	// only when the resolver is wired AND client updates exist; the photo proxy
+	// degrades to text-only when storage is off (PublicAssetServer nil).
+	var publicShare *PublicShareHandler
+	if cfg.PublicShareResolver != nil {
+		publicShare = NewPublicShareHandler(cfg.PublicShareResolver, cfg.PublicAssetServer)
+	}
 
 	// Auth middleware
 	authMiddleware := mw.Auth(cfg.Verifier, cfg.DevAuthMode, cfg.Logger)
@@ -243,6 +267,34 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	// work on a fresh fork before onboarding completes).
 	// ============================================================
 	MountAuthRoutes(r, authHandler)
+
+	// ============================================================
+	// Public progress page (Chunk E — DAILY_REPORTS_CLIENT_UPDATES) —
+	// UNAUTHENTICATED, token-gated, read-only. This is the FIRST and
+	// only operational surface outside everything-behind-auth.
+	//
+	// It mounts HERE — a SIBLING of MountAuthRoutes, OUTSIDE the auth
+	// r.Group below — so it:
+	//   * INHERITS the root global stack (RequestID, RealIP, otelhttp,
+	//     SecurityHeaders, RateLimiter, Sentry, Recoverer) — it is
+	//     rate-limited and security-headed automatically;
+	//   * BYPASSES Auth + SetupGate WITHOUT touching either — no entry
+	//     added to DefaultSetupGateExemptPrefixes, because the gate only
+	//     runs inside the auth group, which /p/* never enters;
+	//   * works through Cloudflare unchanged (proxied CNAME, no Worker).
+	// Security lives in the 256-bit token + uniform 404 + the
+	// redaction-safe PublicUpdate projection (no raw ERP can reach it).
+	//
+	// A dedicated stricter limiter (§9-11) is layered ON TOP of the
+	// inherited global limiter when configured — /p/* is the brute-force
+	// surface and legit homeowner traffic is low.
+	if publicShare != nil {
+		var publicLimiter func(http.Handler) http.Handler
+		if cfg.PublicShareLimiter != nil {
+			publicLimiter = cfg.PublicShareLimiter.Middleware
+		}
+		MountPublicShareRoutes(r, publicShare, publicLimiter)
+	}
 
 	// ============================================================
 	// All authenticated routes
@@ -519,6 +571,15 @@ func NewRouter(cfg RouterConfig) http.Handler {
 			r.Post("/progress", field.ReportProgress)
 			r.Post("/checkin", field.Checkin)
 			r.Post("/daily-log", field.DailyLog)
+			// Field-facing photo upload (Chunk B): presign + confirm, open to
+			// field_worker (the role that owns capture). Caller-scoped (project
+			// in the body, verified in the caller's org). Mounts only when the
+			// AssetService is wired (R2 configured) — a storage-less fork keeps
+			// the rest of /field working.
+			if assets != nil {
+				r.Post("/assets/presign", field.PresignPhoto)
+				r.Post("/assets/{id}/confirm", field.ConfirmPhoto)
+			}
 		})
 
 		// --------------------------------------------------------
@@ -546,6 +607,36 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		// --------------------------------------------------------
 		if reports != nil {
 			MountReportsRoutes(r, reports)
+		}
+
+		// --------------------------------------------------------
+		// 4.7 Client Updates (Chunk D) — the human-in-the-loop
+		//     composer: an AI draft (Chunk C, redacted) is persisted,
+		//     the operator edits the client-safe subject/body + curates
+		//     photos, then explicitly SENDS via the existing Resend
+		//     mailer (post-commit). NEVER auto-sends. RBAC owner/admin
+		//     (external comms trust — §9-1) is enforced inside
+		//     MountClientUpdateRoutes. Mounts only when the
+		//     ClientUpdateService is wired; the draft soft-fails to 503
+		//     when no AI key is configured, and a send surfaces
+		//     MAILER_UNCONFIGURED (422) when no Resend key is set so the
+		//     operator KNOWS it did not go out.
+		// --------------------------------------------------------
+		if clientUpdates != nil {
+			MountClientUpdateRoutes(r, clientUpdates)
+		}
+
+		// --------------------------------------------------------
+		// 4.8 Share Links (Chunk E) — the AUTHENTICATED owner/admin
+		//     controls on a SENT client update: create a public link
+		//     (cleartext URL shown ONCE), list links (no cleartext),
+		//     revoke. RBAC owner/admin (external comms trust — §9-1) is
+		//     enforced inside MountShareLinkRoutes. The matching UNAUTH
+		//     public page (/p/{token}) is mounted ABOVE, outside this
+		//     group. Mounts only when the ShareLinkService is wired.
+		// --------------------------------------------------------
+		if shareLinks != nil {
+			MountShareLinkRoutes(r, shareLinks)
 		}
 	})
 

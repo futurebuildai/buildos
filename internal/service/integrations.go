@@ -236,9 +236,10 @@ type ProviderCapability struct {
 // upstream, matching the soft-fail resolver contract. Drives the
 // frontend's proactive AI/email gating (GET /api/v1/capabilities).
 type CapabilitiesResult struct {
-	AIConfigured    bool
-	EmailConfigured bool
-	Providers       []ProviderCapability
+	AIConfigured      bool
+	EmailConfigured   bool
+	StorageConfigured bool
+	Providers         []ProviderCapability
 }
 
 // Capabilities reports per-org feature availability derived purely from
@@ -278,10 +279,12 @@ func (s *VaultService) Capabilities(ctx context.Context, orgID uuid.UUID) (Capab
 
 	anthropic := providerFor(ProviderAnthropic)
 	resend := providerFor(ProviderResend)
+	objectStore := providerFor(ProviderObjectStore)
 	return CapabilitiesResult{
-		AIConfigured:    anthropic.Configured,
-		EmailConfigured: resend.Configured,
-		Providers:       []ProviderCapability{anthropic, resend},
+		AIConfigured:      anthropic.Configured,
+		EmailConfigured:   resend.Configured,
+		StorageConfigured: objectStore.Configured,
+		Providers:         []ProviderCapability{anthropic, resend, objectStore},
 	}, nil
 }
 

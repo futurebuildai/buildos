@@ -37,10 +37,12 @@ export interface TokenPair {
 export interface Capabilities {
   ai_configured: boolean;
   email_configured: boolean;
+  /** Object storage (R2) configured — gates the photo-upload affordances. */
+  storage_configured: boolean;
   providers: ProviderStatus[];
 }
 
-export type ProviderName = 'anthropic' | 'resend' | 'gable' | 'localblue';
+export type ProviderName = 'anthropic' | 'resend' | 'gable' | 'localblue' | 'object_store';
 
 export interface ProviderStatus {
   provider: ProviderName;
@@ -170,6 +172,10 @@ export interface Project {
   project_start_date?: string;
   status: string;
   gsf?: number;
+  // Homeowner contact (client_name/email/phone) is Restricted PII and is
+  // deliberately NOT serialized on the Project response (server: json:"-",
+  // review finding M2). It is read server-side only for the owner/admin
+  // client-update send path; no operator surface receives it over the wire.
   created_at: string;
   updated_at: string;
 }
@@ -798,6 +804,35 @@ export interface Feedback {
 // built server-side from an allowlist. Mirrors internal/models/dailyreport.go.
 // ---------------------------------------------------------------------------
 
+/** An object-storage asset row (Chunk A). storage_key is never serialized. */
+export interface Asset {
+  id: string;
+  org_id: string;
+  project_id?: string;
+  content_type: string;
+  size_bytes: number;
+  status: 'pending' | 'ready' | 'failed';
+  uploaded_by: string;
+  checksum_sha256?: string;
+  created_at: string;
+  confirmed_at?: string;
+}
+
+/** A daily_logs row (returned by the photo-link endpoint). */
+export interface DailyLog {
+  id: string;
+  org_id: string;
+  project_id: string;
+  reported_by: string;
+  log_date: string;
+  weather_conditions?: string;
+  work_summary: string;
+  safety_incidents?: string;
+  photo_asset_ids?: string[];
+  idempotency_key: string;
+  reported_at: string;
+}
+
 /** A resolved photo on a daily report: asset id + short-lived signed GET URL. */
 export interface PhotoRef {
   asset_id: string;
@@ -857,4 +892,61 @@ export interface ClientUpdateDraft {
   period_start: string;
   period_end: string;
   photo_count: number;
+}
+
+/** internal/models.ClientUpdate lifecycle status. */
+export type ClientUpdateStatus = 'draft' | 'sent' | 'failed';
+
+/**
+ * internal/models.ClientUpdate — the human-in-the-loop client-update row
+ * (Chunk D). The composer persists an AI draft, the operator edits subject/
+ * edited_body + curates photo_asset_ids, then sends. recipient_email is NEVER
+ * serialized (json:"-" server-side) — it is absent from this shape on purpose.
+ */
+export interface ClientUpdate {
+  id: string;
+  org_id: string;
+  project_id: string;
+  period_start: string;
+  period_end: string;
+  status: ClientUpdateStatus;
+  ai_draft?: string;
+  edited_body: string;
+  subject: string;
+  photo_asset_ids: string[];
+  created_by: string;
+  sent_by?: string;
+  sent_at?: string;
+  send_error?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Derived status of a public share link (server-computed, Chunk E). */
+export type ShareLinkStatus = 'active' | 'revoked' | 'expired';
+
+/**
+ * internal/api.shareLinkView — the operator-side view of a public share link
+ * (Chunk E). The cleartext token + its hash are NEVER in this shape; the
+ * cleartext is returned exactly once (in CreateShareLinkResponse.url) at create.
+ */
+export interface ShareLink {
+  id: string;
+  client_update_id: string;
+  status: ShareLinkStatus;
+  expires_at: string;
+  revoked_at?: string;
+  last_viewed_at?: string;
+  view_count: number;
+  created_at: string;
+}
+
+/**
+ * Response of POST .../share-links — the ONE-TIME public URL the operator
+ * copies + emails to the homeowner, plus the link record. `url` is shown once
+ * and never returned again (the cleartext token is not stored).
+ */
+export interface CreateShareLinkResponse {
+  url: string;
+  link: ShareLink;
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // Validation gates only — pool/store nil. Post-validation paths would
@@ -108,6 +109,7 @@ func TestFieldService_DailyLog_RejectsBadInput(t *testing.T) {
 		{"oversized summary", uuid.New(), "sub-1", DailyLogInput{ProjectID: uuid.New(), IdempotencyKey: uuid.New(), LogDate: now, WorkSummary: bigSummary}},
 		{"oversized weather", uuid.New(), "sub-1", DailyLogInput{ProjectID: uuid.New(), IdempotencyKey: uuid.New(), LogDate: now, WorkSummary: "ok", WeatherConditions: &bigSummary}},
 		{"oversized safety", uuid.New(), "sub-1", DailyLogInput{ProjectID: uuid.New(), IdempotencyKey: uuid.New(), LogDate: now, WorkSummary: "ok", SafetyIncidents: &bigSummary}},
+		{"too many photos", uuid.New(), "sub-1", DailyLogInput{ProjectID: uuid.New(), IdempotencyKey: uuid.New(), LogDate: now, WorkSummary: "ok", PhotoAssetIDs: manyUUIDs(MaxAssetsPerDailyLog + 1)}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -134,5 +136,24 @@ func TestFieldService_Checkin_AcceptsCrewMembersJSON(t *testing.T) {
 	_, err := svc.Checkin(context.Background(), uuid.Nil, "sub-1", in)
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("err = %v, want ErrInvalidInput", err)
+	}
+}
+
+// rejectingPhotoValidator always fails — used to prove DailyLog runs the photo
+// guard inside its tx (and surfaces ErrInvalidPhotoAsset).
+type rejectingPhotoValidator struct{ called bool }
+
+func (v *rejectingPhotoValidator) ValidatePhotoAssets(_ context.Context, _ pgx.Tx, _, _ uuid.UUID, _ []uuid.UUID) error {
+	v.called = true
+	return ErrInvalidPhotoAsset
+}
+
+// TestFieldService_WithPhotoValidator confirms the injector stores the
+// validator (the in-tx invocation is covered by the integration test).
+func TestFieldService_WithPhotoValidator(t *testing.T) {
+	v := &rejectingPhotoValidator{}
+	svc := NewFieldService(nil, nil, nil, nil).WithPhotoValidator(v)
+	if svc.photos == nil {
+		t.Fatal("WithPhotoValidator did not store the validator")
 	}
 }

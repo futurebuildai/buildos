@@ -277,6 +277,93 @@ func (s *FieldStore) DailyLog(ctx context.Context, tx pgx.Tx, p DailyLogParams) 
 	return d, nil
 }
 
+// AppendDailyLogPhotosParams scopes an append of photo asset ids to the daily
+// log for a (project, date). The append is idempotent at the SQL level: the
+// array union (de-dup) means re-running with already-linked ids is a no-op.
+type AppendDailyLogPhotosParams struct {
+	OrgID     uuid.UUID
+	ProjectID uuid.UUID
+	LogDate   time.Time
+	AssetIDs  []uuid.UUID
+	MaxPhotos int // hard cap on the resulting array length (0 = no cap)
+}
+
+// AppendDailyLogPhotos unions AssetIDs into the photo_asset_ids array of the
+// daily_logs row for (org, project, date), de-duplicating and preserving order
+// (existing ids first, then the new ones). It targets the MOST RECENT row for
+// that day (matching DailyLogFieldsByProjectDate's ORDER BY reported_at DESC).
+//
+// Returns:
+//   - ErrNotFound when no daily_logs row exists for that (project, date) — the
+//     operator must have a log to attach photos to (the web flow creates one via
+//     the field daily-log endpoint first if absent).
+//   - ErrPhotoLimit when the union would exceed MaxPhotos.
+//
+// Org-scoped: a cross-org project never matches a row.
+func (s *FieldStore) AppendDailyLogPhotos(ctx context.Context, tx pgx.Tx, p AppendDailyLogPhotosParams) (models.DailyLog, error) {
+	d := p.LogDate.UTC().Format("2006-01-02")
+	// Resolve the target row id first (most recent for the day), org-scoped.
+	var logID uuid.UUID
+	err := tx.QueryRow(ctx, `
+		SELECT id FROM daily_logs
+		WHERE org_id = $1 AND project_id = $2 AND log_date = $3::date
+		ORDER BY reported_at DESC
+		LIMIT 1`,
+		p.OrgID, p.ProjectID, d,
+	).Scan(&logID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return models.DailyLog{}, ErrNotFound
+		}
+		return models.DailyLog{}, fmt.Errorf("locate daily log for append: %w", err)
+	}
+
+	// Union the arrays in SQL preserving "existing first, new after" ORDER and
+	// de-duping. WITH ORDINALITY assigns each id a position; we keep the FIRST
+	// occurrence (min ordinal) so an already-present id stays in its original
+	// slot and the new ids append in input order. The cap guard rejects a union
+	// that would exceed MaxPhotos.
+	var dl models.DailyLog
+	err = tx.QueryRow(ctx, `
+		WITH src AS (
+			SELECT u, ord FROM (
+				SELECT u, ord FROM unnest(
+					(SELECT COALESCE(photo_asset_ids, '{}'::uuid[]) FROM daily_logs WHERE id = $1)
+				) WITH ORDINALITY AS e(u, ord)
+				UNION ALL
+				SELECT u, ord + 1000000 FROM unnest($2::uuid[]) WITH ORDINALITY AS n(u, ord)
+			) z
+		),
+		ranked AS (
+			SELECT u, MIN(ord) AS first_ord FROM src GROUP BY u
+		),
+		merged AS (
+			SELECT ARRAY(SELECT u FROM ranked ORDER BY first_ord) AS new_ids
+		)
+		UPDATE daily_logs dl
+		SET photo_asset_ids = merged.new_ids
+		FROM merged
+		WHERE dl.id = $1
+		  AND ($3::int = 0 OR cardinality(merged.new_ids) <= $3)
+		RETURNING dl.id, dl.org_id, dl.project_id, dl.reported_by, dl.log_date,
+		          dl.weather_conditions, dl.work_summary, dl.safety_incidents,
+		          dl.photo_asset_ids, dl.idempotency_key, dl.reported_at`,
+		logID, p.AssetIDs, p.MaxPhotos,
+	).Scan(
+		&dl.ID, &dl.OrgID, &dl.ProjectID, &dl.ReportedBy, &dl.LogDate,
+		&dl.WeatherConditions, &dl.WorkSummary, &dl.SafetyIncidents,
+		&dl.PhotoAssetIDs, &dl.IdempotencyKey, &dl.ReportedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The UPDATE matched the row but the cap guard rejected it.
+			return models.DailyLog{}, ErrPhotoLimit
+		}
+		return models.DailyLog{}, fmt.Errorf("append daily log photos: %w", err)
+	}
+	return dl, nil
+}
+
 // LookupUserIDBySubject resolves the `sub` JWT claim to a users.id UUID,
 // scoped to the caller's org. After the standalone pivot, BuildOS mints its
 // own tokens with sub = users.id (auth.go: issuer.Mint(u.ID.String(), ...)),
@@ -326,6 +413,27 @@ func (s *FieldStore) VerifyTaskInOrg(ctx context.Context, tx pgx.Tx, taskID, org
 		return ErrNotFound
 	}
 	return nil
+}
+
+// ProjectIDForTaskInOrg returns the project_id of a task that belongs to orgID,
+// or ErrNotFound if the task does not exist in the org. It subsumes
+// VerifyTaskInOrg (same org guard) and additionally yields the project_id so
+// ReportProgress can validate a pinned photo against the task's project.
+func (s *FieldStore) ProjectIDForTaskInOrg(ctx context.Context, tx pgx.Tx, taskID, orgID uuid.UUID) (uuid.UUID, error) {
+	var projectID uuid.UUID
+	err := tx.QueryRow(ctx, `
+		SELECT t.project_id FROM project_tasks t
+		JOIN projects p ON p.id = t.project_id
+		WHERE t.id = $1 AND p.org_id = $2`,
+		taskID, orgID,
+	).Scan(&projectID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return uuid.Nil, ErrNotFound
+		}
+		return uuid.Nil, fmt.Errorf("project id for task in org: %w", err)
+	}
+	return projectID, nil
 }
 
 // isUniqueViolation reports whether err is a Postgres SQLSTATE 23505

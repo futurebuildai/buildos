@@ -28,6 +28,7 @@ describe('capabilityStore.refreshCapabilities', () => {
     const payload: Capabilities = {
       ai_configured: true,
       email_configured: false,
+      storage_configured: false,
       providers: [
         { provider: 'anthropic', configured: true, fingerprint: 'ab12' },
         { provider: 'resend', configured: false },
@@ -46,6 +47,7 @@ describe('capabilityStore.refreshCapabilities', () => {
     mockGet.mockResolvedValueOnce({
       ai_configured: false,
       email_configured: true,
+      storage_configured: false,
       providers: [],
     });
 

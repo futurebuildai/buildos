@@ -63,6 +63,18 @@ type DailyLogInput struct {
 	IdempotencyKey    uuid.UUID
 }
 
+// PhotoValidator is the consumer-side slice of AssetService FieldService needs
+// to reject daily-log photo ids that don't resolve to a confirmed, org-owned
+// blob for the project (Chunk B). Declared here so the field service does not
+// import the asset service's concrete type and tests can inject a fake. It runs
+// INSIDE the daily-log insert tx so validation + insert are atomic. A nil
+// validator (storage unconfigured / worker binary) skips the check — the
+// dangling-id gap is only closable when the asset registry is wired, and a fork
+// without storage can still record text-only daily logs.
+type PhotoValidator interface {
+	ValidatePhotoAssets(ctx context.Context, tx pgx.Tx, orgID, projectID uuid.UUID, ids []uuid.UUID) error
+}
+
 // FieldService is the business-logic surface for /api/v1/field/*.
 // Sync reads, the three POST paths write idempotently with
 // client-supplied UUID keys.
@@ -70,17 +82,28 @@ type FieldService struct {
 	pool      *pgxpool.Pool
 	store     *store.FieldStore
 	feedStore *store.FeedCardsStore
+	photos    PhotoValidator // nil => daily-log photo ids not validated (soft-degrade)
 	audit     AuditRecorder
 }
 
 // NewFieldService creates a service bound to a pool, the FieldStore,
 // and a FeedCardsStore (for /field/sync to bundle recent cards).
-// audit may be nil; nil falls back to a no-op recorder.
+// audit may be nil; nil falls back to a no-op recorder. The PhotoValidator is
+// set via WithPhotoValidator after construction (it depends on AssetService,
+// which is wired later) — see cmd/server.
 func NewFieldService(pool *pgxpool.Pool, fields *store.FieldStore, feed *store.FeedCardsStore, audit AuditRecorder) *FieldService {
 	if audit == nil {
 		audit = NewNoopAuditRecorder()
 	}
 	return &FieldService{pool: pool, store: fields, feedStore: feed, audit: audit}
+}
+
+// WithPhotoValidator injects the daily-log photo-id validator. Called after
+// construction because AssetService (which satisfies PhotoValidator) is wired
+// after FieldService. A nil validator leaves the soft-degrade behavior intact.
+func (s *FieldService) WithPhotoValidator(v PhotoValidator) *FieldService {
+	s.photos = v
+	return s
 }
 
 // SyncOptions narrows a /field/sync read.
@@ -197,8 +220,18 @@ func (s *FieldService) ReportProgress(ctx context.Context, callerOrgID uuid.UUID
 		if err != nil {
 			return err
 		}
-		if err := s.store.VerifyTaskInOrg(ctx, tx, in.TaskID, callerOrgID); err != nil {
+		// Resolve the task's project (subsumes the org guard) so a pinned photo
+		// can be validated against it — same confirmed/org/project invariant the
+		// daily-log path enforces (review finding: ReportProgress previously
+		// stored an unvalidated photo_asset_id).
+		projectID, err := s.store.ProjectIDForTaskInOrg(ctx, tx, in.TaskID, callerOrgID)
+		if err != nil {
 			return err
+		}
+		if s.photos != nil && in.PhotoAssetID != nil {
+			if err := s.photos.ValidatePhotoAssets(ctx, tx, callerOrgID, projectID, []uuid.UUID{*in.PhotoAssetID}); err != nil {
+				return err
+			}
 		}
 		row, err := s.store.ReportProgress(ctx, tx, store.ReportProgressParams{
 			TaskID:          in.TaskID,
@@ -236,6 +269,8 @@ func (s *FieldService) ReportProgress(ctx context.Context, callerOrgID uuid.UUID
 			return models.TaskProgress{}, ErrIdempotencyConflict
 		case errors.Is(err, store.ErrNotFound):
 			return models.TaskProgress{}, ErrNotFound
+		case errors.Is(err, ErrInvalidPhotoAsset):
+			return models.TaskProgress{}, ErrInvalidPhotoAsset
 		}
 		return models.TaskProgress{}, fmt.Errorf("report progress: %w", err)
 	}
@@ -334,6 +369,9 @@ func (s *FieldService) DailyLog(ctx context.Context, callerOrgID uuid.UUID, call
 	if err := validateOptionalNotes(in.SafetyIncidents); err != nil {
 		return models.DailyLog{}, err
 	}
+	if len(in.PhotoAssetIDs) > MaxAssetsPerDailyLog {
+		return models.DailyLog{}, fmt.Errorf("%w: at most %d photos per daily log", ErrInvalidInput, MaxAssetsPerDailyLog)
+	}
 
 	var got models.DailyLog
 	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
@@ -343,6 +381,15 @@ func (s *FieldService) DailyLog(ctx context.Context, callerOrgID uuid.UUID, call
 		}
 		if err := store.VerifyProjectInOrg(ctx, tx, in.ProjectID, callerOrgID); err != nil {
 			return err
+		}
+		// Photo-link guard (Chunk B): reject ids that aren't confirmed,
+		// org-owned blobs for this project. Closes the dangling-id gap. Skipped
+		// when no validator is wired (storage unconfigured) so text-only logs
+		// still work. Runs in-tx so the validation + insert are atomic.
+		if s.photos != nil && len(in.PhotoAssetIDs) > 0 {
+			if err := s.photos.ValidatePhotoAssets(ctx, tx, callerOrgID, in.ProjectID, in.PhotoAssetIDs); err != nil {
+				return err
+			}
 		}
 		row, err := s.store.DailyLog(ctx, tx, store.DailyLogParams{
 			OrgID:             callerOrgID,
@@ -375,6 +422,8 @@ func (s *FieldService) DailyLog(ctx context.Context, callerOrgID uuid.UUID, call
 	})
 	if err != nil {
 		switch {
+		case errors.Is(err, ErrInvalidPhotoAsset):
+			return models.DailyLog{}, ErrInvalidPhotoAsset
 		case errors.Is(err, store.ErrIdempotencyConflict):
 			return models.DailyLog{}, ErrIdempotencyConflict
 		case errors.Is(err, store.ErrNotFound):

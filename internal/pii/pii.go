@@ -125,6 +125,15 @@ var FieldClass = map[string]Class{
 	"ip_address":     Restricted,
 	"remote_addr":    Restricted,
 
+	// Restricted (homeowner contact PII — Chunk D client updates). The
+	// homeowner's name/email/phone live on projects; the snapshot address on a
+	// client_update is recipient_email. NEVER log/audit/serialize to a
+	// field_worker (handler/role-gated): a client update is owner/admin only.
+	"client_name":     Restricted,
+	"client_email":    Restricted,
+	"client_phone":    Restricted,
+	"recipient_email": Restricted,
+
 	// Restricted (secret material) — must NEVER reach a log/audit/Sentry sink.
 	"password":      Restricted,
 	"password_hash": Restricted,

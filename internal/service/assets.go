@@ -30,6 +30,9 @@ const (
 
 	AuditActionAssetUploadRequested = "asset.upload_requested"
 	AuditActionAssetUploaded        = "asset.uploaded"
+	// AuditActionAssetLinkedToLog records an operator/field association of
+	// confirmed assets to a daily log (Chunk B). ResourceID is the daily_logs id.
+	AuditActionAssetLinkedToLog = "asset.linked_to_daily_log"
 )
 
 // Asset-storage sentinel errors. Handlers map these to HTTP status codes:
@@ -38,6 +41,14 @@ const (
 //	ErrInvalidInput       → 400 VALIDATION_ERROR (bad content-type / oversize)
 //	ErrNotFound           → 404 NOT_FOUND (missing / cross-org / not ready)
 var ErrStorageUnavailable = errors.New("assets: object store not configured")
+
+// ErrInvalidPhotoAsset is returned when a daily-log / client-update photo id
+// does not resolve to a confirmed ('ready'), org-owned blob whose project (if
+// pinned) matches the target — i.e. an unknown, foreign, pending, or
+// wrong-project id. Handlers map it to 400 INVALID_PHOTO_ASSET. The error is
+// uniform across all failure reasons (no enumeration signal about which id or
+// why), mirroring the store's count-based validation.
+var ErrInvalidPhotoAsset = errors.New("assets: photo asset is not a confirmed, org-owned blob for this project")
 
 // Upload limits (DAILY_REPORTS_CLIENT_UPDATES §9 defaults: D-1/D-2/D-3).
 const (
@@ -99,6 +110,7 @@ type ObjectStoreResolver func(ctx context.Context, orgID uuid.UUID) (ObjectStore
 type AssetService struct {
 	pool     *pgxpool.Pool
 	store    *store.AssetStore
+	fields   *store.FieldStore   // daily-log photo linking (Chunk B); may be nil
 	resolver ObjectStoreResolver // nil => storage unconfigured (soft-fail)
 	audit    AuditRecorder
 	logger   *slog.Logger
@@ -106,9 +118,10 @@ type AssetService struct {
 }
 
 // NewAssetService builds an AssetService. resolver may be nil (storage
-// unconfigured → every storage path 503s). audit nil → no-op recorder; logger
-// nil → slog.Default; clock nil → time.Now.
-func NewAssetService(pool *pgxpool.Pool, s *store.AssetStore, resolver ObjectStoreResolver, audit AuditRecorder, logger *slog.Logger, clock func() time.Time) *AssetService {
+// unconfigured → every storage path 503s). fields may be nil (daily-log linking
+// disabled — LinkPhotosToDailyLog 500s a programmer error if invoked). audit nil
+// → no-op recorder; logger nil → slog.Default; clock nil → time.Now.
+func NewAssetService(pool *pgxpool.Pool, s *store.AssetStore, fields *store.FieldStore, resolver ObjectStoreResolver, audit AuditRecorder, logger *slog.Logger, clock func() time.Time) *AssetService {
 	if audit == nil {
 		audit = NewNoopAuditRecorder()
 	}
@@ -118,7 +131,7 @@ func NewAssetService(pool *pgxpool.Pool, s *store.AssetStore, resolver ObjectSto
 	if clock == nil {
 		clock = time.Now
 	}
-	return &AssetService{pool: pool, store: s, resolver: resolver, audit: audit, logger: logger, now: clock}
+	return &AssetService{pool: pool, store: s, fields: fields, resolver: resolver, audit: audit, logger: logger, now: clock}
 }
 
 // objStore resolves the per-org ObjectStore, returning ErrStorageUnavailable
@@ -265,6 +278,127 @@ func (s *AssetService) ConfirmUpload(ctx context.Context, orgID uuid.UUID, userS
 	return asset, nil
 }
 
+// ValidatePhotoAssets asserts every id in ids resolves to a confirmed
+// ('ready'), org-owned blob whose project (if pinned) matches projectID — the
+// daily-log photo-link guard (Chunk B). It closes the dangling-id gap: a daily
+// log may only reference confirmed, org-owned blobs. Runs inside the caller's tx
+// so the validation and the mutation it guards are atomic.
+//
+// nil/empty ids is a no-op (a daily log with no photos is valid). Returns
+// ErrInvalidPhotoAsset (uniform — no enumeration signal) if ANY id fails. Does
+// NOT gate on storage being configured: validation is a pure DB read (the rows
+// exist regardless of whether R2 is reachable).
+func (s *AssetService) ValidatePhotoAssets(ctx context.Context, tx pgx.Tx, orgID, projectID uuid.UUID, ids []uuid.UUID) error {
+	deduped := dedupeUUIDs(ids)
+	if len(deduped) == 0 {
+		return nil
+	}
+	n, err := s.store.CountReadyForProject(ctx, tx, orgID, projectID, deduped)
+	if err != nil {
+		return err
+	}
+	if n != len(deduped) {
+		return ErrInvalidPhotoAsset
+	}
+	return nil
+}
+
+// LinkPhotosToDailyLog associates already-confirmed assets with the daily log
+// for a (project, date) — the operator/web "Add photos" path (Chunk B §3) and
+// the field reconciliation path. It (1) verifies the project is in the org, (2)
+// validates every asset id is ready + org-owned + project-matched, (3) unions
+// the ids into the day's daily_logs row (de-duped, capped at
+// MaxAssetsPerDailyLog), (4) audits asset.linked_to_daily_log — all in ONE tx.
+//
+// Errors: ErrNotFound (project / daily-log for that day missing or cross-org),
+// ErrInvalidPhotoAsset (any unknown/foreign/pending/wrong-project id),
+// ErrInvalidInput (oversize set / bad args). The append is idempotent: re-linking
+// already-attached ids is a no-op union.
+func (s *AssetService) LinkPhotosToDailyLog(ctx context.Context, orgID uuid.UUID, userSub string, projectID uuid.UUID, day time.Time, assetIDs []uuid.UUID) (models.DailyLog, error) {
+	if orgID == uuid.Nil || projectID == uuid.Nil {
+		return models.DailyLog{}, fmt.Errorf("%w: org_id and project_id are required", ErrInvalidInput)
+	}
+	if day.IsZero() {
+		return models.DailyLog{}, fmt.Errorf("%w: log_date is required", ErrInvalidInput)
+	}
+	deduped := dedupeUUIDs(assetIDs)
+	if len(deduped) == 0 {
+		return models.DailyLog{}, fmt.Errorf("%w: at least one asset id is required", ErrInvalidInput)
+	}
+	if len(deduped) > MaxAssetsPerDailyLog {
+		return models.DailyLog{}, fmt.Errorf("%w: cannot link more than %d photos at once", ErrInvalidInput, MaxAssetsPerDailyLog)
+	}
+	if s.fields == nil {
+		// Programmer error: the service was wired without the FieldStore.
+		return models.DailyLog{}, fmt.Errorf("assets: daily-log linking not configured")
+	}
+
+	var dl models.DailyLog
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if err := store.VerifyProjectInOrg(ctx, tx, projectID, orgID); err != nil {
+			return err
+		}
+		if err := s.ValidatePhotoAssets(ctx, tx, orgID, projectID, deduped); err != nil {
+			return err
+		}
+		row, err := s.fields.AppendDailyLogPhotos(ctx, tx, store.AppendDailyLogPhotosParams{
+			OrgID:     orgID,
+			ProjectID: projectID,
+			LogDate:   day,
+			AssetIDs:  deduped,
+			MaxPhotos: MaxAssetsPerDailyLog,
+		})
+		if err != nil {
+			return err
+		}
+		dl = row
+		meta, _ := json.Marshal(map[string]any{
+			"project_id":  projectID,
+			"log_date":    day.UTC().Format("2006-01-02"),
+			"asset_count": len(deduped),
+		})
+		s.audit.Record(ctx, tx, AuditEntry{
+			OrgID:        orgID,
+			UserSub:      userSub,
+			Action:       AuditActionAssetLinkedToLog,
+			ResourceType: AuditResourceAsset,
+			ResourceID:   row.ID,
+			Metadata:     meta,
+		})
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrPhotoLimit) {
+			return models.DailyLog{}, fmt.Errorf("%w: daily log would exceed %d photos", ErrInvalidInput, MaxAssetsPerDailyLog)
+		}
+		if errors.Is(err, ErrInvalidPhotoAsset) {
+			return models.DailyLog{}, ErrInvalidPhotoAsset
+		}
+		return models.DailyLog{}, mapStoreError(err)
+	}
+	return dl, nil
+}
+
+// dedupeUUIDs returns the distinct non-nil ids in input order.
+func dedupeUUIDs(ids []uuid.UUID) []uuid.UUID {
+	if len(ids) == 0 {
+		return nil
+	}
+	seen := make(map[uuid.UUID]struct{}, len(ids))
+	out := make([]uuid.UUID, 0, len(ids))
+	for _, id := range ids {
+		if id == uuid.Nil {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
 // GetAsset returns a single asset's metadata, org-scoped. ErrNotFound on
 // missing / cross-org. (Reads are not audited — house style.)
 func (s *AssetService) GetAsset(ctx context.Context, orgID, assetID uuid.UUID) (models.Asset, error) {
@@ -332,12 +466,22 @@ func (s *AssetService) ListProjectAssets(ctx context.Context, orgID, projectID u
 	return out, nil
 }
 
-// ServeAsset is the same-origin proxy path: it verifies the asset is in the
-// caller's org + ready, streams the bytes from the object store, and — for
-// image types stdlib can decode (jpeg/png) — re-encodes to STRIP EXIF metadata
-// (D-4: GPS EXIF is Restricted PII and must never reach a client/public page).
-// WebP/HEIC pass through unchanged (no stdlib decoder); the operator surface
-// still tolerates them, and the public surface (Chunk E) will gate accordingly.
+// ServeAsset is the same-origin proxy path used by the PUBLIC homeowner page
+// (its only caller — the operator surface redirects to a signed R2 URL instead).
+// It verifies the asset is in the caller's org + ready, streams the bytes from
+// the object store, and — for image types stdlib can decode (jpeg/png) —
+// re-encodes to STRIP EXIF metadata (D-4: GPS EXIF is Restricted PII and must
+// never reach a client/public page).
+//
+// SECURITY (review finding M1): a type we cannot decode-and-re-encode (webp,
+// heic — HEIC is the iPhone default capture format) would otherwise be streamed
+// RAW, EXIF intact, to the unauthenticated homeowner. We therefore REFUSE to
+// serve any type the stripper can't process: ErrNotFound (the public proxy maps
+// it to a 404 image). A field-captured HEIC/WebP photo curated into a client
+// update shows as a broken image rather than leaking the homeowner's GPS — until
+// a webp/heic decoder (or an upload-time JPEG derivative) lands. The upload
+// allowlist still accepts webp/heic (operators view them internally via the
+// authenticated signed-URL path, which never goes through this proxy).
 // The caller MUST Close the returned reader.
 func (s *AssetService) ServeAsset(ctx context.Context, orgID, assetID uuid.UUID) (io.ReadCloser, string, error) {
 	objs, err := s.objStore(ctx, orgID)
@@ -361,17 +505,11 @@ func (s *AssetService) ServeAsset(ctx context.Context, orgID, assetID uuid.UUID)
 	stripped, newCT, ok := stripImageMetadata(body, ct)
 	_ = body.Close()
 	if !ok {
-		// Unsupported format for stdlib re-encode: re-fetch and stream raw. The
-		// caller's CSP + nosniff still apply; WebP/HEIC EXIF handling lands with
-		// a proper decoder in a follow-up.
-		raw, rawCT, rerr := objs.Get(ctx, asset.StorageKey)
-		if rerr != nil {
-			return nil, "", fmt.Errorf("serve asset (raw): %w", rerr)
-		}
-		if rawCT == "" {
-			rawCT = asset.ContentType
-		}
-		return raw, rawCT, nil
+		// Cannot strip EXIF from this type → do NOT serve it on the public proxy.
+		// Streaming raw bytes here would leak GPS EXIF to an unauthenticated viewer.
+		slog.WarnContext(ctx, "asset.serve.unstrippable_type_refused",
+			"asset_id", assetID, "content_type", ct)
+		return nil, "", ErrNotFound
 	}
 	return io.NopCloser(bytes.NewReader(stripped)), newCT, nil
 }

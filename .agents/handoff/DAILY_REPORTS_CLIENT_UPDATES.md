@@ -336,8 +336,8 @@ Constructor: `pool`, `ReportsService` (or field/schedule stores), the two AI tas
 
 | Method | Tx + Audit |
 |---|---|
-| `DraftClientUpdate(ctx, orgID, projectID, period)` | Load schedule snapshot + `[]DailyReport` (**redacted view**), call `ClientProgressUpdate`, INSERT `{status:'draft', ai_draft, edited_body=ai_draft}` one tx, audit `client_update.drafted`. AI soft-fail → 503, no empty draft. |
-| `UpdateDraft(ctx, orgID, id, edited_body, subject, photo_asset_ids)` | Operator edit incl. **curating which photos** (validate IDs are `ready` + org + project-matched). One-tx UPDATE (status must be `draft`), audit `client_update.edited`. |
+| `CreateDraft(ctx, orgID, projectID, period)` | Call Chunk C `DraftClientUpdate` (the **redacted** AI draft — itself audited `client_update.drafted`, resource = project), then INSERT `{status:'draft', ai_draft, edited_body=ai_draft}` one tx, audit **`client_update.created`** (resource = the new row). AI soft-fail → 503, no empty draft. |
+| `UpdateDraft(ctx, orgID, id, edited_body, subject, photo_asset_ids)` | Operator edit incl. **curating which photos** (validate IDs are `ready` + org + project-matched). One-tx UPDATE (status `draft` **or** `failed` — editing a failed row resets it to `draft` + clears `send_error`), audit **`client_update.updated`**. |
 | `SendClientUpdate(ctx, orgID, id)` | Load draft + `client_email`. Reject empty (`ErrNoClientContact` → 422). One tx: snapshot `recipient_email`, set `sent_by`/`sent_at`/`status='sent'`, audit `client_update.sent`. **Then** `mailer.Send` **after commit** (see ordering). |
 | `GenerateOfficeDigest(ctx, orgID, projectID, period)` | Call `DailyReportDigest`, `CreateFeedCard` (`card_type` e.g. `daily_digest`) to operators, audit `report.digest.generated`. |
 
@@ -468,7 +468,7 @@ Two public, unauth routes under a dedicated prefix (`/p/` chosen to not collide 
 - `internal/pii/pii.go`: +`client_email`/`client_name`/`client_phone`/`recipient_email` → Restricted.
 
 ### Audit actions (new)
-`asset.upload_requested`, `asset.uploaded`, `report.digest.generated`, `client_update.drafted/edited/sent/send_failed`, `client_update.share_link.created/revoked`. (Reads unaudited.)
+`asset.upload_requested`, `asset.uploaded`, `report.digest.generated`, `client_update.drafted` (Chunk C AI-draft generation, resource = project), `client_update.created/updated/sent/send_failed` (the persisted-row lifecycle — `.created`/`.updated` match the house `project.created/updated` convention; `.drafted` is the distinct transient-draft event), `client_update.share_link.created/revoked`. (Reads unaudited.)
 
 ### Web (lockstep `router.ts` + `fb-nav-rail.ts` + `DESIGN_SYSTEM_COMPONENTS §1.3`)
 - `/command/reports` (Command Center, minRole superintendent) — C.

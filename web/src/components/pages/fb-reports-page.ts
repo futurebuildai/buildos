@@ -17,6 +17,7 @@ import {
   generateDigest,
   draftClientUpdate,
 } from '../../api/endpoints/reports.js';
+import { uploadProjectPhoto, linkPhotosToDailyLog } from '../../api/endpoints/assets.js';
 import type {
   Project,
   DailyReport,
@@ -26,9 +27,20 @@ import type {
 import type { Column } from '../organisms/fb-data-table.js';
 import type { SelectOption } from '../atoms/fb-select.js';
 import { ApiError, ErrorCode } from '../../api/errors.js';
-import { aiConfigured, markAiUnconfigured } from '../../state/capabilityStore.js';
+import {
+  aiConfigured,
+  markAiUnconfigured,
+  storageConfigured,
+  markStorageUnconfigured,
+} from '../../state/capabilityStore.js';
 import { hasRole, hasMinRole } from '../../state/authStore.js';
 import { navigate } from '../../router.js';
+
+/** Accepted photo content types (mirrors the backend allowlist D-2). */
+const ACCEPTED_PHOTO_TYPES = 'image/jpeg,image/png,image/webp,image/heic';
+
+/** Photo-upload affordance state. */
+type UploadState = 'idle' | 'busy' | 'error' | 'disabled';
 
 /** AI action state for the digest/draft heroes (mirrors fb-briefing-page). */
 type AiState = 'idle' | 'busy' | 'ok' | 'gated' | 'error';
@@ -99,6 +111,28 @@ export class FbReportsPage extends FBElement {
         padding-left: var(--fb-spacing-md);
         color: var(--fb-text-primary);
       }
+      .photos-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--fb-spacing-md);
+        flex-wrap: wrap;
+        margin-bottom: var(--fb-spacing-sm);
+      }
+      .add-photos {
+        display: flex;
+        align-items: center;
+        gap: var(--fb-spacing-sm);
+        flex-wrap: wrap;
+      }
+      .storage-off {
+        font-size: var(--fb-text-body-sm);
+        color: var(--fb-text-secondary);
+      }
+      .upload-error {
+        font-size: var(--fb-text-body-sm);
+        color: var(--fb-safety-red);
+      }
       .photo-strip {
         display: flex;
         flex-wrap: wrap;
@@ -152,6 +186,10 @@ export class FbReportsPage extends FBElement {
   // Client-update draft (owner/admin).
   @state() private draft: ClientUpdateDraft | null = null;
   @state() private draftState: AiState = 'idle';
+
+  // Photo upload (superintendent+). Gated on storage being configured.
+  @state() private uploadState: UploadState = 'idle';
+  @state() private uploadError: string | null = null;
 
   override connectedCallback(): void {
     super.connectedCallback();
@@ -217,6 +255,8 @@ export class FbReportsPage extends FBElement {
     this.digestState = 'idle';
     this.draft = null;
     this.draftState = 'idle';
+    this.uploadState = 'idle';
+    this.uploadError = null;
   }
 
   private onProject(e: Event): void {
@@ -275,6 +315,12 @@ export class FbReportsPage extends FBElement {
     }
   }
 
+  /** Deep-link to the client-update composer for the current project + date (Chunk D). */
+  private openComposer(): void {
+    const q = new URLSearchParams({ project: this.projectId, date: this.selectedDate });
+    navigate(`/portfolio/client-updates?${q.toString()}`);
+  }
+
   /** Map an AI call failure to a hero state (503 → gated, else transient error). */
   private classifyAi(err: unknown): AiState {
     if (
@@ -287,19 +333,114 @@ export class FbReportsPage extends FBElement {
     return 'error';
   }
 
+  // --------------------------- Photo upload ------------------------------
+  private onPickPhotos(): void {
+    if (this.uploadState === 'busy') return;
+    const input = this.renderRoot.querySelector<HTMLInputElement>('#photo-input');
+    input?.click();
+  }
+
+  /**
+   * Upload each selected file direct-to-R2 (presign → PUT → confirm), then link
+   * the confirmed asset ids to the selected day's daily log and refresh so the
+   * photo strip re-renders. A 503 anywhere → mark storage unconfigured + show
+   * the disabled state. INVALID_PHOTO_ASSET / NOT_FOUND (no log that day) →
+   * transient error message.
+   */
+  private async onPhotosSelected(e: Event): Promise<void> {
+    const input = e.target as HTMLInputElement;
+    const files = Array.from(input.files ?? []);
+    input.value = ''; // allow re-selecting the same file
+    if (files.length === 0 || !this.projectId || !this.selectedDate) return;
+
+    this.uploadState = 'busy';
+    this.uploadError = null;
+    try {
+      const assetIds: string[] = [];
+      for (const file of files) {
+        assetIds.push(await uploadProjectPhoto(this.projectId, file));
+      }
+      await linkPhotosToDailyLog(this.projectId, this.selectedDate, assetIds);
+      this.uploadState = 'idle';
+      // Refresh the report so the photo strip picks up the new signed URLs.
+      await this.loadReport();
+    } catch (err) {
+      if (err instanceof ApiError && err.code === ErrorCode.SERVICE_UNAVAILABLE) {
+        markStorageUnconfigured();
+        this.uploadState = 'disabled';
+        return;
+      }
+      this.uploadState = 'error';
+      this.uploadError =
+        err instanceof ApiError && err.code === ErrorCode.NOT_FOUND
+          ? 'Record a daily log for this day before adding photos.'
+          : 'Upload failed. Please try again.';
+    }
+  }
+
   // ------------------------------- Render --------------------------------
   private renderPhotos(): TemplateResult {
+    // Photos section renders whenever there are photos OR the operator can add
+    // them (superintendent+). The "Add photos" affordance lets photos be demoed
+    // via the web console without the mobile app.
     const photos = this.report?.photos ?? [];
-    if (photos.length === 0) return html`${nothing}`;
+    const canAdd = hasMinRole('superintendent') && this.report?.has_log === true;
+    if (photos.length === 0 && !canAdd) return html`${nothing}`;
     return html`<section class="card">
-      <p class="section-label">Photos (${photos.length})</p>
-      <div class="photo-strip">
-        ${photos.map(
-          (p) =>
-            html`<img src=${p.thumb_url} alt="Jobsite photo" loading="lazy" decoding="async" />`,
-        )}
+      <div class="photos-head">
+        <p class="section-label">Photos${photos.length ? ` (${photos.length})` : ''}</p>
+        ${canAdd ? this.renderAddPhotos() : nothing}
       </div>
+      ${photos.length
+        ? html`<div class="photo-strip">
+            ${photos.map(
+              (p) =>
+                html`<img
+                  src=${p.thumb_url}
+                  alt="Jobsite photo"
+                  loading="lazy"
+                  decoding="async"
+                />`,
+            )}
+          </div>`
+        : html`<p class="page-sub" data-test="no-photos">No photos for this day yet.</p>`}
     </section>`;
+  }
+
+  /** The "Add photos" affordance: hidden file input + button, gated on storage. */
+  private renderAddPhotos(): TemplateResult {
+    const storageOff = !storageConfigured.get() || this.uploadState === 'disabled';
+    return html`<div class="add-photos">
+      <input
+        id="photo-input"
+        type="file"
+        accept=${ACCEPTED_PHOTO_TYPES}
+        multiple
+        hidden
+        aria-hidden="true"
+        @change=${(e: Event) => void this.onPhotosSelected(e)}
+      />
+      <fb-button
+        variant="secondary"
+        icon="camera"
+        data-test="add-photos"
+        ?disabled=${storageOff}
+        ?loading=${this.uploadState === 'busy'}
+        title=${storageOff ? 'Object storage is not configured' : 'Add jobsite photos to this day'}
+        @click=${() => void this.onPickPhotos()}
+        >Add photos</fb-button
+      >
+      ${storageOff
+        ? html`<span class="storage-off" data-test="storage-off"
+            >Object storage not configured</span
+          >`
+        : nothing}
+      ${this.uploadState === 'error' && this.uploadError
+        ? html`<span class="upload-error" role="alert" data-test="upload-error"
+            >${this.uploadError}</span
+          >`
+        : nothing}
+    </div>`;
   }
 
   private renderDigestAction(): TemplateResult {
@@ -375,8 +516,18 @@ export class FbReportsPage extends FBElement {
             <p class="draft-subject" data-test="draft-subject">${this.draft.subject}</p>
             <fb-markdown .source=${this.draft.body}></fb-markdown>
             <p class="draft-note">
-              Read-only preview. Editing and sending arrive with the client-update composer.
+              Read-only preview. Open the composer to edit the subject and body, curate photos, and
+              send it to the homeowner.
             </p>
+            <div class="actions" style="margin-top: var(--fb-spacing-sm)">
+              <fb-button
+                variant="primary"
+                icon="message-circle"
+                data-test="open-composer"
+                @click=${() => this.openComposer()}
+                >Edit &amp; send in composer</fb-button
+              >
+            </div>
           </div>`
         : nothing}
     </section>`;

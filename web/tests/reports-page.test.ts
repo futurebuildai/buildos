@@ -11,6 +11,19 @@ vi.mock('../src/api/endpoints/reports.js', () => ({
   draftClientUpdate: vi.fn(),
 }));
 
+// The asset (photo-upload) endpoint module is mocked so the "Add photos" flow
+// never hits the network or the R2 PUT.
+vi.mock('../src/api/endpoints/assets.js', () => ({
+  uploadProjectPhoto: vi.fn(),
+  linkPhotosToDailyLog: vi.fn(),
+}));
+
+// The capabilities endpoint is mocked so the storage gate is controllable via
+// refreshCapabilities (the real capabilityStore is otherwise used unmocked).
+vi.mock('../src/api/endpoints/capabilities.js', () => ({
+  getCapabilities: vi.fn(),
+}));
+
 // authStore is mocked so role-gated actions render deterministically.
 vi.mock('../src/state/authStore.js', () => ({
   hasRole: vi.fn(() => true),
@@ -21,9 +34,23 @@ import '../src/components/pages/fb-reports-page.js';
 
 import * as projectsApi from '../src/api/endpoints/projects.js';
 import * as reportsApi from '../src/api/endpoints/reports.js';
+import * as assetsApi from '../src/api/endpoints/assets.js';
+import * as capabilitiesApi from '../src/api/endpoints/capabilities.js';
 import * as authStore from '../src/state/authStore.js';
 import { ApiError, ErrorCode } from '../src/api/errors.js';
-import { clearCapabilities } from '../src/state/capabilityStore.js';
+import { clearCapabilities, refreshCapabilities } from '../src/state/capabilityStore.js';
+import type { Capabilities } from '../src/types/models.js';
+
+/** Set the capability store via the mocked endpoint. */
+async function setStorageConfigured(on: boolean): Promise<void> {
+  vi.mocked(capabilitiesApi.getCapabilities).mockResolvedValueOnce({
+    ai_configured: true,
+    email_configured: true,
+    storage_configured: on,
+    providers: [],
+  } satisfies Capabilities);
+  await refreshCapabilities();
+}
 import type {
   Project,
   DailyReport,
@@ -177,8 +204,10 @@ describe('fb-reports-page', () => {
     expect(reportsApi.draftClientUpdate).toHaveBeenCalledWith('p-1', '2026-06-09');
     const subject = el.shadowRoot!.querySelector('[data-test="draft-subject"]');
     expect(subject?.textContent).toContain('Your home is coming along!');
-    // Read-only note present (no editable composer in Chunk C).
+    // Read-only note present (no editable composer here — that's Chunk D).
     expect(el.shadowRoot!.querySelector('.draft-note')).not.toBeNull();
+    // Chunk D: a deep-link into the editable composer is offered.
+    expect(el.shadowRoot!.querySelector('[data-test="open-composer"]')).not.toBeNull();
   });
 
   it('degrades the digest action to a gated panel on a 503 soft-fail', async () => {
@@ -220,5 +249,102 @@ describe('fb-reports-page', () => {
     await flush(el);
     expect(el.shadowRoot!.textContent).toContain('Generate office digest');
     expect(el.shadowRoot!.textContent).not.toContain('Draft client update');
+  });
+
+  // --- Chunk B: the "Add photos" affordance ---
+
+  it('enables the Add-photos button when storage is configured', async () => {
+    await setStorageConfigured(true);
+    const el = await mount('fb-reports-page');
+    await flush(el);
+    const btn = el.shadowRoot!.querySelector('[data-test="add-photos"]');
+    expect(btn).not.toBeNull();
+    expect(btn?.hasAttribute('disabled')).toBe(false);
+    // No "object storage not configured" hint when on.
+    expect(el.shadowRoot!.querySelector('[data-test="storage-off"]')).toBeNull();
+  });
+
+  it('disables the Add-photos affordance and explains when storage is OFF', async () => {
+    await setStorageConfigured(false);
+    const el = await mount('fb-reports-page');
+    await flush(el);
+    const btn = el.shadowRoot!.querySelector('[data-test="add-photos"]');
+    expect(btn?.hasAttribute('disabled')).toBe(true);
+    expect(el.shadowRoot!.querySelector('[data-test="storage-off"]')?.textContent).toContain(
+      'Object storage not configured',
+    );
+  });
+
+  it('uploads (presign+PUT+confirm), links the asset, and refreshes the strip', async () => {
+    await setStorageConfigured(true);
+    vi.mocked(assetsApi.uploadProjectPhoto).mockResolvedValue('a-new');
+    vi.mocked(assetsApi.linkPhotosToDailyLog).mockResolvedValue({
+      id: 'log-1',
+      org_id: 'org-1',
+      project_id: 'p-1',
+      reported_by: 'u-1',
+      log_date: '2026-06-09',
+      work_summary: 'Framed.',
+      photo_asset_ids: ['a-1', 'a-new'],
+      idempotency_key: 'k',
+      reported_at: '2026-06-09T18:00:00Z',
+    });
+    // After the link, the refreshed report carries the new photo.
+    vi.mocked(reportsApi.getDailyReport)
+      .mockResolvedValueOnce(REPORT)
+      .mockResolvedValueOnce({
+        ...REPORT,
+        photos: [
+          { asset_id: 'a-1', thumb_url: 'https://example.test/thumb/a-1' },
+          { asset_id: 'a-new', thumb_url: 'https://example.test/thumb/a-new' },
+        ],
+        photo_count: 2,
+      });
+
+    const el = await mount('fb-reports-page');
+    await flush(el);
+
+    const file = new File([new Uint8Array([1, 2, 3])], 'site.jpg', { type: 'image/jpeg' });
+    const input = el.shadowRoot!.querySelector<HTMLInputElement>('#photo-input')!;
+    Object.defineProperty(input, 'files', { value: [file], configurable: true });
+    input.dispatchEvent(new Event('change'));
+    await flush(el);
+    await flush(el);
+
+    expect(assetsApi.uploadProjectPhoto).toHaveBeenCalledWith('p-1', file);
+    expect(assetsApi.linkPhotosToDailyLog).toHaveBeenCalledWith('p-1', '2026-06-09', ['a-new']);
+    // Strip refreshed to two photos.
+    const imgs = [...el.shadowRoot!.querySelectorAll('.photo-strip img')];
+    expect(imgs.length).toBe(2);
+  });
+
+  it('flips to the disabled state on a 503 during upload', async () => {
+    await setStorageConfigured(true);
+    vi.mocked(assetsApi.uploadProjectPhoto).mockRejectedValue(
+      new ApiError({ code: ErrorCode.SERVICE_UNAVAILABLE, message: '503', status: 503 }),
+    );
+
+    const el = await mount('fb-reports-page');
+    await flush(el);
+    const file = new File([new Uint8Array([1])], 'x.jpg', { type: 'image/jpeg' });
+    const input = el.shadowRoot!.querySelector<HTMLInputElement>('#photo-input')!;
+    Object.defineProperty(input, 'files', { value: [file], configurable: true });
+    input.dispatchEvent(new Event('change'));
+    await flush(el);
+
+    expect(el.shadowRoot!.querySelector('[data-test="storage-off"]')).not.toBeNull();
+    expect(
+      el
+        .shadowRoot!.querySelector<HTMLElement>('[data-test="add-photos"]')
+        ?.hasAttribute('disabled'),
+    ).toBe(true);
+  });
+
+  it('hides the Add-photos affordance from a field_worker', async () => {
+    await setStorageConfigured(true);
+    vi.mocked(authStore.hasMinRole).mockReturnValue(false);
+    const el = await mount('fb-reports-page');
+    await flush(el);
+    expect(el.shadowRoot!.querySelector('[data-test="add-photos"]')).toBeNull();
   });
 });

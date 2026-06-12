@@ -43,7 +43,7 @@ func configuredResolver(f ObjectStore) ObjectStoreResolver {
 // newAssetSvc builds an AssetService with the given resolver and a nil pool —
 // safe ONLY for paths that reject before touching the DB (validation / 503).
 func newAssetSvc(resolver ObjectStoreResolver) *AssetService {
-	return NewAssetService(nil, store.NewAssetStore(), resolver, nil, nil, nil)
+	return NewAssetService(nil, store.NewAssetStore(), nil, resolver, nil, nil, nil)
 }
 
 func TestAssetService_RequestUpload_Unconfigured503(t *testing.T) {
@@ -222,3 +222,59 @@ func TestBuildStorageKey(t *testing.T) {
 }
 
 func contains(s, sub string) bool { return bytes.Contains([]byte(s), []byte(sub)) }
+
+// --- Chunk B: daily-log photo linking ---
+
+// TestDedupeUUIDs covers de-dup + nil-drop + order preservation.
+func TestDedupeUUIDs(t *testing.T) {
+	a, b := uuid.New(), uuid.New()
+	out := dedupeUUIDs([]uuid.UUID{a, b, a, uuid.Nil, b})
+	if len(out) != 2 || out[0] != a || out[1] != b {
+		t.Fatalf("dedupeUUIDs = %v, want [%v %v]", out, a, b)
+	}
+	if dedupeUUIDs(nil) != nil {
+		t.Fatal("dedupeUUIDs(nil) should be nil")
+	}
+	if len(dedupeUUIDs([]uuid.UUID{uuid.Nil})) != 0 {
+		t.Fatal("dedupeUUIDs of only-nil should be empty")
+	}
+}
+
+// TestLinkPhotosToDailyLog_ValidationGates exercises the argument gates that
+// reject before any DB access (nil pool/store stay safe).
+func TestLinkPhotosToDailyLog_ValidationGates(t *testing.T) {
+	svc := newAssetSvc(configuredResolver(&fakeObjectStore{}))
+	day := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	good := uuid.New()
+	cases := []struct {
+		name string
+		org  uuid.UUID
+		proj uuid.UUID
+		day  time.Time
+		ids  []uuid.UUID
+		want error
+	}{
+		{"nil org", uuid.Nil, uuid.New(), day, []uuid.UUID{good}, ErrInvalidInput},
+		{"nil project", uuid.New(), uuid.Nil, day, []uuid.UUID{good}, ErrInvalidInput},
+		{"zero day", uuid.New(), uuid.New(), time.Time{}, []uuid.UUID{good}, ErrInvalidInput},
+		{"empty ids", uuid.New(), uuid.New(), day, nil, ErrInvalidInput},
+		{"only-nil ids", uuid.New(), uuid.New(), day, []uuid.UUID{uuid.Nil}, ErrInvalidInput},
+		{"over cap", uuid.New(), uuid.New(), day, manyUUIDs(MaxAssetsPerDailyLog + 1), ErrInvalidInput},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := svc.LinkPhotosToDailyLog(context.Background(), c.org, "sub", c.proj, c.day, c.ids)
+			if !errors.Is(err, c.want) {
+				t.Errorf("err = %v, want %v", err, c.want)
+			}
+		})
+	}
+}
+
+func manyUUIDs(n int) []uuid.UUID {
+	out := make([]uuid.UUID, n)
+	for i := range out {
+		out[i] = uuid.New()
+	}
+	return out
+}

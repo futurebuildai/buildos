@@ -169,9 +169,10 @@ type capabilityProviderDTO struct {
 // capabilitiesDTO is the GET /capabilities wire shape. Matches the
 // frontend Capabilities type.
 type capabilitiesDTO struct {
-	AIConfigured    bool                    `json:"ai_configured"`
-	EmailConfigured bool                    `json:"email_configured"`
-	Providers       []capabilityProviderDTO `json:"providers"`
+	AIConfigured      bool                    `json:"ai_configured"`
+	EmailConfigured   bool                    `json:"email_configured"`
+	StorageConfigured bool                    `json:"storage_configured"`
+	Providers         []capabilityProviderDTO `json:"providers"`
 }
 
 // Capabilities reports which vault-backed features (AI, email) are live
@@ -202,9 +203,10 @@ func (h *IntegrationsHandler) Capabilities(w http.ResponseWriter, r *http.Reques
 		providers = append(providers, dto)
 	}
 	writeJSON(w, r, http.StatusOK, capabilitiesDTO{
-		AIConfigured:    caps.AIConfigured,
-		EmailConfigured: caps.EmailConfigured,
-		Providers:       providers,
+		AIConfigured:      caps.AIConfigured,
+		EmailConfigured:   caps.EmailConfigured,
+		StorageConfigured: caps.StorageConfigured,
+		Providers:         providers,
 	})
 }
 

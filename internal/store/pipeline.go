@@ -503,20 +503,31 @@ type CreateProjectFromProspectParams struct {
 	Address          *string
 	GSF              int
 	PermitIssuedDate time.Time
+	// Homeowner contact carried forward from the prospect (Chunk D). Previously
+	// DROPPED here — the leak that orphaned a project's client_email so a client
+	// update had no recipient. All Restricted PII; nullable (a prospect may have
+	// no contact). The 023 backfill repaired the historical rows; this carries
+	// new conversions forward at source.
+	ClientName  *string
+	ClientEmail *string
+	ClientPhone *string
 }
 
 // CreateProjectFromProspect inserts a row into the projects table and
 // returns its UUID. project_start_date is set to permit_issued_date so
-// the CPM forward-pass anchor matches the construction kickoff.
+// the CPM forward-pass anchor matches the construction kickoff. The
+// homeowner contact (client_name/email/phone) is carried forward from the
+// prospect so the new project can receive client updates.
 func (s *PipelineStore) CreateProjectFromProspect(ctx context.Context, tx pgx.Tx, p CreateProjectFromProspectParams) (uuid.UUID, error) {
 	var id uuid.UUID
 	err := tx.QueryRow(ctx, `
 		INSERT INTO projects (
 			org_id, name, address, permit_issued_date, project_start_date,
-			status, gsf
-		) VALUES ($1, $2, $3, $4, $4, 'active', $5)
+			status, gsf, client_name, client_email, client_phone
+		) VALUES ($1, $2, $3, $4, $4, 'active', $5, $6, $7, $8)
 		RETURNING id`,
 		p.OrgID, p.Name, p.Address, p.PermitIssuedDate, p.GSF,
+		p.ClientName, p.ClientEmail, p.ClientPhone,
 	).Scan(&id)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("insert project from prospect: %w", err)

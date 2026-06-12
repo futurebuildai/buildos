@@ -68,7 +68,7 @@ func fieldReq(t *testing.T, method, target, callerOrgID, body string) *http.Requ
 
 func TestFieldSync_OK(t *testing.T) {
 	svc := &fakeFieldService{syncResult: models.FieldSyncResponse{ServerTime: time.Now()}}
-	h := NewFieldHandler(svc)
+	h := NewFieldHandler(svc, nil)
 	r := fieldReq(t, "GET", "/api/v1/field/sync?since=2026-03-01T00:00:00Z", testOrgID, "")
 	w := httptest.NewRecorder()
 	h.Sync(w, r)
@@ -87,7 +87,7 @@ func TestFieldSync_OK(t *testing.T) {
 
 func TestFieldSync_NoSinceIsZero(t *testing.T) {
 	svc := &fakeFieldService{}
-	h := NewFieldHandler(svc)
+	h := NewFieldHandler(svc, nil)
 	r := fieldReq(t, "GET", "/api/v1/field/sync", testOrgID, "")
 	w := httptest.NewRecorder()
 	h.Sync(w, r)
@@ -100,7 +100,7 @@ func TestFieldSync_NoSinceIsZero(t *testing.T) {
 }
 
 func TestFieldSync_BadSince400(t *testing.T) {
-	h := NewFieldHandler(&fakeFieldService{})
+	h := NewFieldHandler(&fakeFieldService{}, nil)
 	r := fieldReq(t, "GET", "/api/v1/field/sync?since=nope", testOrgID, "")
 	w := httptest.NewRecorder()
 	h.Sync(w, r)
@@ -110,7 +110,7 @@ func TestFieldSync_BadSince400(t *testing.T) {
 }
 
 func TestFieldSync_InvalidOrgClaim401(t *testing.T) {
-	h := NewFieldHandler(&fakeFieldService{})
+	h := NewFieldHandler(&fakeFieldService{}, nil)
 	r := fieldReq(t, "GET", "/api/v1/field/sync", "not-a-uuid", "")
 	w := httptest.NewRecorder()
 	h.Sync(w, r)
@@ -120,7 +120,7 @@ func TestFieldSync_InvalidOrgClaim401(t *testing.T) {
 }
 
 func TestFieldSync_ServiceErr500(t *testing.T) {
-	h := NewFieldHandler(&fakeFieldService{syncErr: errInternal()})
+	h := NewFieldHandler(&fakeFieldService{syncErr: errInternal()}, nil)
 	r := fieldReq(t, "GET", "/api/v1/field/sync", testOrgID, "")
 	w := httptest.NewRecorder()
 	h.Sync(w, r)
@@ -135,7 +135,7 @@ func TestFieldReportProgress_OK(t *testing.T) {
 	taskID := uuid.New()
 	idemKey := uuid.New()
 	svc := &fakeFieldService{progressResult: models.TaskProgress{ID: uuid.New(), TaskID: taskID}}
-	h := NewFieldHandler(svc)
+	h := NewFieldHandler(svc, nil)
 	body := `{"task_id":"` + taskID.String() + `","percent_complete":75,"idempotency_key":"` + idemKey.String() + `"}`
 	r := fieldReq(t, "POST", "/api/v1/field/progress", testOrgID, body)
 	w := httptest.NewRecorder()
@@ -154,7 +154,7 @@ func TestFieldReportProgress_OK(t *testing.T) {
 }
 
 func TestFieldReportProgress_BadJSON(t *testing.T) {
-	h := NewFieldHandler(&fakeFieldService{})
+	h := NewFieldHandler(&fakeFieldService{}, nil)
 	r := fieldReq(t, "POST", "/api/v1/field/progress", testOrgID, "{bad")
 	w := httptest.NewRecorder()
 	h.ReportProgress(w, r)
@@ -165,7 +165,7 @@ func TestFieldReportProgress_BadJSON(t *testing.T) {
 
 func TestFieldReportProgress_Conflict409(t *testing.T) {
 	taskID := uuid.New()
-	h := NewFieldHandler(&fakeFieldService{progressErr: service.ErrIdempotencyConflict})
+	h := NewFieldHandler(&fakeFieldService{progressErr: service.ErrIdempotencyConflict}, nil)
 	body := `{"task_id":"` + taskID.String() + `","percent_complete":10,"idempotency_key":"` + uuid.New().String() + `"}`
 	r := fieldReq(t, "POST", "/api/v1/field/progress", testOrgID, body)
 	w := httptest.NewRecorder()
@@ -184,7 +184,7 @@ func TestFieldCheckin_OK(t *testing.T) {
 	projID := uuid.New()
 	idemKey := uuid.New()
 	svc := &fakeFieldService{checkinResult: models.CrewCheckin{ID: uuid.New(), ProjectID: projID}}
-	h := NewFieldHandler(svc)
+	h := NewFieldHandler(svc, nil)
 	body := `{"project_id":"` + projID.String() + `","crew_members":[{"worker_id":"w1"}],"idempotency_key":"` + idemKey.String() + `"}`
 	r := fieldReq(t, "POST", "/api/v1/field/checkin", testOrgID, body)
 	w := httptest.NewRecorder()
@@ -202,7 +202,7 @@ func TestFieldCheckin_OK(t *testing.T) {
 }
 
 func TestFieldCheckin_BadJSON(t *testing.T) {
-	h := NewFieldHandler(&fakeFieldService{})
+	h := NewFieldHandler(&fakeFieldService{}, nil)
 	r := fieldReq(t, "POST", "/api/v1/field/checkin", testOrgID, "{bad")
 	w := httptest.NewRecorder()
 	h.Checkin(w, r)
@@ -217,7 +217,7 @@ func TestFieldDailyLog_OK(t *testing.T) {
 	projID := uuid.New()
 	idemKey := uuid.New()
 	svc := &fakeFieldService{dailyLogResult: models.DailyLog{ID: uuid.New(), ProjectID: projID}}
-	h := NewFieldHandler(svc)
+	h := NewFieldHandler(svc, nil)
 	body := `{"project_id":"` + projID.String() + `","log_date":"2026-03-01","work_summary":"poured slab","idempotency_key":"` + idemKey.String() + `"}`
 	r := fieldReq(t, "POST", "/api/v1/field/daily-log", testOrgID, body)
 	w := httptest.NewRecorder()
@@ -237,7 +237,7 @@ func TestFieldDailyLog_OK(t *testing.T) {
 }
 
 func TestFieldDailyLog_BadJSON(t *testing.T) {
-	h := NewFieldHandler(&fakeFieldService{})
+	h := NewFieldHandler(&fakeFieldService{}, nil)
 	r := fieldReq(t, "POST", "/api/v1/field/daily-log", testOrgID, "{bad")
 	w := httptest.NewRecorder()
 	h.DailyLog(w, r)
@@ -248,7 +248,7 @@ func TestFieldDailyLog_BadJSON(t *testing.T) {
 
 func TestFieldDailyLog_BadDate400(t *testing.T) {
 	projID := uuid.New()
-	h := NewFieldHandler(&fakeFieldService{})
+	h := NewFieldHandler(&fakeFieldService{}, nil)
 	body := `{"project_id":"` + projID.String() + `","log_date":"nope","work_summary":"x","idempotency_key":"` + uuid.New().String() + `"}`
 	r := fieldReq(t, "POST", "/api/v1/field/daily-log", testOrgID, body)
 	w := httptest.NewRecorder()
@@ -263,7 +263,7 @@ func TestFieldDailyLog_BadDate400(t *testing.T) {
 
 func TestFieldCheckin_ServiceErr500(t *testing.T) {
 	projID := uuid.New()
-	h := NewFieldHandler(&fakeFieldService{checkinErr: errInternal()})
+	h := NewFieldHandler(&fakeFieldService{checkinErr: errInternal()}, nil)
 	body := `{"project_id":"` + projID.String() + `","idempotency_key":"` + uuid.New().String() + `"}`
 	r := fieldReq(t, "POST", "/api/v1/field/checkin", testOrgID, body)
 	w := httptest.NewRecorder()
@@ -275,7 +275,7 @@ func TestFieldCheckin_ServiceErr500(t *testing.T) {
 
 func TestFieldDailyLog_ServiceErr500(t *testing.T) {
 	projID := uuid.New()
-	h := NewFieldHandler(&fakeFieldService{dailyLogErr: errInternal()})
+	h := NewFieldHandler(&fakeFieldService{dailyLogErr: errInternal()}, nil)
 	body := `{"project_id":"` + projID.String() + `","log_date":"2026-03-01","work_summary":"x","idempotency_key":"` + uuid.New().String() + `"}`
 	r := fieldReq(t, "POST", "/api/v1/field/daily-log", testOrgID, body)
 	w := httptest.NewRecorder()
@@ -305,7 +305,7 @@ func TestField_BodyHandlers_InvalidOrgClaim_401(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			h := NewFieldHandler(&fakeFieldService{})
+			h := NewFieldHandler(&fakeFieldService{}, nil)
 			r := fieldReq(t, "POST", c.target, "not-a-uuid", `{}`)
 			w := httptest.NewRecorder()
 			c.fn(h, w, r)
@@ -330,7 +330,7 @@ func TestFieldWriteServiceError_Mapping(t *testing.T) {
 		{"validation", wrapInvalid("bad"), http.StatusBadRequest, "VALIDATION_ERROR"},
 		{"default", errInternal(), http.StatusInternalServerError, "INTERNAL_ERROR"},
 	}
-	h := NewFieldHandler(&fakeFieldService{})
+	h := NewFieldHandler(&fakeFieldService{}, nil)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			w := httptest.NewRecorder()

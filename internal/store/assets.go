@@ -152,6 +152,36 @@ func (s *AssetStore) ListByIDs(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, 
 	return scanAssets(rows)
 }
 
+// CountReadyForProject returns how many of ids are 'ready', org-owned, AND
+// either project-scoped to projectID or org-level (project_id IS NULL). It is
+// the photo-link validation primitive (Chunk B): the caller compares the count
+// to len(distinct ids) to detect any unknown / cross-org / not-ready /
+// wrong-project id. A foreign asset matches no row, so it is simply not counted
+// (uniform "missing" — no enumeration signal about which id failed or why).
+//
+// Org-level assets (project_id NULL) are accepted because a daily-log photo may
+// have been uploaded via the org-level path; the constraint we enforce is "not
+// owned by a DIFFERENT project", not "must be pinned to this project".
+func (s *AssetStore) CountReadyForProject(ctx context.Context, tx pgx.Tx, orgID, projectID uuid.UUID, ids []uuid.UUID) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	var n int
+	err := tx.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM assets
+		WHERE org_id = $1
+		  AND id = ANY($2)
+		  AND status = 'ready'
+		  AND (project_id IS NULL OR project_id = $3)`,
+		orgID, ids, projectID,
+	).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count ready assets for project: %w", err)
+	}
+	return n, nil
+}
+
 func scanAssets(rows pgx.Rows) ([]models.Asset, error) {
 	var out []models.Asset
 	for rows.Next() {

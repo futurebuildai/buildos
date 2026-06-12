@@ -34,3 +34,6 @@ import './fb-connectors-page.js';
 
 // Chunk C — operator Daily Reports surface (DAILY_REPORTS_CLIENT_UPDATES).
 import './fb-reports-page.js';
+
+// Chunk D — client-update composer + sent history (DAILY_REPORTS_CLIENT_UPDATES).
+import './fb-client-update-page.js';

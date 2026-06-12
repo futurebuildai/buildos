@@ -994,6 +994,190 @@ STORAGE_UNAVAILABLE`** (server still boots), the same posture as AI/email. Limit
 
 ---
 
+## 13f. Photo Upload + Daily-Log Linking (Chunk B)
+
+Chunk B opens photo upload to the **field worker** and links confirmed photos to a
+specific **daily log** for a `(project, date)`. The link model **reuses the
+existing `daily_logs.photo_asset_ids UUID[]`** column (no new table). A photo may
+be linked only if it is a **confirmed (`ready`), org-owned** asset whose project
+(if pinned) matches — enforced by a deterministic validation gate that closes the
+dangling-id gap. `storage_configured` is added to `GET /api/v1/capabilities` so
+the console can gate the upload affordance.
+
+### POST /api/v1/field/assets/presign
+- **Auth:** JWT, **any authenticated role (incl. `field_worker`)** — the one asset path open to field workers (the operator presign is superintendent+). Caller-scoped: project comes in the **body**, verified in the caller's org.
+- **Body:** `{ project_id: uuid, content_type: string, byte_size: number }` (same content-type/size limits as the operator presign).
+- **Response:** `201 { data: { asset_id, upload_url, signed_headers, expires_at } }`.
+- **Errors:** `400 VALIDATION_ERROR`, `404 NOT_FOUND` (project not in caller's org — uniform), `503 STORAGE_UNAVAILABLE`.
+
+### POST /api/v1/field/assets/{id}/confirm
+- **Auth:** JWT, **any authenticated role**.
+- **Body:** `{ checksum_sha256?: string }`.
+- **Response:** `200 { data: Asset }` (`status: "ready"`).
+- **Errors:** `404 NOT_FOUND` (cross-org/missing/already-confirmed).
+
+### POST /api/v1/projects/{projectID}/daily-reports/{date}/photos
+- **Auth:** JWT, **minRole superintendent** (the operator "Add photos" affordance on the daily-report view). `date` = `YYYY-MM-DD`.
+- **Body:** `{ asset_ids: uuid[] }` — already-confirmed assets to associate with that day's daily log. De-duped, capped at 20/log; idempotent (re-linking is a no-op union).
+- **Response:** `200 { data: DailyLog }` (the updated row, `photo_asset_ids` now including the linked ids).
+- **Errors:** `400 INVALID_PHOTO_ASSET` (an id is not a confirmed, org-owned photo for this project), `400 VALIDATION_ERROR` (empty/oversize set), `404 NOT_FOUND` (cross-org project **or** no daily log exists for that day — record a daily log first).
+
+### POST /api/v1/field/daily-log (Chunk B addition)
+- The existing field daily-log write now **validates `photo_asset_ids`**: every id must be a confirmed, org-owned asset for the project, else `400 INVALID_PHOTO_ASSET`. ≤ 20 photos/log. When object storage is unconfigured the validation is skipped (text-only logs still work).
+
+### Flutter field-app flow (documented fast-follow — backend ready, not yet implemented)
+The backend presign+confirm+link endpoints are **field-worker usable today** so the
+Flutter app can adopt them later. Planned mobile flow (`photos_screen.dart` /
+`sync_service.dart` / `outbox_action.dart`): on capture, enqueue an outbox chain
+`POST /field/assets/presign` → `PUT` bytes direct to R2 with `signed_headers` →
+`POST /field/assets/{id}/confirm`; once confirmed, attach the real `asset_id`s to
+the daily-log outbox action. Offline-first: the chain drains on reconnect; the
+daily log references confirmed ids only.
+
+---
+
+## 13g. Daily Reports (Chunk C)
+
+A **derived** read model (no `daily_reports` table) aggregating `daily_logs` +
+`crew_checkins` + `task_progress` per `(project, date)`, plus two native-AI
+compositions. Reads are **minRole superintendent**; the client-update DRAFT is
+**owner/admin** (external-comms trust). The two AI methods soft-fail to `503
+SERVICE_UNAVAILABLE` when no Anthropic key is configured; the text reads always
+work. `safety_incidents` IS returned here (internal operator surface) and is
+stripped on the client path.
+
+### GET /api/v1/projects/{projectID}/daily-reports?since=&until=
+- **Auth:** JWT, minRole superintendent. Bounds are inclusive `YYYY-MM-DD`; omit both for the last-14-days default.
+- **Response:** `200 { data: DailyReportSummary[] }` newest-first.
+
+### GET /api/v1/projects/{projectID}/daily-reports/{date}
+- **Auth:** JWT, minRole superintendent. `date` = `YYYY-MM-DD`.
+- **Response:** `200 { data: DailyReport }` (incl. signed photo thumbnails when storage is on; `404 PROJECT_NOT_FOUND` uniform on cross-org).
+
+### POST /api/v1/projects/{projectID}/daily-reports/{date}/digest
+- **Auth:** JWT, minRole superintendent. Generates the INTERNAL office digest.
+- **Response:** `200 { data: { digest: string } }`. `503 SERVICE_UNAVAILABLE` when AI is off.
+
+### POST /api/v1/projects/{projectID}/daily-reports/{date}/client-update-draft
+- **Auth:** JWT, **owner/admin**. Generates the client-SAFE homeowner draft behind a deterministic redaction allowlist (the service is the gate, not the model).
+- **Response:** `200 { data: ClientUpdateDraft }` (`{ subject, body, period_start, period_end, photo_count }`). `503 SERVICE_UNAVAILABLE` when AI is off.
+
+---
+
+## 13h. Client Updates (Chunk D)
+
+The **human-in-the-loop composer**: an AI draft (13g) is persisted as a `draft`,
+the operator edits the client-safe subject/body and curates which of the
+period's confirmed photos the homeowner sees, then explicitly **sends** via the
+existing Resend mailer (post-commit). **Never auto-sent.** ALL routes are
+**owner/admin** (external-comms trust — §9-1). A failed send (`NO_CLIENT_CONTACT`
+/ `MAILER_UNCONFIGURED`) is surfaced — the operator MUST know it did not go out
+(this diverges from the auth-reset best-effort posture). `recipient_email` is a
+send-time snapshot and is **never serialized** in any response.
+
+### POST /api/v1/projects/{projectID}/client-updates
+- **Auth:** JWT, owner/admin. Creates a draft from a date's redacted AI draft.
+- **Body:** `{ report_date: "YYYY-MM-DD" }` (`period_start` accepted as an alias).
+- **Response:** `201 { data: ClientUpdate }` (`status: "draft"`). `503 SERVICE_UNAVAILABLE` (no AI key), `404 NOT_FOUND` (cross-org project), `400 VALIDATION_ERROR` (bad date).
+
+### GET /api/v1/projects/{projectID}/client-updates
+- **Auth:** JWT, owner/admin.
+- **Response:** `200 { data: ClientUpdate[] }` newest-first (history). `recipient_email` omitted.
+
+### GET /api/v1/client-updates/{id}
+- **Auth:** JWT, owner/admin.
+- **Response:** `200 { data: ClientUpdate }`. `404 NOT_FOUND` uniform on cross-org.
+
+### PATCH /api/v1/client-updates/{id}
+- **Auth:** JWT, owner/admin. Operator edit; draft only.
+- **Body:** `{ subject: string, edited_body: string, photo_asset_ids?: uuid[] }` (curated photos validated `ready`+org+project-matched).
+- **Response:** `200 { data: ClientUpdate }`. `409 ALREADY_SENT` (a sent update is immutable), `400 INVALID_PHOTO_ASSET`, `404 NOT_FOUND`.
+
+### POST /api/v1/client-updates/{id}/send
+- **Auth:** JWT, owner/admin. The human-pressed send.
+- **Response:** `200 { data: ClientUpdate }` (`status: "sent"`). On failure the row is marked `failed` (with `send_error`) and the error is surfaced: `422 NO_CLIENT_CONTACT` (project has no client email), `422 MAILER_UNCONFIGURED` (no Resend key — NOT sent), `502 SEND_FAILED` (provider rejected — NOT sent), `409 ALREADY_SENT`.
+
+### ClientUpdate Object
+```json
+{
+  "id": "uuid", "org_id": "uuid", "project_id": "uuid",
+  "period_start": "2026-06-09", "period_end": "2026-06-09",
+  "status": "draft|sent|failed",
+  "ai_draft": "the original AI draft (preserved)",
+  "edited_body": "the operator-edited, client-safe body that is sent",
+  "subject": "the email subject",
+  "photo_asset_ids": ["uuid"],
+  "created_by": "uuid", "sent_by": "uuid|null",
+  "sent_at": "RFC3339|null", "send_error": "string|null",
+  "created_at": "RFC3339", "updated_at": "RFC3339"
+}
+```
+`recipient_email` is held server-side (snapshot at send) and is intentionally
+**absent** from this shape.
+
+---
+
+## 13i. Share Links + Public Progress Page (Chunk E)
+
+The **first surface outside the everything-behind-auth invariant**: a homeowner
+can be given an unauthenticated, **token-gated, read-only** progress page for a
+**sent** client update. The operator surface (mint / list / revoke) is
+owner/admin and lives inside the auth group; the public surface (`/p/*`) is
+unauthenticated and mounted as a **sibling of the auth routes** so it inherits
+the global stack (RealIP, rate limiter, security headers) but **bypasses Auth +
+SetupGate** without weakening either.
+
+**Token model (mirrors the bootstrap token):** 32-byte CSPRNG cleartext,
+base64url (43 chars), shown **once** at create (it becomes the `/p/<token>` URL).
+Only the sha256 hash is stored. Resolution filters `expires_at > now() AND
+revoked_at IS NULL` and returns a **uniform 404** on any failure (missing /
+expired / revoked / malformed / mismatch) — enumeration defense. Default TTL **30
+days** (operator-overridable via `ttl_days`, capped at 365), revocable any time.
+
+### Operator surface (owner/admin, authenticated)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/v1/client-updates/{id}/share-links` | Mint a public link for a **sent** update. Body `{ "ttl_days"?: number }`. `201 { url, link }` — `url` is the one-time `/p/<token>` URL. `422 UPDATE_NOT_SENT` if the update is not sent. |
+| GET | `/api/v1/client-updates/{id}/share-links` | List the update's links (active/expired/revoked). `200 ShareLink[]`. No cleartext, no hash. |
+| DELETE | `/api/v1/share-links/{linkID}` | Revoke a link. `204`. After revoke, `/p/{token}` 404s. |
+
+Audit: `client_update.share_link.created` / `client_update.share_link.revoked`
+(reference the link id + update id only — never the token/hash).
+
+#### ShareLink Object (operator view)
+```json
+{
+  "id": "uuid", "client_update_id": "uuid",
+  "status": "active|revoked|expired",
+  "expires_at": "RFC3339", "revoked_at": "RFC3339|null",
+  "last_viewed_at": "RFC3339|null", "view_count": 0,
+  "created_at": "RFC3339"
+}
+```
+The cleartext token + its hash are NEVER in any response; the cleartext appears
+exactly once in the create response's `url`.
+
+### Public surface (UNAUTHENTICATED, token-gated)
+
+| Method | Path | Auth | Response |
+|--------|------|------|----------|
+| GET | `/p/{token}` | **none** | `200 text/html` — a minimal, self-contained, server-rendered page (NOT the SPA) of a redaction-safe projection: project display name, period date, the operator-edited client-safe body, and the curated photos. `404` (uniform) on any invalid/expired/revoked token. |
+| GET | `/p/{token}/photos/{assetID}` | **none** | `200 image/*` — same-origin proxy of an **EXIF-stripped** photo, **only if** `assetID` is in this update's operator-curated set (else `404`). The R2 host/key never appears in client HTML. |
+
+The page carries **only** the allowlisted fields — never safety incidents, crew
+identities, GPS/EXIF, `*_cents`/budget, `recipient_email`, internal notes,
+schedule internals, or sibling-project data (built from a dedicated
+`PublicUpdate` projection that physically cannot carry ERP). Page security
+headers (per-response): `Content-Security-Policy: default-src 'none'; img-src
+'self'; style-src 'self' 'unsafe-inline'; base-uri 'self'; form-action 'none';
+frame-ancestors 'none'; object-src 'none'; connect-src 'none'` (no script-src →
+no JS, no `/api/*` calls), `Cache-Control: private, no-store`, no cookies. The
+`/p/*` group is rate-limited by a **dedicated stricter per-IP limiter** (10 rps /
+20 burst) on top of the inherited global limiter.
+
+---
+
 ## 14. Setup Wizard
 
 Embedded onboarding. Every fork must complete the wizard before the SetupGate opens operational traffic. All steps require admin minimum. The first-owner claim happens earlier at `POST /api/v1/auth/claim`.
@@ -1018,6 +1202,7 @@ Every step writes a `setup.*` audit action.
 | HTTP Status | Code | Description |
 |-------------|------|-------------|
 | 400 | `VALIDATION_ERROR` | Request body validation failed |
+| 400 | `INVALID_PHOTO_ASSET` | A `photo_asset_id` is not a confirmed, org-owned photo for the project (uniform — no enumeration signal) |
 | 400 | `INVALID_RESET_TOKEN` | Password-reset token invalid or expired |
 | 401 | `UNAUTHORIZED` | Missing or invalid JWT |
 | 401 | `INVALID_CREDENTIALS` | Email/password login failed |
@@ -1029,8 +1214,12 @@ Every step writes a `setup.*` audit action.
 | 409 | `CONFLICT` | Resource conflict |
 | 409 | `FIRST_OWNER_EXISTS` | An owner already exists for this deployment |
 | 409 | `INVALID_TRANSITION` | Invalid pipeline stage transition |
+| 409 | `ALREADY_SENT` | Edit/re-send of an already-sent client update |
 | 422 | `CROSS_CURRENCY_ERROR` | Attempted cross-currency arithmetic |
+| 422 | `NO_CLIENT_CONTACT` | Project has no client email; cannot send a client update |
+| 422 | `MAILER_UNCONFIGURED` | No Resend API key configured — the client update was NOT sent (operator must know) |
 | 429 | `RATE_LIMITED` | Too many requests (or AI provider throttled) |
+| 502 | `SEND_FAILED` | Email provider rejected the client-update send — NOT sent |
 | 502 | `UPSTREAM_ERROR` | AI provider transient / 5xx |
 | 503 | `SERVICE_UNAVAILABLE` | AI not configured/unreachable, or flow unavailable on this binary |
 | 500 | `INTERNAL_ERROR` | Server error |

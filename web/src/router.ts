@@ -118,6 +118,17 @@ export const routes: RouteDef[] = [
     gate: { roles: ['owner', 'admin'] },
     title: 'HR & Certs',
   },
+  {
+    // Client Updates (Chunk D) — the human-in-the-loop composer + sent history.
+    // owner/admin only (external comms trust — §9-1). Deep-link a project + date
+    // via ?project=<id>&date=<YYYY-MM-DD> from the Daily Reports "Draft client
+    // update" action.
+    path: '/portfolio/client-updates',
+    tag: 'fb-client-update-page',
+    shell: 'org',
+    gate: { roles: ['owner', 'admin'] },
+    title: 'Client Updates',
+  },
 
   // Command Center workspace
   {

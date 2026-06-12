@@ -26,6 +26,7 @@ type AssetServicer interface {
 	SignedGetURL(ctx context.Context, orgID, assetID uuid.UUID, ttl time.Duration) (string, error)
 	ServeAsset(ctx context.Context, orgID, assetID uuid.UUID) (io.ReadCloser, string, error)
 	ListProjectAssets(ctx context.Context, orgID, projectID uuid.UUID, readyOnly bool) ([]models.Asset, error)
+	LinkPhotosToDailyLog(ctx context.Context, orgID uuid.UUID, userSub string, projectID uuid.UUID, day time.Time, assetIDs []uuid.UUID) (models.DailyLog, error)
 }
 
 // AssetHandler exposes the object-storage substrate endpoints (Chunk A): a
@@ -171,6 +172,46 @@ func (h *AssetHandler) List(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, assets)
 }
 
+// linkPhotosRequest is the POST .../daily-reports/{date}/photos body: the
+// already-confirmed asset ids to associate with that day's daily log.
+type linkPhotosRequest struct {
+	AssetIDs []uuid.UUID `json:"asset_ids"`
+}
+
+// LinkPhotos associates confirmed assets with the daily log for a (project,
+// date) — the operator web "Add photos" affordance on the daily-report view
+// (Chunk B §3). Reuses the project's existing daily log for the day; 404s if no
+// log exists (the operator must record a daily log first). RBAC minRole
+// superintendent (matches the daily-reports operator surface).
+//
+// POST /api/v1/projects/{projectID}/daily-reports/{date}/photos
+func (h *AssetHandler) LinkPhotos(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := parseUUIDFromURL(w, r, "projectID")
+	if !ok {
+		return
+	}
+	orgID, ok := callerOrgIDFromClaims(w, r)
+	if !ok {
+		return
+	}
+	day, ok := parseReportDateParam(w, r)
+	if !ok {
+		return
+	}
+	var body linkPhotosRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", "invalid JSON body")
+		return
+	}
+	claims := mw.MustClaimsFromContext(r.Context())
+	dl, err := h.svc.LinkPhotosToDailyLog(r.Context(), orgID, claims.Sub, projectID, day, body.AssetIDs)
+	if err != nil {
+		writeAssetError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, dl)
+}
+
 // writeAssetError maps AssetService sentinels to HTTP responses.
 //
 //	ErrStorageUnavailable → 503 STORAGE_UNAVAILABLE
@@ -181,6 +222,8 @@ func writeAssetError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, service.ErrStorageUnavailable):
 		writeErrorResponse(w, r, http.StatusServiceUnavailable, "STORAGE_UNAVAILABLE", "object storage is not configured")
+	case errors.Is(err, service.ErrInvalidPhotoAsset):
+		writeErrorResponse(w, r, http.StatusBadRequest, "INVALID_PHOTO_ASSET", "a photo asset is not a confirmed, org-owned photo for this project")
 	case errors.Is(err, service.ErrInvalidInput):
 		writeErrorResponse(w, r, http.StatusBadRequest, "VALIDATION_ERROR", err.Error())
 	case errors.Is(err, service.ErrNotFound):
@@ -192,9 +235,11 @@ func writeAssetError(w http.ResponseWriter, r *http.Request, err error) {
 
 // MountAssetRoutes wires the asset endpoints. The project-subtree routes
 // (presign-put, list) live under /api/v1/projects/{projectID}/assets; the
-// flat routes (confirm, get) under /api/v1/assets/{id}. All are minRole
-// superintendent (the generic operator surface; the field-facing variant for
-// field_worker lands in Chunk B). Caller must place this INSIDE the auth group.
+// flat routes (confirm, get) under /api/v1/assets/{id}; the operator "Add
+// photos to a day's log" link route under the daily-reports subtree. All are
+// minRole superintendent (the generic operator surface; the field-facing
+// presign/confirm for field_worker mount separately in MountFieldRoutes).
+// Caller must place this INSIDE the auth group.
 func MountAssetRoutes(r chi.Router, h *AssetHandler) {
 	r.Route("/api/v1/projects/{projectID}/assets", func(r chi.Router) {
 		r.Use(mw.RequireMinRole(mw.RoleSuperintendent))
@@ -206,4 +251,9 @@ func MountAssetRoutes(r chi.Router, h *AssetHandler) {
 		r.Post("/confirm", h.Confirm)
 		r.Get("/", h.Get)
 	})
+	// Operator photo-link: associate confirmed assets with a (project, date)
+	// daily log so the daily-report photo strip resolves them. Superintendent+
+	// (same gate as the daily-report read surface).
+	r.With(mw.RequireMinRole(mw.RoleSuperintendent)).
+		Post("/api/v1/projects/{projectID}/daily-reports/{date}/photos", h.LinkPhotos)
 }

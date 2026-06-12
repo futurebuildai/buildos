@@ -47,18 +47,24 @@ func NewProjectStore() *ProjectStore { return &ProjectStore{} }
 
 // projectColumns is the canonical column list + order. Shared by every
 // query so scanProject stays in lockstep with the SELECT/RETURNING list.
+// client_name/email/phone are the homeowner contact (Chunk D) — Restricted PII.
 const projectColumns = `id, org_id, name, address, permit_issued_date,
-	project_start_date, status, gsf, created_at, updated_at`
+	project_start_date, status, gsf, client_name, client_email, client_phone,
+	created_at, updated_at`
 
 // scanProject reads one projects row in projectColumns order. The
 // nullable TEXT address column is scanned through a *string local so a
-// SQL NULL maps to the model's empty string rather than erroring.
+// SQL NULL maps to the model's empty string rather than erroring. The
+// nullable client_* contact columns scan into the model's *string fields
+// (NULL stays nil — omitted from JSON).
 func scanProject(row pgx.Row) (models.Project, error) {
 	var p models.Project
 	var address *string
 	if err := row.Scan(
 		&p.ID, &p.OrgID, &p.Name, &address, &p.PermitIssuedDate,
-		&p.ProjectStartDate, &p.Status, &p.GSF, &p.CreatedAt, &p.UpdatedAt,
+		&p.ProjectStartDate, &p.Status, &p.GSF,
+		&p.ClientName, &p.ClientEmail, &p.ClientPhone,
+		&p.CreatedAt, &p.UpdatedAt,
 	); err != nil {
 		return models.Project{}, err
 	}

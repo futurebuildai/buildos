@@ -28,6 +28,8 @@ type fakeAssetService struct {
 	signURL    string
 	listErr    error
 	listRes    []models.Asset
+	linkErr    error
+	linkRes    models.DailyLog
 
 	gotOrgID uuid.UUID
 }
@@ -55,6 +57,11 @@ func (f *fakeAssetService) ServeAsset(_ context.Context, orgID, _ uuid.UUID) (io
 func (f *fakeAssetService) ListProjectAssets(_ context.Context, orgID, _ uuid.UUID, _ bool) ([]models.Asset, error) {
 	f.gotOrgID = orgID
 	return f.listRes, f.listErr
+}
+
+func (f *fakeAssetService) LinkPhotosToDailyLog(_ context.Context, orgID uuid.UUID, _ string, _ uuid.UUID, _ time.Time, _ []uuid.UUID) (models.DailyLog, error) {
+	f.gotOrgID = orgID
+	return f.linkRes, f.linkErr
 }
 
 // assetProjID / assetTestID are fixed UUIDs for the asset router tests. The
@@ -161,5 +168,124 @@ func TestAssetRoutes_SkippedWhenNil(t *testing.T) {
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("%s %s with AssetService nil = %d, want 404", tc.method, tc.target, rec.Code)
 		}
+	}
+}
+
+// --- Chunk B: field-facing photo upload + operator photo-link ---
+
+// TestFieldAssetRoutes_FieldWorkerCanPresign proves the field-facing presign is
+// OPEN to field_worker (the one asset path the role owns) — it clears RBAC and
+// reaches the handler, which 201s on the fake's success result. Org-scoping: the
+// handler passes the caller's claim org.
+func TestFieldAssetRoutes_FieldWorkerCanPresign(t *testing.T) {
+	fake := &fakeAssetService{requestRes: service.RequestUploadResult{
+		Asset:     models.Asset{ID: uuid.New()},
+		UploadURL: "https://r2.test/put",
+		ExpiresAt: time.Now().Add(5 * time.Minute),
+	}}
+	handler := NewRouter(RouterConfig{DevAuthMode: "header", AssetService: fake})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, authedReq(http.MethodPost,
+		"/api/v1/field/assets/presign", "field_worker",
+		`{"project_id":"`+assetProjID+`","content_type":"image/jpeg","byte_size":1024}`))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("field presign as field_worker = %d, want 201 (body=%s)", rec.Code, rec.Body.String())
+	}
+	if fake.gotOrgID.String() != rbacOrgID {
+		t.Fatalf("handler passed org %s, want caller's claim org %s", fake.gotOrgID, rbacOrgID)
+	}
+}
+
+// TestFieldAssetRoutes_FieldWorkerCannotReachOtherOrg proves org-scoping: a
+// presign for a project not in the caller's org surfaces the service's
+// ErrNotFound as 404 (uniform — no cross-org leak). The fake stands in for the
+// in-org VerifyProjectInOrg failing.
+func TestFieldAssetRoutes_FieldWorkerCannotReachOtherOrg(t *testing.T) {
+	fake := &fakeAssetService{requestErr: service.ErrNotFound}
+	handler := NewRouter(RouterConfig{DevAuthMode: "header", AssetService: fake})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, authedReq(http.MethodPost,
+		"/api/v1/field/assets/presign", "field_worker",
+		`{"project_id":"`+assetProjID+`","content_type":"image/jpeg","byte_size":1024}`))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("field presign cross-org = %d, want 404 (body=%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestFieldAssetRoutes_FieldWorkerCanConfirm proves the field confirm is open to
+// field_worker and returns the confirmed asset.
+func TestFieldAssetRoutes_FieldWorkerCanConfirm(t *testing.T) {
+	fake := &fakeAssetService{confirmRes: models.Asset{ID: uuid.New(), Status: models.AssetStatusReady}}
+	handler := NewRouter(RouterConfig{DevAuthMode: "header", AssetService: fake})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, authedReq(http.MethodPost,
+		"/api/v1/field/assets/"+assetTestID+"/confirm", "field_worker", `{}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("field confirm as field_worker = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestFieldAssetRoutes_SkippedWhenStorageNil proves the field photo routes only
+// mount when storage is wired: with AssetService nil they 404 (the rest of
+// /field still works).
+func TestFieldAssetRoutes_SkippedWhenStorageNil(t *testing.T) {
+	handler := NewRouter(RouterConfig{DevAuthMode: "header"})
+	for _, target := range []string{
+		"/api/v1/field/assets/presign",
+		"/api/v1/field/assets/" + assetTestID + "/confirm",
+	} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, authedReq(http.MethodPost, target, "field_worker",
+			`{"project_id":"`+assetProjID+`"}`))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s with AssetService nil = %d, want 404 (body=%s)", target, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// TestLinkPhotosRoute_SuperintendentClears proves the operator photo-link route
+// is reachable by superintendent and returns the updated daily log.
+func TestLinkPhotosRoute_SuperintendentClears(t *testing.T) {
+	fake := &fakeAssetService{linkRes: models.DailyLog{ID: uuid.New()}}
+	handler := NewRouter(RouterConfig{DevAuthMode: "header", AssetService: fake})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, authedReq(http.MethodPost,
+		"/api/v1/projects/"+assetProjID+"/daily-reports/2026-06-05/photos", "superintendent",
+		`{"asset_ids":["`+assetTestID+`"]}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("link photos as superintendent = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	if fake.gotOrgID.String() != rbacOrgID {
+		t.Fatalf("handler passed org %s, want caller's claim org", fake.gotOrgID)
+	}
+}
+
+// TestLinkPhotosRoute_FieldWorkerForbidden proves the operator photo-link is
+// gated at superintendent — a field_worker is 403'd (the field role uses the
+// /field/assets path + daily-log submit, not the operator link).
+func TestLinkPhotosRoute_FieldWorkerForbidden(t *testing.T) {
+	handler := NewRouter(RouterConfig{DevAuthMode: "header", AssetService: &fakeAssetService{}})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, authedReq(http.MethodPost,
+		"/api/v1/projects/"+assetProjID+"/daily-reports/2026-06-05/photos", "field_worker",
+		`{"asset_ids":["`+assetTestID+`"]}`))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("link photos as field_worker = %d, want 403 (body=%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestLinkPhotosRoute_InvalidPhotoAsset400 proves the INVALID_PHOTO_ASSET map.
+func TestLinkPhotosRoute_InvalidPhotoAsset400(t *testing.T) {
+	fake := &fakeAssetService{linkErr: service.ErrInvalidPhotoAsset}
+	handler := NewRouter(RouterConfig{DevAuthMode: "header", AssetService: fake})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, authedReq(http.MethodPost,
+		"/api/v1/projects/"+assetProjID+"/daily-reports/2026-06-05/photos", "superintendent",
+		`{"asset_ids":["`+assetTestID+`"]}`))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("link photos invalid asset = %d, want 400 (body=%s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "INVALID_PHOTO_ASSET") {
+		t.Fatalf("body missing INVALID_PHOTO_ASSET: %s", rec.Body.String())
 	}
 }
