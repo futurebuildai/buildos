@@ -165,10 +165,10 @@ func TestImportSchedule_LagBoundsRejected(t *testing.T) {
 func TestCreateTask_ValidationBeforeTx(t *testing.T) {
 	svc := newImportSvcForValidationTests()
 	cases := []CreateTaskInput{
-		{OrgID: uuid.Nil},                                                         // nil org
-		{OrgID: uuid.New(), WBSCode: "", Name: "x", DurationDays: 3},              // empty wbs
-		{OrgID: uuid.New(), WBSCode: "01", Name: "", DurationDays: 3},             // empty name
-		{OrgID: uuid.New(), WBSCode: "01", Name: "x", DurationDays: 0},            // duration 0
+		{OrgID: uuid.Nil}, // nil org
+		{OrgID: uuid.New(), WBSCode: "", Name: "x", DurationDays: 3},   // empty wbs
+		{OrgID: uuid.New(), WBSCode: "01", Name: "", DurationDays: 3},  // empty name
+		{OrgID: uuid.New(), WBSCode: "01", Name: "x", DurationDays: 0}, // duration 0
 		{OrgID: uuid.New(), WBSCode: "01", Name: "x", DurationDays: 3, Status: "bogus"},
 		{OrgID: uuid.New(), WBSCode: "01", Name: "x", DurationDays: 3, PercentComplete: 101},
 	}

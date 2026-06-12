@@ -522,9 +522,9 @@ func run(logger *slog.Logger) error {
 		// (§9-11 default): 10 rps / burst 20 per IP. Legit homeowner traffic is
 		// low; this layers on top of the global limiter.
 		PublicShareLimiter: middleware.NewIPRateLimiter(publicShareRateLimitRPS, publicShareRateLimitBurst),
-		TrustedProxyCIDRs:   cfg.TrustedProxyCIDRs,
-		WebDistDir:          cfg.WebDistDir,
-		Version:             version,
+		TrustedProxyCIDRs:  cfg.TrustedProxyCIDRs,
+		WebDistDir:         cfg.WebDistDir,
+		Version:            version,
 	})
 
 	srv := &http.Server{

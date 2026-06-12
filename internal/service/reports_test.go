@@ -76,13 +76,13 @@ func hostileReport() models.DailyReport {
 
 // forbiddenStrings are values that MUST NOT appear in the client AI request.
 var forbiddenStrings = []string{
-	"Scaffold collapse",      // safety incident
-	"Jane Doe",               // crew identity
-	"incident report",        // safety/liability
-	"45.5231",                // GPS lat (not present anywhere on the report)
-	"-122.6765",              // GPS lng
-	"125000",                 // a *_cents amount
-	"$1,250",                 // dollar amount
+	"Scaffold collapse", // safety incident
+	"Jane Doe",          // crew identity
+	"incident report",   // safety/liability
+	"45.5231",           // GPS lat (not present anywhere on the report)
+	"-122.6765",         // GPS lng
+	"125000",            // a *_cents amount
+	"$1,250",            // dollar amount
 }
 
 // TestBuildClientRequest_NoRedactedLeak is the mandated redaction-leak test: a

@@ -650,8 +650,8 @@ type ClientProgressUpdateRequest struct {
 	PeriodStart       string   `json:"period_start"` // YYYY-MM-DD
 	PeriodEnd         string   `json:"period_end"`   // YYYY-MM-DD
 	WeatherConditions string   `json:"weather_conditions,omitempty"`
-	WorkSummary       string   `json:"work_summary,omitempty"`     // sanitized work-summary prose
-	HighlightLines    []string `json:"highlight_lines,omitempty"`  // "Name — NN%" task highlights (no crew identities)
+	WorkSummary       string   `json:"work_summary,omitempty"`    // sanitized work-summary prose
+	HighlightLines    []string `json:"highlight_lines,omitempty"` // "Name — NN%" task highlights (no crew identities)
 	PhotoCount        int      `json:"photo_count"`
 }
 

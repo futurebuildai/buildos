@@ -24,7 +24,7 @@ const (
 	// legitimately runs several model round-trips and exceeds 30s. 90s leaves
 	// headroom under both the server WriteTimeout (120s) and Cloudflare's ~100s
 	// edge timeout so the answer returns instead of 502-ing mid-stream.
-	defaultLoopTimeout         = 90 * time.Second
+	defaultLoopTimeout = 90 * time.Second
 
 	// loopMaxTokens is the per-turn output cap. Matches callTool/callText.
 	loopMaxTokens = 4096
