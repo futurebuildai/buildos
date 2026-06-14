@@ -2,7 +2,7 @@
 
 **Domain:** Close the field → office → homeowner loop, *with real jobsite photos and a public homeowner progress page*.
 **Pipeline stage:** Owner-chosen first operational workflow (post agentic-UX batch).
-**Status:** SPEC (revised for two owner decisions) — to be built on a fresh branch in **five ordered chunks (A→E)**, each independently buildable, reviewable, and deployable.
+**Status:** ✅ **BUILT + MERGED (main) + DEPLOYED (staging)** as of 2026-06-12 (HEAD `0775fb4`; `/health` = `staging-0775fb4e`, migrations 022–025 applied). All five chunks (A→E) shipped; the 7 adversarial-review findings (incl. M1 webp/heic public-proxy refusal + M2 `Project` client-contact `json:"-"`) are remediated and reflected below. **Still inert until the owner supplies R2 + Resend credentials to the staging vault** (photos + client-update email). This doc now reads as the AS-BUILT contract, not a pre-build design.
 **North star:** [VISION.md](../../VISION.md) — BuildOS as an agentic OS whose harness does the GC's coordination busywork. This domain is the first concrete "harness composes a stakeholder communication" surface, and Chunk E is the **first surface outside the everything-behind-auth model**.
 **Author note:** This spec references *behavior and contracts*, not current line numbers (they shift on the post-merge branch). File paths and symbol names are stable; verify exact signatures against the branch before coding.
 

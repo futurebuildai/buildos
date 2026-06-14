@@ -1052,7 +1052,7 @@ stripped on the client path.
 
 ### GET /api/v1/projects/{projectID}/daily-reports/{date}
 - **Auth:** JWT, minRole superintendent. `date` = `YYYY-MM-DD`.
-- **Response:** `200 { data: DailyReport }` (incl. signed photo thumbnails when storage is on; `404 PROJECT_NOT_FOUND` uniform on cross-org).
+- **Response:** `200 { data: DailyReport }` (incl. signed photo thumbnails when storage is on; `404 NOT_FOUND` uniform on cross-org).
 
 ### POST /api/v1/projects/{projectID}/daily-reports/{date}/digest
 - **Auth:** JWT, minRole superintendent. Generates the INTERNAL office digest.

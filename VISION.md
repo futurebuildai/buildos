@@ -1,6 +1,6 @@
 # BuildOS — Vision, Architecture & Roadmap
 
-> **Status:** Canonical north star · **Last updated:** 2026-06-08 · **Owner:** colton@futurebuild.ai
+> **Status:** Canonical north star · **Last updated:** 2026-06-14 · **Owner:** colton@futurebuild.ai
 >
 > This is **the** canonical north-star doc for BuildOS's direction post the ESC-001 standalone pivot.
 > For *product direction / vision*, it **supersedes** the largely pre-pivot material under `.agents/`
@@ -10,6 +10,16 @@
 > disagree about *where the product is going*, this doc wins.
 
 ---
+
+## Progress update (2026-06-14) — supersedes the stale verdicts below
+
+The "gap audit" table and Phase-1..4 roadmap further down were written **2026-06-08** as a pre-execution snapshot ("agentic harness = Grade D, biggest gap"). That snapshot is now **out of date** — read it as history. Current reality:
+
+- **The agentic harness is BUILT (Phases 1–4 complete).** `internal/agentic` is the isolated leaf substrate; `delay_cascade` is a real AI-reasoned cross-module cascade; all four roles ship (ingestion = AI invoice extract; foresight = `foresight_sweep` risk cards; experience = `POST /api/v1/agents/chat` bounded tool-use loop; orchestration). DB-backed agent + MCP-connector config (`internal/connectors`) with an **admin web UI** is live. Production-readiness (security/load review, worker observability, alerting) is done. The harness layer that "barely existed" is now the working core of the product.
+- **It's deployed.** Railway: `staging.futurebuild.ai` auto-deploys `main`; this repo is "fork zero" (Kelbrook's instance). The operator web console + Flutter field app run against it.
+- **Layer 4 (system of record) has begun.** The agentic-UX polish loop made the harness visible/actionable in the console, then the **first operational-coordination slice shipped**: Daily Reports → Client Updates (field photos → daily reports → AI office digest + client-safe homeowner update → email + public link). This is what reframes layer 4 from "accounting, deprioritized" into the broader **operational-coordination / system-of-record layer** described below.
+
+The vision, principles, and beta bar below remain correct; only the "today" status moved.
 
 ## Context
 
@@ -40,8 +50,17 @@ Four layers, in **priority order**:
    **foresight** (cross-module risk/recommendations), **ingestion** (unstructured reality →
    structured ERP records). **Top priority. Barely exists today.**
 3. **3p integration + MCP layer** (isolated, configurable, vault-backed) — connectors a builder
-   enables and configures post-deploy.
-4. **Accounting / full system of record** — in scope but **deprioritized**. Thin today; acceptable.
+   enables and configures post-deploy. *Built (Phase 3); configurable post-deploy.*
+4. **Operational coordination + system of record** — the day-to-day workflows a GC actually runs the
+   business on, each a vertical slice (field capture → office → external comms), with the agentic harness
+   layered over them (digest/draft/foresight). **Intended sequence**, roughly demand-ordered:
+   **daily reports → client updates** (✅ first slice shipped — object storage + the first public surface),
+   then **subcontractor coordination** (assign/track subs on the schedule), **bid management / RFQs**
+   (solicit + compare sub bids), **invoicing / AP** (sub & vendor invoices against budget; builds on the
+   `invoices` table the ingestion role already populates), and finally deep **accounting / GL / AP-AR /
+   progress billing / retainage / change orders** — the deepest end, still **deprioritized past beta**.
+   Each slice preserves the two hard rules the first slice established (deterministic client-content
+   redaction at the service boundary; public/client surfaces project rather than serialize ERP).
 
 **The wedge** is the *integration* of these layers (owner-confirmed), so no layer can be skipped —
 but the agentic harness is what makes BuildOS more than "another scheduler with a chatbot."
@@ -160,6 +179,13 @@ retainage / change-order accounting.
 - **Phase 4 — Production-readiness for handoff.** Close Flutter field-app gaps (check-in/schedule/equipment);
   harden the operator + field + harness workflows end-to-end; onboarding/deploy polish; security review;
   load/smoke. (Runs partly in parallel with 1–3; it is the definition-of-done gate, not a strict tail.)
+- **Phase 5 — Operational coordination / system of record (layer 4).** The day-to-day workflows a GC runs
+  on, each a vertical slice (field capture → office → external comms) with the harness layered over it.
+  Demand-ordered: **daily reports → client updates** (✅ shipped — introduced object storage + the first
+  public surface), then **subcontractor coordination**, **bid management / RFQs**, **invoicing / AP**
+  (against budget, on the `invoices` table ingestion already feeds). Each new public/client surface
+  preserves the redaction + projection rules the first slice set (see CLAUDE.md "Operational-coordination
+  domain"). Driven by real-builder (Kelbrook) feedback once the first slice's R2 + Resend credentials are in.
 - **Post-beta — Accounting depth.** GL / AP-AR / progress billing / retainage / change orders as
   real-builder feedback demands it.
 

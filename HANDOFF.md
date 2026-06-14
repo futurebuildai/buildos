@@ -275,6 +275,13 @@ govulncheck clean. PRs #9 onward also have CI green at merge time
 
 ## In flight
 
+> **As of 2026-06-14: nothing is actively in flight.** `main` is at `8ab93d5`, fully merged + auto-deployed
+> to `staging.futurebuild.ai`. The most recent two work streams — the agentic-UX batch and the Daily
+> Reports → Client Updates domain — are both MERGED + DEPLOYED (entries below). **The remaining detail
+> entries in this section are historical per-chunk notes retained for provenance; their "NOT committed" /
+> "NOT merged" / "awaiting merge" annotations are STALE** (those branches all merged). Open work lives in
+> **"Next up"** and **"Blocked"** below — start there.
+
 ### ✅ Agentic-UX batch — MERGED + DEPLOYED + BROWSER-VERIFIED on staging (2026-06-11)
 Owner feedback "AI does nothing / Gantt basic / too static" → made the (already-good) agentic backend
 VISIBLE + ACTIONABLE. Merged `167d4e3` + timeout fix `3b50544`; staging-3b50544a live; re-driven in-browser:
@@ -680,25 +687,48 @@ BuildOS → Brain call; the inbound-A2A constraint applies elsewhere).
 
 ## Blocked
 
-Nothing blocked right now. (PR #9 cleared the workflow-activation
-blocker; CI is now live on `.github/workflows/{ci,release}.yml`.)
+- **Daily Reports → Client Updates is DEPLOYED but functionally INERT — blocked on two owner-provided
+  credentials** (the code soft-fails 503 / degrades cleanly without them). To activate on staging, set in
+  the vault: (1) Cloudflare **R2** — endpoint + photos bucket + access key + secret → `object_store`
+  provider (photos); (2) **Resend** API key (client-update email send). The public link works without
+  either (renders no photos until R2 is set). This is the #1 pick-up item — once the creds are in, do a
+  live end-to-end pass (upload photo → daily report → client update → public link). The nightly-backup R2
+  secrets are also still unset (separate concern).
 
-Known follow-up surfaced by PR #9 (not blocking, queued):
+CI itself is not blocked. Known follow-up (now PROVEN — it skipped a staging deploy on the 2026-06-12 merge):
 
-- `make audit` is weaker than CI: doesn't run `gofmt -l` strictly
-  and doesn't smoke-build the Dockerfile. Add both to the local
-  audit so future sessions catch issues before CI does.
+- **`make audit` is weaker than CI** — it does NOT run `gofmt -l .` (repo-wide) or the full integration
+  suite, and CI gates on both; a red gate **silently skips the `workflow_run` staging deploy**. Until
+  `make audit` is hardened, before any push to `main` run `gofmt -l . | grep -v '^vendor/'` (must be empty)
+  + `go test -tags=integration ./internal/...` (unfiltered — a `-run` filter hides failures). Tracked as a
+  CI-hygiene item in "Next up"; memory: `pre-push-gaps-gofmt-and-full-integration`. (Also still open from
+  PR #9: `make audit` doesn't smoke-build the Dockerfile.)
 
 ## Next up (prioritized — pick from the top)
 
-**▶ NEXT: Phase 4 — production-readiness for the real-builder handoff. Phase 3 (configurability +
-integration/MCP layer) is COMPLETE: 3a + 3b + 3c all merged.** Phase 4 = close Flutter field-app gaps
-(check-in/schedule/equipment), harden operator + field + harness workflows end-to-end, onboarding/deploy
-polish, a security review, load/smoke. **First housekeeping:** push local `main` (2 commits ahead of
-`origin/main` from the 3c merge) to origin when ready. **Quick win still open:** decide
-[ESC-002](.agents/handoff/ESCALATION_LOG.md#esc-002) (the `plan_tier=""` 402-wall on `/api/v1/agents/*`) —
-populate `plan_tier` at mint or drop the now-billing-less pro gate; this unblocks the Experience chat the
-3c agents govern. — Phase 3 record (done, in dependency order; full detail in "Last shipped"):
+**▶ NEXT (2026-06-14) — Phases 1–4 are COMPLETE; the agentic-UX loop + the first operational-coordination
+slice (Daily Reports → Client Updates) are merged + deployed to staging. Pick from the top:**
+
+1. **Activate Daily Reports → Client Updates on staging (BLOCKED on owner creds — see "Blocked").** Set R2
+   (`object_store`) + Resend in the staging vault, then run a live end-to-end pass: field photo → daily
+   report → AI office digest → client-safe client update → send email + open the public `/p/{token}` link.
+   Highest-value pickup — the domain is deployed but inert without the two credentials.
+2. **CI hygiene (cheap, high-leverage):** add `gofmt -l .` + the **unfiltered** integration suite (ideally a
+   Dockerfile smoke-build too) to `make audit` so the local gate matches CI and stops silently skipping the
+   staging deploy. Entry point: `Makefile` `audit` target. (This gap bit the 2026-06-12 merge.)
+3. **Operational-coordination layer — next slices (VISION Phase 5), demand-ordered, Kelbrook-feedback-driven:**
+   subcontractor coordination → bid management / RFQs → invoicing / AP (on the `invoices` table the ingestion
+   role already feeds). Each new public/client surface MUST preserve the redaction + projection rules
+   (CLAUDE.md "Operational-coordination domain"). Ground + design each as its own chunk before building.
+4. **Fast-follows:** Flutter photo-capture (Chunk B mobile piece — capture → presign → confirm against
+   `/field/assets/*`); a coarser portfolio-risk chat tool to cut multi-project chat latency (~29s observed);
+   investigate the one `list_feed_cards` chat-tool "(failed)" seen in browser testing.
+5. **Deployment Tier −1 remainder** (see [NEXT_STEPS.md](.agents/handoff/NEXT_STEPS.md) Tier −1): production
+   provisioning for `app.futurebuild.ai` (fresh keypair/vault key — NEVER shared with staging), the
+   `buildos-operations` sister repo (Starlight wiki + Claude-native command center for Grant), and the
+   PRR final gate → Kelbrook onboarding + 1-week hypercare.
+
+— Phase 3 record (done, in dependency order; full detail in "Last shipped"):
 1. **3a · Config registry — DONE (merged + pushed, HEAD `e471d77`).**
 2. **3b · Integration/MCP seam — SPLIT (owner-approved).**
    - **3b-i · connector framework — DONE on branch `feat/phase-3b-connector-framework`, reviewed clean,

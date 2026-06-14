@@ -12,7 +12,14 @@ Companion frontends now live in this monorepo: the operator web console in [web/
 
 **Deployment model (per [ADR-002](.agents/handoff/ADR-002-single-tenant-fork-model.md)):** every customer gets their own forked BuildOS repo and their own deployment instance — they own the core code and data. **Tenant isolation = deployment isolation.** No Postgres RLS, no per-tenant rate limiting, no multi-region routing logic in the application. A possible future co-op variant runs multi-tenant within one deployment; ships only if/when the product roadmap calls for it.
 
-Status: Sprints 1-5 done + Phase F core (production Dockerfile, D8 build-tag hardening, cmd/buildos-fork-init keypair/vault-key generator) + observability (Prometheus /metrics, OpenTelemetry tracing, Sentry with PII masking) + secret-source abstraction + the embedded onboarding wizard (migration 010, SetupGate, bootstrap tokens — see "Onboarding wizard" below) + the standalone pivot (native email/password auth, native Anthropic AI, encrypted BYOK vault; Brain/A2A/billing removed, migration 013). See [HANDOFF.md](HANDOFF.md) for current per-session state and [.agents/handoff/NEXT_STEPS.md](.agents/handoff/NEXT_STEPS.md) for the prioritized backlog.
+Status: Sprints 1-5 done + Phase F core (production Dockerfile, D8 build-tag hardening, cmd/buildos-fork-init keypair/vault-key generator) + observability (Prometheus /metrics, OpenTelemetry tracing, Sentry with PII masking) + secret-source abstraction + the embedded onboarding wizard (migration 010, SetupGate, bootstrap tokens — see "Onboarding wizard" below) + the standalone pivot (native email/password auth, native Anthropic AI, encrypted BYOK vault; Brain/A2A/billing removed, migration 013).
+
+**Since the pivot (current as of 2026-06-14):**
+- **Agentic-OS roadmap Phases 1–4 are COMPLETE.** The isolated `internal/agentic` harness + a real `delay_cascade`; the four harness roles (ingestion = AI invoice extract → `invoices`; foresight = `foresight_sweep` risk cards; experience = `POST /api/v1/agents/chat` bounded tool-use loop; orchestration); DB-backed agent + MCP-connector config (migrations 016–018) with an admin web UI (`internal/connectors`, `internal/authz`); and production-readiness hardening (security/load review — `docs/security-posture.md`, worker observability, Prometheus alerting). See VISION.md + NEXT_STEPS for the per-phase record.
+- **Deployment infra is LIVE on Railway.** `staging.futurebuild.ai` auto-deploys `main` (GitHub Actions `deploy-staging.yml` → build → migrate → roll → version-asserted smoke); `app.futurebuild.ai` promotes pinned, staging-verified digests (`promote-production.yml`). This repo is **"fork zero"** — Kelbrook Construction's own instance runs from it; true per-customer forks start with builder #2.
+- **Operational-coordination layer — first slice SHIPPED:** Daily Reports → Client Updates (BuildOS's first object storage + first PUBLIC unauth surface; migrations 022–025 — see "Operational-coordination domain" below).
+
+See [HANDOFF.md](HANDOFF.md) for current per-session state and [.agents/handoff/NEXT_STEPS.md](.agents/handoff/NEXT_STEPS.md) for the prioritized backlog.
 
 ## Common commands
 
@@ -39,6 +46,8 @@ make audit              # full pre-merge gate (lint-migrations + lint-migrations
                         # + test + test-prod + bench-physics)
 ```
 
+**⚠️ `make audit` is NOT full CI parity.** CI additionally runs (a) a repo-wide `gofmt -l .` check (fails on ANY unformatted file) and (b) the **full, unfiltered** integration suite (`go test -tags=integration ./internal/...`). Before pushing to `main` (which auto-deploys staging), also run `gofmt -l . | grep -v '^vendor/'` (must be empty) and the unfiltered integration suite — a `-run`-filtered local pass hides failures, and a red CI gate **silently skips the staging auto-deploy**. (Both gaps have bitten a merge; closing them in `make audit` is a tracked follow-up.)
+
 Run a single Go test: `go test ./internal/physics/... -run TestCPMDeterminism -count=1`
 Run a single benchmark: `go test -bench=BenchmarkCPM80Tasks -benchtime=10x ./internal/physics/...`
 Run a single integration test: `go test -tags=integration -count=1 -run TestFinancialsStore_CreateInvoice_RoundTrip ./internal/store/...`
@@ -51,7 +60,7 @@ Integration tests live behind the `//go:build integration` build tag. They spawn
 
 Three binaries under `cmd/`:
 - `cmd/server` — Chi HTTP API on `$PORT` (default 8080). Loads config, opens pgxpool, builds the `auth.Verifier` from the RSA public key for JWT validation, mounts routes, graceful shutdown.
-- `cmd/worker` — River job daemon. Same DB pool. Registers job kinds defined in [internal/worker/jobs.go](internal/worker/jobs.go): `daily_briefing`, `procurement_check`, `hydrate_project`, `corporate_rollup`, `certification_alerts`, `maintenance_reminders`, `field_notification_retry`, `delay_cascade`, `pipeline_analytics`, `permit_issued_transition`.
+- `cmd/worker` — River job daemon. Same DB pool. Registers job kinds defined in [internal/worker/jobs.go](internal/worker/jobs.go): `daily_briefing`, `procurement_check`, `hydrate_project`, `corporate_rollup`, `certification_alerts`, `maintenance_reminders`, `field_notification_retry`, `delay_cascade`, `pipeline_analytics`, `permit_issued_transition`, `foresight_sweep`.
 - `cmd/migrate` — runs River's internal migrations first, then `migrations/NNN_*.up.sql` / `.down.sql` against `schema_migrations`.
 
 Internal package layout:
@@ -64,11 +73,14 @@ Internal package layout:
 - [internal/config](internal/config/) — env loading.
 - [internal/auth](internal/auth/) — native auth primitives: argon2id password hashing ([password.go](internal/auth/password.go)) and the RS256 JWT `TokenIssuer` / `Verifier` ([token.go](internal/auth/token.go)). BuildOS mints AND validates its own access tokens against the per-fork RSA keypair.
 - [internal/ai](internal/ai/) — native Anthropic client. Calls the Anthropic Messages API directly with the BYOK key resolved from the encrypted vault. [image.go](internal/ai/image.go) handles image input (InvoiceExtract); [resilience.go](internal/ai/resilience.go) adds retry/backoff.
-- [internal/cryptobox](internal/cryptobox/) — AES-256-GCM seal/open for the encrypted credential vault, keyed by `VAULT_MASTER_KEY`. Holds the Anthropic key, the Resend key, and 3rd-party vendor credentials — never leaves the deployment.
+- [internal/cryptobox](internal/cryptobox/) — AES-256-GCM seal/open for the encrypted credential vault, keyed by `VAULT_MASTER_KEY`. Holds the Anthropic key, the Resend key, the `object_store` (R2) credentials, and 3rd-party vendor credentials — never leaves the deployment.
 - [internal/mailer](internal/mailer/) — transactional email via Resend ([resend.go](internal/mailer/resend.go)). Used for password-reset emails; the Resend API key is set in-app via the vault.
 - [internal/currency](internal/currency/) — safe integer-cents arithmetic for the Composite Currency Pattern (USD/CAD only). `ErrCrossCurrency` is the sentinel for forbidden cross-currency math.
+- [internal/storage](internal/storage/) — **object storage** (S3-compatible / Cloudflare R2). **Leaf package** (imports no other `internal/*`; isolation Check 4). Holds a hand-rolled AWS **SigV4 presigner** (no `aws-sdk` dep), the `ObjectStore` port, and the `R2Store` adapter; presigned PUT/GET direct-to-client. Credentials come from the vault `object_store` provider. See "Operational-coordination domain" below.
+- [internal/authz](internal/authz/) — the single role-ladder primitive (`RoleAtLeast`) shared by the auth middleware and the services/agentic tools (so RBAC is one source of truth). Leaf.
 - [internal/setup](internal/setup/)-adjacent code — the embedded onboarding wizard (see "Onboarding wizard" below). Spans `service/setup.go`, `store/setup.go`, `api/setup.go`, `models/setup.go`, and `api/middleware/setup_gate.go`.
 - `internal/agentic` — the isolated **agentic harness** (the orchestration/agent runtime; see "Agentic harness" below). **Leaf package.** It depends on the rest of BuildOS only through **ports** (interfaces it declares); the deterministic core depends on it *never*.
+- `internal/connectors` — the **integration / MCP connector** layer (Phase 3b). Imports **only** `internal/agentic` (isolation Check 3; core ⊬ connectors via Check 3b). The built-in `reference` connector + a hand-rolled (no-dep) MCP Streamable-HTTP client with an SSRF private-IP egress denylist + per-(org,endpoint) circuit breaker. Connector tools merge into the assistant registry namespaced + admin-floored, fail-closed.
 
 ### Agentic harness (`internal/agentic`)
 
@@ -79,6 +91,17 @@ Per [VISION.md](VISION.md), BuildOS is an agentic OS: a deterministic CPM core w
 - **Orchestrator pattern.** The canonical flow is: *triggering event → load cross-module context → AI reasons → apply recommended actions across modules in one tx → audit per-module deltas → surface via feed cards.* The reference implementation of the load→AI→apply-in-one-tx→audit shape lives in `service.AgentsService.RecommendScheduleAdjustments` (`internal/service/agents.go`); the first orchestration to use the harness is the real `delay_cascade` worker.
 
 Request flow for a schedule recalc: HTTP → JWT middleware → RBAC middleware → handler → `ScheduleService.RecalculateSchedule` (begins tx) → `ScheduleStore` loads tasks/deps → `physics.ForwardPass` + `BackwardPass` → `ScheduleStore.UpdateSchedule` writes `early_start`, `late_finish`, `total_float`, `is_critical` → if critical path changed, enqueue `DelayCascadeArgs` River job → commit.
+
+## Operational-coordination domain (Daily Reports → Client Updates)
+
+The first slice of the operational-coordination / system-of-record layer (VISION layer 4). Field photos → derived daily reports → an AI office digest + a client-SAFE homeowner update → emailed + a public shareable link. It introduced BuildOS's **first object storage** and its **first PUBLIC unauthenticated surface**. Migrations 022 (assets), 023 (project client contact), 024 (client_updates), 025 (share_links). Spans `internal/storage`, `internal/{models,store,service,api}/{assets,reports,client_update,share_link}.go`, `api/public_share.go`, and `api/field.go`. Contract: API_CONTRACT §13e–13i; design + as-built notes: [.agents/handoff/DAILY_REPORTS_CLIENT_UPDATES.md](.agents/handoff/DAILY_REPORTS_CLIENT_UPDATES.md).
+
+Two hard rules this domain establishes (both are CI-tested + were the focus of an adversarial security review):
+
+- **Deterministic client-content redaction.** The homeowner-facing AI draft is built behind an **allowlist** at the service boundary (`service.buildClientRequest`) — safety incidents, crew identities, GPS, and `*_cents` amounts can NEVER reach the client prompt or the public projection. Homeowner contact (`client_name`/`client_email`/`client_phone`) is `json:"-"` on `models.Project` (read server-side only; never serialized to the role-ungated project endpoints or AI tool context).
+- **Public surface = projection + curated-asset proxy, never raw ERP.** `GET /p/{token}` (and `/p/{token}/photos/{assetID}`) mount as a **sibling of `MountAuthRoutes`, OUTSIDE the auth `r.Group`** — they bypass Auth + SetupGate **without weakening them** (a dedicated rate limiter + RealIP + security headers still apply). The response is a server-rendered `models.PublicUpdate` projection that *physically cannot carry* ERP fields, plus a same-origin photo proxy. **`AssetService.ServeAsset` (the proxy's only caller) refuses any image type it cannot EXIF-strip** (webp/heic → 404) so GPS EXIF never reaches an unauthenticated viewer; the operator surface uses signed R2 redirects instead. Tokens are 32-byte CSPRNG, sha256-at-rest, expirable + revocable, with a uniform 404 on any bad/expired/revoked value.
+
+When adding any new public/unauth surface or any client-facing AI content, preserve both rules: gate at the service boundary (not the model), project rather than serialize the ERP struct, and add a no-auth reachability + ERP-absence test.
 
 ## Composite Currency Pattern (hard CI gate)
 
@@ -101,7 +124,7 @@ BuildOS is self-contained. The three surfaces that were formerly delegated to an
 
 1. **Identity** — native email/password. Passwords are argon2id-hashed ([internal/auth/password.go](internal/auth/password.go)). BuildOS mints its own RS256 access tokens via `auth.TokenIssuer` and validates them with `auth.Verifier` against the per-fork RSA keypair (`JWT_PRIVATE_KEY_PEM` / `JWT_PUBLIC_KEY_PEM`). The unauthenticated auth surface mounts under `/api/v1/auth`: `claim`, `login`, `refresh`, `logout`, `password-reset/request`, `password-reset/confirm` (see [internal/api/auth.go](internal/api/auth.go) `MountAuthRoutes`). RBAC roles are `owner` > `admin` > `superintendent` > `field_worker`. Validation middleware: [internal/api/middleware/auth.go](internal/api/middleware/auth.go).
 2. **AI** — BuildOS calls the Anthropic Messages API directly ([internal/ai](internal/ai/)) with the BYOK key from the encrypted vault. Image input (InvoiceExtract) is supported. A missing key soft-fails: the server boots, and AI-dependent endpoints return 503 until an admin configures the key.
-3. **Credentials** — the encrypted vault ([internal/cryptobox](internal/cryptobox/), AES-256-GCM under `VAULT_MASTER_KEY`) stores the Anthropic key, the Resend key, and 3rd-party vendor credentials (Gable, LocalBlue). Credentials are sealed at rest and never leave the deployment. Vendor seams call upstream APIs directly with the unsealed key.
+3. **Credentials** — the encrypted vault ([internal/cryptobox](internal/cryptobox/), AES-256-GCM under `VAULT_MASTER_KEY`) stores the Anthropic key, the Resend key, the `object_store` (Cloudflare R2) credentials, and 3rd-party vendor credentials (Gable, LocalBlue). Credentials are sealed at rest and never leave the deployment. Vendor seams call upstream APIs directly with the unsealed key. The provider set is enumerated by `VaultService.Capabilities` (each surfaces a `*Configured` flag + non-secret fingerprint).
 
 Password reset emails go out via Resend ([internal/mailer](internal/mailer/)); the Resend API key is set in-app via the vault.
 
@@ -169,7 +192,7 @@ Three independent layers, all turn-on-when-configured (empty config = no-op, no 
 - **Confidential** — vendor/invoice/project names, *_cents amounts (length-preserved mask: "Acme Corp" → "A********")
 - **Restricted** — emails, phones, names, GPS coords, OIDC subject, IP addresses (full redaction: "[REDACTED]"; length intentionally NOT preserved to defend against length-based fingerprinting)
 
-`pii.FieldClass` is the central catalog of field-name → class mappings. `pii.ScrubMap` / `pii.ScrubJSON` walk arbitrary nested data. Sentry `BeforeSend` is wired today (Restricted threshold). Audit-log JSONB scrubbing + structured-log scrubbing are next-up items.
+`pii.FieldClass` is the central catalog of field-name → class mappings (incl. the homeowner-contact fields `client_email`/`client_phone`/`client_name`/`recipient_email` → Restricted). `pii.ScrubMap` / `pii.ScrubJSON` walk arbitrary nested data. All three consumers are wired: Sentry `BeforeSend` (Restricted threshold), audit-log JSONB scrubbing (`store.scrubAuditPayloads` in `InsertAudit`), and structured-log scrubbing (`obs.scrubAttr` in `CorrelatingHandler`).
 
 ## Secret management
 

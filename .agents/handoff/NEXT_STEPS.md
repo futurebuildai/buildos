@@ -17,20 +17,33 @@ This repo is **"fork zero"**: Kelbrook runs from it (staging.futurebuild.ai auto
 app.futurebuild.ai promotes staging-verified digests). True per-customer forks start with builder #2.
 Status detail lives in [HANDOFF.md](../../HANDOFF.md) "In flight".
 
-1. **Phase 0a — same-origin SPA serving — ✅ BUILT + REVIEWED** (branch `feature/phase-0a-spa-serving`
-   @ `4a7547e`, awaiting owner review/merge). `internal/api/spa.go`, `WEB_DIST_DIR`, Dockerfile webbuilder
-   stage, sourcemap stripping, CI cache + JS lockfile scan. 15-agent adversarial review: 11 findings, all fixed.
+> **STATUS UPDATE (2026-06-14): staging is LIVE end-to-end.** Phases 0a/0b/1 are merged + deployed (the SPA
+> serves same-origin; `deploy-staging.yml` + `promote-production.yml` are working — used in anger). Items 1
+> and 3 below are no longer "awaiting merge". Since then the **agentic-UX visibility loop** and the **first
+> operational-coordination slice (Daily Reports → Client Updates)** also merged + deployed (HANDOFF "Last
+> shipped"). **What's actually left in Tier −1:** (4) production (`app.futurebuild.ai`) provisioning, (5) the
+> `buildos-operations` sister repo, (6) the PRR gate → Kelbrook onboarding + hypercare. **Two immediate
+> blockers** to making staging fully demoable: the Daily-Reports domain needs **R2 + Resend creds** in the
+> staging vault (HANDOFF "Blocked"). **New active workstream:** the operational-coordination layer (VISION
+> Phase 5) — see Tier −0.5 below.
+
+1. **Phase 0a — same-origin SPA serving — ✅ MERGED + DEPLOYED** (on `main`; the console serves same-origin
+   on staging). `internal/api/spa.go`, `WEB_DIST_DIR`, Dockerfile webbuilder stage, sourcemap stripping, CI
+   cache + JS lockfile scan. 15-agent adversarial review: 11 findings, all fixed.
 2. **Phase 0b — feedback subsystem — ✅ DONE** (`d6af7d1`, merged + pushed 2026-06-10). Migration 020 +
    full store/service/api + paginated admin harvest surface + per-(org,user) submit throttle +
    `fb-feedback-widget` (org shell, live axe spec) + pii entries + API_CONTRACT §13d. 20-agent adversarial
    review: 12 findings, all remediated. Spec: [PHASE_0B_FEEDBACK.md](PHASE_0B_FEEDBACK.md).
-3. **Phase 1 — Railway deploy infra — ✅ BUILT + REVIEWED** (branch `feature/phase-1-railway-deploy`,
-   awaiting owner merge). deploy/railway/ + 3 workflows; 26-agent review, 19 findings (2 critical:
-   migrate-noop + redeploy-previous-snapshot) all remediated incl. Go/Dockerfile root-cause fixes.
-   Detail in HANDOFF "In flight".
-4. **Ops (credentialed, runbooked):** teardown legacy Kelbrook Railway/Cloudflare attempts (allowlist-gated
-   script — never pattern-matched deletion) → provision staging → fork-init secrets + claim/wizard smoke →
-   provision prod (fresh keypair/vault key, never shared with staging) → DNS.
+3. **Phase 1 — Railway deploy infra — ✅ MERGED + LIVE** (on `main`; `deploy-staging.yml` auto-deploys every
+   `main` push — build → migrate → roll → version-asserted smoke — and `promote-production.yml` promotes
+   pinned digests; both exercised in anger, incl. the 2026-06-12 domain deploy). deploy/railway/ + 3
+   workflows; 26-agent review, 19 findings (2 critical: migrate-noop + redeploy-previous-snapshot) all
+   remediated incl. Go/Dockerfile root-cause fixes.
+4. **Ops (credentialed, runbooked):** ✅ staging DONE — provisioned, fork-init secrets, owner claim + wizard,
+   seeded, live + auto-deploying (behind a Cloudflare Worker reverse-proxy; the Railway custom-domain ACME
+   wedged — see HANDOFF). **▶ STILL OPEN:** provision **prod** (`app.futurebuild.ai` — fresh keypair/vault
+   key, NEVER shared with staging) + DNS; and set the Daily-Reports domain's **R2 + Resend** vault creds on
+   staging (HANDOFF "Blocked") to make it fully demoable.
 5. **`buildos-operations` sister repo:** Starlight wiki (docs.futurebuild.ai; non-technical user guide +
    technical ops manual), Claude-native command center (CLAUDE.md written for Grant + skills:
    deploy-fork/upgrade-fork/harvest-feedback/fleet-status/teardown-fork + `fleet/forks.yaml` registry),
@@ -40,6 +53,34 @@ Status detail lives in [HANDOFF.md](../../HANDOFF.md) "In flight".
    (chromium+firefox+webkit, every operator journey + axe), security remediation PR (per-account lockout +
    per-(org,user) AI throttle — the posture doc's tracked follow-ups), restore drill, then promote + Kelbrook
    onboarding + 1-week hypercare.
+
+## Tier −0.5 — operational-coordination layer (VISION Phase 5 / layer 4)
+
+The day-to-day workflows a GC runs the business on, each a vertical slice (field capture → office → external
+comms) with the agentic harness layered over it. **First slice SHIPPED:** Daily Reports → Client Updates
+(✅ merged + deployed; introduced `internal/storage` object storage + the first public unauth surface;
+migrations 022–025; spec [DAILY_REPORTS_CLIENT_UPDATES.md](./DAILY_REPORTS_CLIENT_UPDATES.md)). **Before any
+new slice is functional in the demo, the first slice's R2 + Resend creds must be set** (HANDOFF "Blocked").
+
+Two hard rules every new public/client surface MUST preserve (established by the first slice, CI-tested,
+adversarial-review-hardened — see CLAUDE.md "Operational-coordination domain"):
+1. **Deterministic client-content redaction at the SERVICE boundary** (allowlist, not the model): safety
+   incidents, crew identities, GPS, `*_cents` never reach a client prompt or public projection. Homeowner
+   contact stays `json:"-"` on shared structs.
+2. **Public/client surfaces PROJECT, never serialize ERP** (a `*PublicUpdate`-style projection that
+   physically can't carry ERP); curated-asset proxy only; refuse un-EXIF-strippable image types; no-auth
+   reachability + ERP-absence tests.
+
+**Next slices (demand-ordered, Kelbrook-feedback-driven — ground + design each as its own chunk first):**
+- **Subcontractor coordination** — assign/track subs against the schedule (likely a `subcontractors` +
+  `task_assignments` model; entry: `internal/{models,store,service,api}/`; the CPM tasks in
+  `internal/store/schedule.go` are the anchor). Field + operator surfaces.
+- **Bid management / RFQs** — solicit + compare sub bids (composite-currency line items; reuse the
+  `currency` package + the invoice-validation chokepoint pattern).
+- **Invoicing / AP** — sub & vendor invoices against budget. Builds on the existing `invoices` table the
+  **ingestion** role already populates (`internal/service/budget.go` `createInvoiceTx` is the validated
+  chokepoint; the AI invoice-extract path is `ai.InvoiceExtract`). This is the bridge into the deferred
+  accounting depth.
 
 ## Tier 0 — agentic-OS roadmap (north star = [/VISION.md](../../VISION.md))
 
